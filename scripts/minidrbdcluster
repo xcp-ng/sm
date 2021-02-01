@@ -6,6 +6,9 @@ import re
 import signal
 import subprocess
 
+DRBDADM_OPEN_FAILED_RE = re.compile(
+    'open\\((.*)\\) failed: No such file or directory'
+)
 MAY_PROMOT_RE = re.compile(
     '(?:exists|change) resource name:((?:\\w|-)+) '
     '(?:\\w+\\:\\w+ )*may_promote:(yes|no) promotion_score:(\\d+)'
@@ -99,6 +102,27 @@ def process(events2, resources, services, status):
                     services.remove(systemd_unit)
 
 
+def active_drbd_volume(res_name):
+    retry = True
+    args = ['drbdadm', 'adjust', res_name]
+    while True:
+        proc = subprocess.Popen(args, stderr=subprocess.PIPE)
+        (stdout, stderr) = proc.communicate()
+        if not proc.returncode:
+            return  # Success. \o/
+
+        if not retry:
+            break
+
+        m = DRBDADM_OPEN_FAILED_RE.match(stderr)
+        if m and subprocess.call(['lvchange', '-ay', m.groups()[0]]) == 0:
+            retry = False
+        else:
+            break
+
+    print('Failed to execute `{}`: {}'.format(args, stderr))
+
+
 def main():
     services = []
     status = dict()
@@ -112,9 +136,7 @@ def main():
     print('Managing DRBD resources: %s' % (' '.join(resources)))
     for res_name in resources:
         status[res_name] = dict()
-        # TODO: USE drbadm to find path.
-        os.system('lvchange -ay /dev/linstor_group/xcp-persistent-database_00000')
-        os.system('drbdadm adjust %s' % (res_name))
+        active_drbd_volume(res_name)
 
     signal.signal(signal.SIGHUP, sig_handler)
 
