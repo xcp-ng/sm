@@ -1222,6 +1222,8 @@ class LinstorVolumeManager(object):
         # 1. Check if SR already exists.
         uri = 'linstor://localhost'
 
+        cls._start_controller(start=True)
+
         lin = cls._create_linstor_instance(uri, keep_uri_unmodified=True)
         driver_pool_name = group_name
         group_name = cls._build_group_name(group_name)

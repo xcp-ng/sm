@@ -495,6 +495,12 @@ class LinstorSR(SR.SR):
                         opterr='group name must be unique'
                     )
 
+        if srs:
+            raise xs_errors.XenError(
+                'LinstorSRCreate',
+                opterr='LINSTOR SR must be unique in a pool'
+            )
+
         # Create SR.
         # Throw if the SR already exists.
         try:
