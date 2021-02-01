@@ -218,20 +218,6 @@ class LinstorVolumeManager(object):
         self._linstor = self._create_linstor_instance(uri)
         self._base_group_name = group_name
 
-        # Ensure database is correctly mounted.
-        # TODO: Maybe wait for sync if necessary.
-        # TODO: Avoid it on slave.
-        try:
-            if not self._is_mounted(DATABASE_PATH):
-                # TODO: Do not mount, wait.
-                logger('Repair: mounting LINSTOR database volume...')
-                self._mount_database_volume(
-                    # TODO: Maybe avoid build device path.
-                    self.build_device_path(DATABASE_VOLUME_NAME)
-                )
-        finally:
-            self._linstor = self._create_linstor_instance(uri)
-
         # Ensure group exists.
         group_name = self._build_group_name(group_name)
         groups = self._linstor.resource_group_list_raise([group_name])
