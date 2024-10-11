@@ -233,6 +233,7 @@ install: precheck
 	install -m 755 scripts/stop_all_gc $(SM_STAGING)/etc/xapi.d/xapi-pre-shutdown/
 	$(MAKE) -C dcopy install DESTDIR=$(SM_STAGING)
 	$(MAKE) -C linstor install DESTDIR=$(SM_STAGING)
+	$(MAKE) -C sm_typing install DESTDIR=$(SM_STAGING)
 	ln -sf $(SM_DEST)blktap2.py $(SM_STAGING)$(BIN_DEST)/blktap2
 	ln -sf $(SM_DEST)lcache.py $(SM_STAGING)$(BIN_DEST)tapdisk-cache-stats
 	ln -sf /dev/null $(SM_STAGING)$(UDEV_RULES_DIR)/69-dm-lvm-metad.rules
