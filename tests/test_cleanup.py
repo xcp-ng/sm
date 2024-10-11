@@ -1,3 +1,5 @@
+from sm_typing import List
+
 import errno
 import signal
 import unittest
@@ -31,7 +33,7 @@ class FakeException(Exception):
 
 
 class FakeUtil:
-    record = []
+    record: List[str] = []
 
     def log(input):
         FakeUtil.record.append(input)
