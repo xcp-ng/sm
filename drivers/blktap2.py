@@ -18,7 +18,9 @@
 # blktap2: blktap/tapdisk management layer
 #
 
-from sm_typing import Any, Callable, Dict
+from sm_typing import Any, Callable, Dict, override
+
+from abc import ABC, ABCMeta, abstractmethod
 
 import grp
 import os
@@ -514,17 +516,21 @@ def mkdirs(path, mode=0o777):
                 raise
 
 
-class KObject(object):
-
-    SYSFS_CLASSTYPE: ClassVar[str]
+class KObject(ABC):
+    @property
+    @abstractmethod
+    def SYSFS_CLASSTYPE(self) -> str:
+        pass
 
     def sysfs_devname(self):
         raise NotImplementedError("sysfs_devname is undefined")
 
 
-class Attribute(object):
-
-    SYSFS_NODENAME: ClassVar[str]
+class Attribute(ABC):
+    @property
+    @abstractmethod
+    def SYSFS_NODENAME(self) -> str:
+        pass
 
     def __init__(self, path):
         self.path = path
@@ -576,7 +582,10 @@ class Blktap(ClassDevice):
 
     DEV_BASEDIR = '/dev/xen/blktap-2'
 
-    SYSFS_CLASSTYPE = "blktap2"
+    @property
+    @override
+    def SYSFS_CLASSTYPE(self) -> str:
+        return 'blktap2'
 
     def __init__(self, minor):
         self.minor = minor
@@ -602,7 +611,10 @@ class Blktap(ClassDevice):
         return "blktap!blktap%d" % self.minor
 
     class Pool(Attribute):
-        SYSFS_NODENAME = "pool"
+        @property
+        @override
+        def SYSFS_NODENAME(self) -> str:
+            return 'pool'
 
     def get_pool_attr(self):
         if not self._pool:
@@ -625,7 +637,10 @@ class Blktap(ClassDevice):
         self.set_pool_name(pool.name)
 
     class Task(Attribute):
-        SYSFS_NODENAME = "task"
+        @property
+        @override
+        def SYSFS_NODENAME(self) -> str:
+            return 'task'
 
     def get_task_attr(self):
         if not self._task:
@@ -1167,14 +1182,17 @@ class VDI(object):
         def get_vdi_path(self):
             return self.vdi.path
 
-    class Link(object):
+    class Link(ABC):
         """Relink a node under a common name"""
         # NB. We have to provide the device node path during
         # VDI.attach, but currently do not allocate the tapdisk minor
         # before VDI.activate. Therefore those link steps where we
         # relink existing devices under deterministic path names.
 
-        BASEDIR: ClassVar[str]
+        @property
+        @abstractmethod
+        def BASEDIR(self) -> str:
+            pass
 
         def _mklink(self, target):
             raise NotImplementedError("_mklink is not defined")
@@ -1231,6 +1249,11 @@ class VDI(object):
     class SymLink(Link):
         """Symlink some file to a common name"""
 
+        @property
+        @override
+        def BASEDIR(self) -> str:
+            return ''
+
         def readlink(self):
             return os.readlink(self.path())
 
@@ -1245,6 +1268,11 @@ class VDI(object):
 
     class DeviceNode(Link):
         """Relink a block device node to a common name"""
+
+        @property
+        @override
+        def BASEDIR(self) -> str:
+            return ''
 
         @classmethod
         def _real_stat(cls, target):
@@ -1309,15 +1337,24 @@ class VDI(object):
             return self._obj._equals(target)
 
     class PhyLink(SymLink):
-        BASEDIR = "/dev/sm/phy"
+        @property
+        @override
+        def BASEDIR(self) -> str:
+            return '/dev/sm/phy'
     # NB. Cannot use DeviceNodes, e.g. FileVDIs aren't bdevs.
 
     class NBDLink(SymLink):
-
-        BASEDIR = "/run/blktap-control/nbd"
+        @property
+        @override
+        def BASEDIR(self) -> str:
+            return '/run/blktap-control/nbd'
 
     class BackendLink(Hybrid):
-        BASEDIR = "/dev/sm/backend"
+        @property
+        @override
+        def BASEDIR(self) -> str:
+            return '/dev/sm/backend'
+
     # NB. Could be SymLinks as well, but saving major,minor pairs in
     # Links enables neat state capturing when managing Tapdisks.  Note
     # that we essentially have a tap-ctl list replacement here. For
@@ -2154,7 +2191,10 @@ class UEventHandler(object):
 
 
 class __BlktapControl(ClassDevice):
-    SYSFS_CLASSTYPE = "misc"
+    @property
+    @override
+    def SYSFS_CLASSTYPE(self) -> str:
+        return 'misc'
 
     def __init__(self):
         ClassDevice.__init__(self)
@@ -2164,7 +2204,10 @@ class __BlktapControl(ClassDevice):
         return "blktap!control"
 
     class DefaultPool(Attribute):
-        SYSFS_NODENAME = "default_pool"
+        @property
+        @override
+        def SYSFS_NODENAME(self) -> str:
+            return 'default_pool'
 
     def get_default_pool_attr(self):
         if not self._default_pool:
@@ -2202,6 +2245,10 @@ BlktapControl = __BlktapControl()
 
 
 class PagePool(KObject):
+    @property
+    @override
+    def SYSFS_CLASSTYPE(self) -> str:
+        return ''
 
     def __init__(self, path):
         self.path = path
@@ -2211,7 +2258,10 @@ class PagePool(KObject):
         return self.path
 
     class Size(Attribute):
-        SYSFS_NODENAME = "size"
+        @property
+        @override
+        def SYSFS_NODENAME(self) -> str:
+            return 'size'
 
     def get_size_attr(self):
         if not self._size:
@@ -2228,8 +2278,10 @@ class PagePool(KObject):
 
 
 class BusDevice(KObject):
-
-    SYSFS_BUSTYPE: ClassVar[str]
+    @property
+    @abstractmethod
+    def SYSFS_BUSTYPE(self) -> str:
+        pass
 
     @classmethod
     def sysfs_bus_path(cls):
@@ -2247,7 +2299,10 @@ class XenbusDevice(BusDevice):
 
     XBT_NIL = ""
 
-    XENBUS_DEVTYPE: ClassVar[str]
+    @property
+    @abstractmethod
+    def XENBUS_DEVTYPE(self) -> str:
+        pass
 
     def __init__(self, domid, devid):
         self.domid = int(domid)
@@ -2368,7 +2423,11 @@ class XenbusDevice(BusDevice):
 
 class XenBackendDevice(XenbusDevice):
     """Xenbus backend device"""
-    SYSFS_BUSTYPE = "xen-backend"
+
+    @property
+    @override
+    def SYSFS_BUSTYPE(self) -> str:
+        return 'xen-backend'
 
     @classmethod
     def from_xs_path(cls, _path):
@@ -2386,7 +2445,10 @@ class XenBackendDevice(XenbusDevice):
 class Blkback(XenBackendDevice):
     """A blkback VBD"""
 
-    XENBUS_DEVTYPE = "vbd"
+    @property
+    @override
+    def XENBUS_DEVTYPE(self) -> str:
+        return 'vbd'
 
     def __init__(self, domid, devid):
         XenBackendDevice.__init__(self, domid, devid)
@@ -2395,8 +2457,11 @@ class Blkback(XenBackendDevice):
         self._q_state = None
         self._q_events = None
 
-    class XenstoreValueError(Exception):
-        KEY: ClassVar[str]
+    class XenstoreValueError(Exception, metaclass=ABCMeta):
+        @property
+        @abstractmethod
+        def KEY(self) -> str:
+            pass
 
         def __init__(self, vbd, _str):
             self.vbd = vbd
@@ -2407,7 +2472,10 @@ class Blkback(XenBackendDevice):
                 "has %s = %s" % (self.KEY, self.str)
 
     class PhysicalDeviceError(XenstoreValueError):
-        KEY = "physical-device"
+        @property
+        @override
+        def KEY(self) -> str:
+            return 'physical-device'
 
     class PhysicalDevice(object):
 
@@ -2452,7 +2520,10 @@ class Blkback(XenBackendDevice):
         """Blkback sysfs node to select queue-state event
         notifications emitted."""
 
-        SYSFS_NODENAME = "queue_events"
+        @property
+        @override
+        def SYSFS_NODENAME(self) -> str:
+            return 'queue_events'
 
         QUEUE_RUNNING = (1 << 0)
         QUEUE_PAUSE_DONE = (1 << 1)
