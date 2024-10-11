@@ -17,6 +17,9 @@
 #
 # blktap2: blktap/tapdisk management layer
 #
+
+from sm_typing import Any, Callable, ClassVar, Dict
+
 import grp
 import os
 import re
@@ -512,7 +515,7 @@ def mkdirs(path, mode=0o777):
 
 class KObject(object):
 
-    SYSFS_CLASSTYPE = None
+    SYSFS_CLASSTYPE: ClassVar[str] = ""
 
     def sysfs_devname(self):
         raise NotImplementedError("sysfs_devname is undefined")
@@ -520,7 +523,7 @@ class KObject(object):
 
 class Attribute(object):
 
-    SYSFS_NODENAME = None
+    SYSFS_NODENAME: ClassVar[str] = ""
 
     def __init__(self, path):
         self.path = path
@@ -1164,7 +1167,7 @@ class VDI(object):
         # before VDI.activate. Therefore those link steps where we
         # relink existing devices under deterministic path names.
 
-        BASEDIR = None
+        BASEDIR: ClassVar[str] = ""
 
         def _mklink(self, target):
             raise NotImplementedError("_mklink is not defined")
@@ -2120,7 +2123,7 @@ class UEventHandler(object):
             return "Uevent '%s' not handled by %s" % \
                 (self.event, self.handler.__class__.__name__)
 
-    ACTIONS = {}
+    ACTIONS: Dict[str, Callable] = {}
 
     def run(self):
 
@@ -2216,7 +2219,7 @@ class PagePool(KObject):
 
 class BusDevice(KObject):
 
-    SYSFS_BUSTYPE = None
+    SYSFS_BUSTYPE: ClassVar[str] = ""
 
     @classmethod
     def sysfs_bus_path(cls):
@@ -2234,7 +2237,7 @@ class XenbusDevice(BusDevice):
 
     XBT_NIL = ""
 
-    XENBUS_DEVTYPE = None
+    XENBUS_DEVTYPE: ClassVar[str] = ""
 
     def __init__(self, domid, devid):
         self.domid = int(domid)
@@ -2383,7 +2386,7 @@ class Blkback(XenBackendDevice):
         self._q_events = None
 
     class XenstoreValueError(Exception):
-        KEY = None
+        KEY: ClassVar[str] = ""
 
         def __init__(self, vbd, _str):
             self.vbd = vbd
@@ -2820,7 +2823,7 @@ if __name__ == '__main__':
 
     elif _class == 'tap':
 
-        attrs = {}
+        attrs: Dict[str, Any] = {}
         for item in sys.argv[2:]:
             try:
                 key, val = item.split('=')
