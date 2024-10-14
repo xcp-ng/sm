@@ -9,3 +9,6 @@ if not hasattr(typing, 'override'):
         except (AttributeError, TypeError):
             pass
         return method
+
+if not hasattr(typing, 'Never'):
+    Never = None # type: ignore
