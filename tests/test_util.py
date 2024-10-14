@@ -1,3 +1,5 @@
+from sm_typing import override
+
 import copy
 import errno
 import io
@@ -43,7 +45,8 @@ class TestUtil(unittest.TestCase):
     Tests for the util module methods
     """
 
-    def setUp(self):
+    @override
+    def setUp(self) -> None:
         # OS Patchers
         statvfs_patcher = mock.patch("util.os.statvfs", autospec=True)
         self.mock_statvfs = statvfs_patcher.start()
@@ -714,7 +717,8 @@ class TestUtil(unittest.TestCase):
 
 
 class TestFistPoints(unittest.TestCase):
-    def setUp(self):
+    @override
+    def setUp(self) -> None:
         self.addCleanup(mock.patch.stopall)
         sleep_patcher = mock.patch('util.time.sleep', autospec=True)
         self.mock_sleep = sleep_patcher.start()

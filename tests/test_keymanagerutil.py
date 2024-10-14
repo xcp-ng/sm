@@ -1,6 +1,9 @@
 """
 Test the "fake" keymanager for testing VHD encryption
 """
+
+from sm_typing import override
+
 import base64
 import copy
 import io
@@ -15,8 +18,8 @@ import util
 
 
 class TestKeymanagerutil(unittest.TestCase):
-
-    def setUp(self):
+    @override
+    def setUp(self) -> None:
         self.addCleanup(mock.patch.stopall)
 
         log_patcher = mock.patch('plugins.keymanagerutil.util.SMlog', autospec=True)

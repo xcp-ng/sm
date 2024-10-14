@@ -1,3 +1,5 @@
+from sm_typing import override
+
 from io import BytesIO as StringIO
 import os
 import unittest
@@ -32,8 +34,8 @@ class FakeFile(object):
 
 
 class TestFjournaler(unittest.TestCase):
-
-    def setUp(self):
+    @override
+    def setUp(self) -> None:
         self.files = {}
         self.open_handlers = {TEST_DIR_PATH: self.__fake_open}
 

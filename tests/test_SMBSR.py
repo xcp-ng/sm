@@ -1,3 +1,5 @@
+from sm_typing import override
+
 import unittest
 import unittest.mock as mock
 import uuid
@@ -12,14 +14,6 @@ import xs_errors
 
 
 class FakeSMBSR(SMBSR.SMBSR):
-    uuid = None
-    sr_ref = None
-    mountpoint = None
-    linkpath = None
-    path = None
-    session = None
-    remoteserver = None
-
     def __init__(self, srcmd, none):
         self.dconf = srcmd.dconf
         self.srcmd = srcmd
@@ -32,8 +26,8 @@ class FakeSMBSR(SMBSR.SMBSR):
 
 
 class Test_SMBSR(unittest.TestCase):
-
-    def setUp(self):
+    @override
+    def setUp(self) -> None:
         self.addCleanup(mock.patch.stopall)
 
         pread_patcher = mock.patch('SMBSR.util.pread', autospec=True)

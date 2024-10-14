@@ -1,3 +1,5 @@
+from sm_typing import override
+
 import unittest
 from unittest import mock
 
@@ -6,8 +8,8 @@ from SRCommand import SRCommand
 
 
 class ISCSITestCase(unittest.TestCase):
-
-    def setUp(self):
+    @override
+    def setUp(self) -> None:
         iscsilib_patcher = mock.patch(f'{self.TEST_CLASS}.iscsilib',
                                       autospec=True)
         self.mock_iscsilib = iscsilib_patcher.start()

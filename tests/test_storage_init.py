@@ -1,3 +1,5 @@
+from sm_typing import override
+
 import json
 import os
 import re
@@ -31,7 +33,8 @@ class TestStorageInit(unittest.TestCase):
     storage after installation.
     """
 
-    def setUp(self):
+    @override
+    def setUp(self) -> None:
         self.test_dir = tempfile.TemporaryDirectory()
 
         # There are tweaks we need to make the to storage-init:
@@ -107,7 +110,8 @@ class TestStorageInit(unittest.TestCase):
         self.misc_xe_calls = []
         self.unanticipated_xe_calls = []
 
-    def tearDown(self):
+    @override
+    def tearDown(self) -> None:
         self.socket.close()
         self.test_dir.cleanup()
 
