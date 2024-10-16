@@ -427,7 +427,6 @@ class FakeSharedFileSR(FileSR.SharedFileSR):
     @override
     def load(self, sr_uuid) -> None:
         self.path = os.path.join(SR.MOUNT_BASE, sr_uuid)
-        self.lock = None
 
     @override
     def attach(self, sr_uuid) -> None:
