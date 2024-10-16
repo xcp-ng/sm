@@ -319,7 +319,6 @@ class SR(ABC):
         """
         pass
 
-    @abstractmethod
     def probe(self) -> str:
         """Perform a backend-specific scan, using the current dconf.  If the
         dconf is complete, then this will return a list of the SRs present of
@@ -338,7 +337,7 @@ class SR(ABC):
         Raises:
           SRUnimplementedMethod
         """
-        pass
+        raise xs_errors.XenError('Unimplemented')
 
     @abstractmethod
     def scan(self, uuid) -> None:
