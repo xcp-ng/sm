@@ -1,4 +1,4 @@
-from sm_typing import override
+from sm_typing import Any, Dict, override
 
 from io import BytesIO as StringIO
 import os
@@ -36,7 +36,7 @@ class FakeFile(object):
 class TestFjournaler(unittest.TestCase):
     @override
     def setUp(self) -> None:
-        self.files = {}
+        self.files: Dict[str, Any] = {}
         self.open_handlers = {TEST_DIR_PATH: self.__fake_open}
 
         self.subject = fjournaler.Journaler(TEST_DIR_PATH)

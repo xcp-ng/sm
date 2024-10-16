@@ -2,7 +2,7 @@
 Test the "fake" keymanager for testing VHD encryption
 """
 
-from sm_typing import override
+from sm_typing import Dict, override
 
 import base64
 import copy
@@ -30,7 +30,7 @@ class TestKeymanagerutil(unittest.TestCase):
         self.mock_open = open_patcher.start()
         self.mock_open.side_effect = self.open
 
-        self.files = {}
+        self.files: Dict[str, io.StringIO] = {}
 
         isfile_patcher = mock.patch(
             'plugins.keymanagerutil.os.path.isfile', autospec=True)

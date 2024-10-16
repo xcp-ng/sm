@@ -1,4 +1,4 @@
-from sm_typing import List, override
+from sm_typing import Dict, List, override
 
 import errno
 import unittest
@@ -1795,7 +1795,7 @@ class TestLockGCActive(unittest.TestCase):
         self.lock_patcher = mock.patch('cleanup.lock.Lock')
         patched_lock = self.lock_patcher.start()
         patched_lock.side_effect = self.create_lock
-        self.locks = {}
+        self.locks: Dict[str, TestLockGCActive.DummyLock] = {}
 
         self.sr_uuid = str(uuid4())
 

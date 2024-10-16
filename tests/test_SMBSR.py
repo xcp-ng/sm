@@ -1,4 +1,4 @@
-from sm_typing import override
+from sm_typing import Dict, override
 
 import unittest
 import unittest.mock as mock
@@ -33,7 +33,7 @@ class Test_SMBSR(unittest.TestCase):
         pread_patcher = mock.patch('SMBSR.util.pread', autospec=True)
         self.mock_pread = pread_patcher.start()
         self.mock_pread.side_effect = self.pread
-        self.pread_results = {}
+        self.pread_results: Dict[str, str] = {}
 
         listdir_patcher = mock.patch('SMBSR.util.listdir', autospec=True)
         self.mock_list_dir = listdir_patcher.start()

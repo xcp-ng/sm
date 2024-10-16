@@ -151,7 +151,7 @@ class DummyVDI(VDI.VDI):
         self.size = 0
         self.utilisation = 0
         self.location = vdi_uuid
-        self.sm_config = {}
+        self.sm_config: Dict[str, str] = {}
 
     @override
     def create(self, sr_uuid, vdi_uuid, size) -> str:

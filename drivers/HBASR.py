@@ -19,7 +19,7 @@
 # hardware based iSCSI
 #
 
-from sm_typing import override
+from sm_typing import Dict, List, override
 
 import SR
 import SRCommand
@@ -68,7 +68,7 @@ class HBASR(SR.SR):
             self.type = self.dconf['type']
         self.attached = False
         self.procname = ""
-        self.devs = {}
+        self.devs: Dict[str, List[str]] = {}
 
     def _init_hbadict(self):
         if not hasattr(self, "hbas"):

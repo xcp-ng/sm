@@ -19,7 +19,7 @@ class SingletonWithArgs(type):
     def __call__(cls, *args, **kwargs) -> Any:
         init = cls._init[cls]
         if init is not None:
-            key = (cls, frozenset(
+            key: Any = (cls, frozenset(
                     inspect.getcallargs(init, None, *args, **kwargs).items()))
         else:
             key = cls

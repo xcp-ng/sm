@@ -1,4 +1,4 @@
-from sm_typing import Optional, override
+from sm_typing import Any, Optional, Set, override
 
 import errno
 import os
@@ -54,7 +54,7 @@ class TestFileVDI(unittest.TestCase):
         fist_patcher = mock.patch('FileSR.util.FistPoint.is_active',
                                   autospec=True)
         self.mock_fist = fist_patcher.start()
-        self.active_fists = set()
+        self.active_fists: Set[Any] = set()
         def active_fists():
             return self.active_fists
 
