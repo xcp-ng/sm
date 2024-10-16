@@ -2285,6 +2285,10 @@ class PagePool(KObject):
         self.path = path
         self._size = None
 
+    @override
+    def sysfs_devname(self) -> str:
+        return ''
+
     def sysfs_path(self):
         return self.path
 
