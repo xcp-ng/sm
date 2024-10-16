@@ -11,3 +11,6 @@ if not hasattr(typing, 'override'):
                 pass
             return method
         return wrapper
+
+if not hasattr(typing, 'Never'):
+    Never = None # type: ignore
