@@ -17,8 +17,7 @@ class TestBaseISCSI(ISCSITestCase):
 
     TEST_CLASS = 'BaseISCSI'
 
-    @override
-    def setUp(self) -> None:
+    def setUp(self): # type: ignore
         self.addCleanup(mock.patch.stopall)
 
         util_patcher = mock.patch('BaseISCSI.util', autospec=True)

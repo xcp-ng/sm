@@ -9,10 +9,9 @@ from SRCommand import SRCommand
 
 class ISCSITestCase(unittest.TestCase):
     # Declared in subclasses.
-    TEST_CLASS: str
+    #TEST_CLASS: str
 
-    @override
-    def setUp(self) -> None:
+    def setUp(self):  # type: ignore
         iscsilib_patcher = mock.patch(f'{self.TEST_CLASS}.iscsilib',
                                       autospec=True)
         self.mock_iscsilib = iscsilib_patcher.start()
@@ -23,7 +22,7 @@ class ISCSITestCase(unittest.TestCase):
         self.discovery_data: Dict[str, Tuple[str, int, str]] = {}
         self.sessions: List[str] = []
 
-        sleep_patcher = mock.patch(f'{self.TEST_CLASS}.time.sleep',
+        sleep_patcher = mock.patch(f'{self.TEST_CLASS}.time.sleep', # type: ignore
                                    autospec=True)
         self.mock_sleep = sleep_patcher.start()
 
