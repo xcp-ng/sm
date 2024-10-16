@@ -695,7 +695,7 @@ class LVHDSR(SR.SR):
             # Now check if there are any VDIs in the metadata, which are not in
             # XAPI
             if self.mdexists:
-                vdiToSnaps = {}
+                vdiToSnaps: Dict[str, List[str]] = {}
                 # get VDIs from XAPI
                 vdis = self.session.xenapi.SR.get_VDIs(self.sr_ref)
                 vdi_uuids = set([])
