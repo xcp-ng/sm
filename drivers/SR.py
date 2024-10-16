@@ -351,7 +351,6 @@ class SR(ABC):
         scanrecord = ScanRecord(self)
         scanrecord.synchronise()
 
-    @abstractmethod
     def replay(self, uuid) -> None:
         """Replay a multi-stage log entry
 
@@ -360,7 +359,7 @@ class SR(ABC):
         Raises:
           SRUnimplementedMethod
         """
-        pass
+        raise xs_errors.XenError('Unimplemented')
 
     def content_type(self, uuid) -> str:
         """Returns the 'content_type' of an SR as a string"""
