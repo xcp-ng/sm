@@ -17,6 +17,11 @@
 #
 # blktap2: blktap/tapdisk management layer
 #
+
+from sm_typing import Any, Callable, Dict, override
+
+from abc import ABC, ABCMeta, abstractmethod
+
 import grp
 import os
 import re
@@ -149,7 +154,8 @@ class TapCtl(object):
             self.cmd = cmd
             self.info = info
 
-        def __str__(self):
+        @override
+        def __str__(self) -> str:
             items = self.info.items()
             info = ", ".join("%s=%s" % item
                              for item in items)
@@ -445,7 +451,8 @@ class TapdiskExists(Exception):
     def __init__(self, tapdisk):
         self.tapdisk = tapdisk
 
-    def __str__(self):
+    @override
+    def __str__(self) -> str:
         return "%s already running" % self.tapdisk
 
 
@@ -455,7 +462,8 @@ class TapdiskNotRunning(Exception):
     def __init__(self, **attrs):
         self.attrs = attrs
 
-    def __str__(self):
+    @override
+    def __str__(self) -> str:
         items = iter(self.attrs.items())
         attrs = ", ".join("%s=%s" % attr
                           for attr in items)
@@ -468,7 +476,8 @@ class TapdiskNotUnique(Exception):
     def __init__(self, tapdisks):
         self.tapdisks = tapdisks
 
-    def __str__(self):
+    @override
+    def __str__(self) -> str:
         tapdisks = map(str, self.tapdisks)
         return "Found multiple tapdisks: %s" % tapdisks
 
@@ -480,7 +489,8 @@ class TapdiskFailed(Exception):
         self.arg = arg
         self.err = err
 
-    def __str__(self):
+    @override
+    def __str__(self) -> str:
         return "Tapdisk(%s): %s" % (self.arg, self.err)
 
     def get_error(self):
@@ -493,7 +503,8 @@ class TapdiskInvalidState(Exception):
     def __init__(self, tapdisk):
         self.tapdisk = tapdisk
 
-    def __str__(self):
+    @override
+    def __str__(self) -> str:
         return str(self.tapdisk)
 
 
@@ -511,17 +522,22 @@ def mkdirs(path, mode=0o777):
                 raise
 
 
-class KObject(object):
+class KObject(ABC):
+    @property
+    @abstractmethod
+    def SYSFS_CLASSTYPE(self) -> str:
+        pass
 
-    SYSFS_CLASSTYPE = None
+    @abstractmethod
+    def sysfs_devname(self) -> str:
+        pass
 
-    def sysfs_devname(self):
-        raise NotImplementedError("sysfs_devname is undefined")
 
-
-class Attribute(object):
-
-    SYSFS_NODENAME = None
+class Attribute(ABC):
+    @property
+    @abstractmethod
+    def SYSFS_NODENAME(self) -> str:
+        pass
 
     def __init__(self, path):
         self.path = path
@@ -535,7 +551,8 @@ class Attribute(object):
         def __init__(self, name):
             self.name = name
 
-        def __str__(self):
+        @override
+        def __str__(self) -> str:
             return "No such attribute: %s" % self.name
 
     def _open(self, mode='r'):
@@ -573,7 +590,10 @@ class Blktap(ClassDevice):
 
     DEV_BASEDIR = '/dev/xen/blktap-2'
 
-    SYSFS_CLASSTYPE = "blktap2"
+    @property
+    @override
+    def SYSFS_CLASSTYPE(self) -> str:
+        return 'blktap2'
 
     def __init__(self, minor):
         self.minor = minor
@@ -592,14 +612,19 @@ class Blktap(ClassDevice):
     def free(self):
         TapCtl.free(self.minor)
 
-    def __str__(self):
+    @override
+    def __str__(self) -> str:
         return "%s(minor=%d)" % (self.__class__.__name__, self.minor)
 
-    def sysfs_devname(self):
+    @override
+    def sysfs_devname(self) -> str:
         return "blktap!blktap%d" % self.minor
 
     class Pool(Attribute):
-        SYSFS_NODENAME = "pool"
+        @property
+        @override
+        def SYSFS_NODENAME(self) -> str:
+            return 'pool'
 
     def get_pool_attr(self):
         if not self._pool:
@@ -622,7 +647,10 @@ class Blktap(ClassDevice):
         self.set_pool_name(pool.name)
 
     class Task(Attribute):
-        SYSFS_NODENAME = "task"
+        @property
+        @override
+        def SYSFS_NODENAME(self) -> str:
+            return 'task'
 
     def get_task_attr(self):
         if not self._task:
@@ -663,7 +691,8 @@ class Tapdisk(object):
         self._dirty = False
         self._blktap = None
 
-    def __str__(self):
+    @override
+    def __str__(self) -> str:
         state = self.pause_state()
         return "Tapdisk(%s, pid=%d, minor=%s, state=%s)" % \
             (self.get_arg(), self.pid, self.minor, state)
@@ -749,7 +778,8 @@ class Tapdisk(object):
             self.type = _type
             self.path = path
 
-        def __str__(self):
+        @override
+        def __str__(self) -> str:
             return "%s:%s" % (self.type, self.path)
 
         @classmethod
@@ -769,14 +799,16 @@ class Tapdisk(object):
             def __init__(self, _type):
                 self.type = _type
 
-            def __str__(self):
+            @override
+            def __str__(self) -> str:
                 return "Not a Tapdisk type: %s" % self.type
 
         class InvalidArgument(Exception):
             def __init__(self, arg):
                 self.arg = arg
 
-            def __str__(self):
+            @override
+            def __str__(self) -> str:
                 return "Not a Tapdisk image: %s" % self.arg
 
     def get_arg(self):
@@ -918,7 +950,8 @@ class Tapdisk(object):
         t = self.from_minor(__get('minor'))
         self.__init__(t.pid, t.minor, t.type, t.path, t.state)
 
-    def __getattribute__(self, name):
+    @override
+    def __getattribute__(self, name) -> Any:
         def __get(name):
             # NB. avoid(rec(ursion)
             return object.__getattribute__(self, name)
@@ -1088,7 +1121,8 @@ class VDI(object):
             self.vdi_type = vdi_type
             self.target = target
 
-        def __str__(self):
+        @override
+        def __str__(self) -> str:
             return \
                 "Target %s has unexpected VDI type '%s'" % \
                 (type(self.target), self.vdi_type)
@@ -1164,20 +1198,25 @@ class VDI(object):
         def get_vdi_path(self):
             return self.vdi.path
 
-    class Link(object):
+    class Link(ABC):
         """Relink a node under a common name"""
         # NB. We have to provide the device node path during
         # VDI.attach, but currently do not allocate the tapdisk minor
         # before VDI.activate. Therefore those link steps where we
         # relink existing devices under deterministic path names.
 
-        BASEDIR = None
+        @property
+        @abstractmethod
+        def BASEDIR(self) -> str:
+            pass
 
-        def _mklink(self, target):
-            raise NotImplementedError("_mklink is not defined")
+        @abstractmethod
+        def _mklink(self, target) -> None:
+            pass
 
-        def _equals(self, target):
-            raise NotImplementedError("_equals is not defined")
+        @abstractmethod
+        def _equals(self, target) -> bool:
+            pass
 
         def __init__(self, path):
             self._path = path
@@ -1198,7 +1237,7 @@ class VDI(object):
         def stat(self):
             return os.stat(self.path())
 
-        def mklink(self, target):
+        def mklink(self, target) -> None:
 
             path = self.path()
             util.SMlog("%s -> %s" % (self, target))
@@ -1221,12 +1260,18 @@ class VDI(object):
                 if e.errno != errno.ENOENT:
                     raise
 
-        def __str__(self):
+        @override
+        def __str__(self) -> str:
             path = self.path()
             return "%s(%s)" % (self.__class__.__name__, path)
 
     class SymLink(Link):
         """Symlink some file to a common name"""
+
+        @property
+        @override
+        def BASEDIR(self) -> str:
+            return ''
 
         def readlink(self):
             return os.readlink(self.path())
@@ -1234,14 +1279,21 @@ class VDI(object):
         def symlink(self):
             return self.path()
 
-        def _mklink(self, target):
+        @override
+        def _mklink(self, target) -> None:
             os.symlink(target, self.path())
 
-        def _equals(self, target):
+        @override
+        def _equals(self, target) -> bool:
             return self.readlink() == target
 
     class DeviceNode(Link):
         """Relink a block device node to a common name"""
+
+        @property
+        @override
+        def BASEDIR(self) -> str:
+            return ''
 
         @classmethod
         def _real_stat(cls, target):
@@ -1254,7 +1306,8 @@ class VDI(object):
             """Whether @target refers to a block device."""
             return S_ISBLK(cls._real_stat(target).st_mode)
 
-        def _mklink(self, target):
+        @override
+        def _mklink(self, target) -> None:
 
             st = self._real_stat(target)
             if not S_ISBLK(st.st_mode):
@@ -1264,7 +1317,8 @@ class VDI(object):
             os.mknod(self.path(), st.st_mode | stat.S_IRGRP, st.st_rdev)
             os.chown(self.path(), st.st_uid, grp.getgrnam("disk").gr_gid)
 
-        def _equals(self, target):
+        @override
+        def _equals(self, target) -> bool:
             target_rdev = self._real_stat(target).st_rdev
             return self.stat().st_rdev == target_rdev
 
@@ -1279,7 +1333,8 @@ class VDI(object):
                 self.path = path
                 self.st = st
 
-            def __str__(self):
+            @override
+            def __str__(self) -> str:
                 return "%s is not a block device: %s" % (self.path, self.st)
 
     class Hybrid(Link):
@@ -1295,26 +1350,37 @@ class VDI(object):
                 return self._devnode.rdev()
             raise self._devnode.NotABlockDevice(self.path(), st)
 
-        def mklink(self, target):
+        @override
+        def mklink(self, target) -> None:
             if self._devnode.is_block(target):
                 self._obj = self._devnode
             else:
                 self._obj = self._symlink
             self._obj.mklink(target)
 
-        def _equals(self, target):
+        @override
+        def _equals(self, target) -> bool:
             return self._obj._equals(target)
 
     class PhyLink(SymLink):
-        BASEDIR = "/dev/sm/phy"
+        @property
+        @override
+        def BASEDIR(self) -> str:
+            return '/dev/sm/phy'
     # NB. Cannot use DeviceNodes, e.g. FileVDIs aren't bdevs.
 
     class NBDLink(SymLink):
-
-        BASEDIR = "/run/blktap-control/nbd"
+        @property
+        @override
+        def BASEDIR(self) -> str:
+            return '/run/blktap-control/nbd'
 
     class BackendLink(Hybrid):
-        BASEDIR = "/dev/sm/backend"
+        @property
+        @override
+        def BASEDIR(self) -> str:
+            return '/dev/sm/backend'
+
     # NB. Could be SymLinks as well, but saving major,minor pairs in
     # Links enables neat state capturing when managing Tapdisks.  Note
     # that we essentially have a tap-ctl list replacement here. For
@@ -2103,7 +2169,8 @@ class UEventHandler(object):
             super().__init__(args)
             self.key = args[0]
 
-        def __str__(self):
+        @override
+        def __str__(self) -> str:
             return \
                 "Key '%s' missing in environment. " % self.key + \
                 "Not called in udev context?"
@@ -2126,11 +2193,12 @@ class UEventHandler(object):
             self.event = event
             self.handler = handler
 
-        def __str__(self):
+        @override
+        def __str__(self) -> str:
             return "Uevent '%s' not handled by %s" % \
                 (self.event, self.handler.__class__.__name__)
 
-    ACTIONS = {}
+    ACTIONS: Dict[str, Callable] = {}
 
     def run(self):
 
@@ -2142,7 +2210,8 @@ class UEventHandler(object):
 
         return fn(self)
 
-    def __str__(self):
+    @override
+    def __str__(self) -> str:
         try:
             action = self.get_action()
         except:
@@ -2151,17 +2220,24 @@ class UEventHandler(object):
 
 
 class __BlktapControl(ClassDevice):
-    SYSFS_CLASSTYPE = "misc"
+    @property
+    @override
+    def SYSFS_CLASSTYPE(self) -> str:
+        return 'misc'
 
     def __init__(self):
         ClassDevice.__init__(self)
         self._default_pool = None
 
-    def sysfs_devname(self):
+    @override
+    def sysfs_devname(self) -> str:
         return "blktap!control"
 
     class DefaultPool(Attribute):
-        SYSFS_NODENAME = "default_pool"
+        @property
+        @override
+        def SYSFS_NODENAME(self) -> str:
+            return 'default_pool'
 
     def get_default_pool_attr(self):
         if not self._default_pool:
@@ -2184,7 +2260,8 @@ class __BlktapControl(ClassDevice):
         def __init__(self, name):
             self.name = name
 
-        def __str__(self):
+        @override
+        def __str__(self) -> str:
             return "No such pool: {}".format(self.name)
 
     def get_pool(self, name):
@@ -2199,16 +2276,27 @@ BlktapControl = __BlktapControl()
 
 
 class PagePool(KObject):
+    @property
+    @override
+    def SYSFS_CLASSTYPE(self) -> str:
+        return ''
 
     def __init__(self, path):
         self.path = path
         self._size = None
 
+    @override
+    def sysfs_devname(self) -> str:
+        return ''
+
     def sysfs_path(self):
         return self.path
 
     class Size(Attribute):
-        SYSFS_NODENAME = "size"
+        @property
+        @override
+        def SYSFS_NODENAME(self) -> str:
+            return 'size'
 
     def get_size_attr(self):
         if not self._size:
@@ -2225,8 +2313,10 @@ class PagePool(KObject):
 
 
 class BusDevice(KObject):
-
-    SYSFS_BUSTYPE = None
+    @property
+    @abstractmethod
+    def SYSFS_BUSTYPE(self) -> str:
+        pass
 
     @classmethod
     def sysfs_bus_path(cls):
@@ -2244,7 +2334,10 @@ class XenbusDevice(BusDevice):
 
     XBT_NIL = ""
 
-    XENBUS_DEVTYPE = None
+    @property
+    @abstractmethod
+    def XENBUS_DEVTYPE(self) -> str:
+        pass
 
     def __init__(self, domid, devid):
         self.domid = int(domid)
@@ -2344,11 +2437,13 @@ class XenbusDevice(BusDevice):
             self._xs_rm_path(xapi_path)
             self._xs_rm_path(upstream_path)
 
-    def sysfs_devname(self):
+    @override
+    def sysfs_devname(self) -> str:
         return "%s-%d-%d" % (self.XENBUS_DEVTYPE,
                              self.domid, self.devid)
 
-    def __str__(self):
+    @override
+    def __str__(self) -> str:
         return self.sysfs_devname()
 
     @classmethod
@@ -2365,7 +2460,11 @@ class XenbusDevice(BusDevice):
 
 class XenBackendDevice(XenbusDevice):
     """Xenbus backend device"""
-    SYSFS_BUSTYPE = "xen-backend"
+
+    @property
+    @override
+    def SYSFS_BUSTYPE(self) -> str:
+        return 'xen-backend'
 
     @classmethod
     def from_xs_path(cls, _path):
@@ -2383,7 +2482,10 @@ class XenBackendDevice(XenbusDevice):
 class Blkback(XenBackendDevice):
     """A blkback VBD"""
 
-    XENBUS_DEVTYPE = "vbd"
+    @property
+    @override
+    def XENBUS_DEVTYPE(self) -> str:
+        return 'vbd'
 
     def __init__(self, domid, devid):
         XenBackendDevice.__init__(self, domid, devid)
@@ -2392,19 +2494,26 @@ class Blkback(XenBackendDevice):
         self._q_state = None
         self._q_events = None
 
-    class XenstoreValueError(Exception):
-        KEY = None
+    class XenstoreValueError(Exception, metaclass=ABCMeta):
+        @property
+        @abstractmethod
+        def KEY(self) -> str:
+            pass
 
         def __init__(self, vbd, _str):
             self.vbd = vbd
             self.str = _str
 
-        def __str__(self):
+        @override
+        def __str__(self) -> str:
             return "Backend %s " % self.vbd + \
                 "has %s = %s" % (self.KEY, self.str)
 
     class PhysicalDeviceError(XenstoreValueError):
-        KEY = "physical-device"
+        @property
+        @override
+        def KEY(self) -> str:
+            return 'physical-device'
 
     class PhysicalDevice(object):
 
@@ -2432,10 +2541,12 @@ class Blkback(XenBackendDevice):
         def is_tap(self):
             return self.major == Tapdisk.major()
 
-        def __str__(self):
+        @override
+        def __str__(self) -> str:
             return "%s:%s" % (self.major, self.minor)
 
-        def __eq__(self, other):
+        @override
+        def __eq__(self, other) -> bool:
             return \
                 self.major == other.major and \
                 self.minor == other.minor
@@ -2449,7 +2560,10 @@ class Blkback(XenBackendDevice):
         """Blkback sysfs node to select queue-state event
         notifications emitted."""
 
-        SYSFS_NODENAME = "queue_events"
+        @property
+        @override
+        def SYSFS_NODENAME(self) -> str:
+            return 'queue_events'
 
         QUEUE_RUNNING = (1 << 0)
         QUEUE_PAUSE_DONE = (1 << 1)
@@ -2551,14 +2665,16 @@ class BlkbackEventHandler(UEventHandler):
 
         UEventHandler.__init__(self)
 
-    def run(self):
+    @override
+    def run(self) -> None:
 
         self.xs_path = self.getenv('XENBUS_PATH')
         openlog(str(self), 0, self.LOG_FACILITY)
 
         UEventHandler.run(self)
 
-    def __str__(self):
+    @override
+    def __str__(self) -> str:
 
         try:
             path = self.xs_path
@@ -2830,7 +2946,7 @@ if __name__ == '__main__':
 
     elif _class == 'tap':
 
-        attrs = {}
+        attrs: Dict[str, Any] = {}
         for item in sys.argv[2:]:
             try:
                 key, val = item.split('=')
