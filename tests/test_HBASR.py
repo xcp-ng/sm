@@ -1,3 +1,5 @@
+from sm_typing import override
+
 import unittest.mock as mock
 import HBASR
 import unittest
@@ -65,6 +67,7 @@ def fake_probe(self):
 
 
 class TestHBASR(unittest.TestCase):
+    @override
     def setUp(self):
         self.addCleanup(mock.patch.stopall)
 

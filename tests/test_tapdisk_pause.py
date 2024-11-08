@@ -1,3 +1,5 @@
+from sm_typing import override
+
 import unittest
 import uuid
 from unittest import mock
@@ -7,7 +9,7 @@ import tapdisk_pause
 
 
 class TestTapdiskPause(unittest.TestCase):
-
+    @override
     def setUp(self):
         self.mock_session = mock.MagicMock()
         log_patcher = mock.patch("tapdisk_pause.util.SMlog")
