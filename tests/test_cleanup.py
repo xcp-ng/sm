@@ -1,4 +1,4 @@
-from sm_typing import List
+from sm_typing import Dict, List, override
 
 import errno
 import signal
@@ -64,7 +64,8 @@ def create_cleanup_sr(xapi, uuid=None):
 
 
 class TestSR(unittest.TestCase):
-    def setUp(self):
+    @override
+    def setUp(self) -> None:
         time_sleep_patcher = mock.patch('cleanup.time.sleep')
         self.mock_time_sleep = time_sleep_patcher.start()
 
@@ -86,7 +87,8 @@ class TestSR(unittest.TestCase):
 
         self.addCleanup(mock.patch.stopall)
 
-    def tearDown(self):
+    @override
+    def tearDown(self) -> None:
         cleanup.SIGTERM = False
 
     def setup_abort_flag(self, ipc_mock, should_abort=False):
@@ -1886,14 +1888,14 @@ class TestSR(unittest.TestCase):
 
 
 class TestLockGCActive(unittest.TestCase):
-
-    def setUp(self):
+    @override
+    def setUp(self) -> None:
         self.addCleanup(mock.patch.stopall)
 
         self.lock_patcher = mock.patch('cleanup.lock.Lock')
         patched_lock = self.lock_patcher.start()
         patched_lock.side_effect = self.create_lock
-        self.locks = {}
+        self.locks: Dict[str, TestLockGCActive.DummyLock] = {}
 
         self.sr_uuid = str(uuid4())
 
@@ -1995,7 +1997,8 @@ class TestFileSR(TestSR):
     Exercise the specfic bits of the FileSR support
     """
 
-    def setUp(self):
+    @override
+    def setUp(self) -> None:
         super().setUp()
 
         self.sr_uuid = str(uuid.uuid4())
