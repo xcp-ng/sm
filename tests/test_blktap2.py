@@ -1,3 +1,5 @@
+from sm_typing import List, Set, override
+
 import base64
 import errno
 import json
@@ -25,7 +27,8 @@ class TestTapdisk(unittest.TestCase):
     # hence no usual decorator mocks and the monkey patching.
     # https://bugs.python.org/issue23078
     #
-    def setUp(self):
+    @override
+    def setUp(self) -> None:
         subprocess_patcher = mock.patch("blktap2.subprocess")
         self.mock_subprocess = subprocess_patcher.start()
 
@@ -146,7 +149,8 @@ class TestTapdisk(unittest.TestCase):
 
 
 class TestVDI(unittest.TestCase):
-    def setUp(self):
+    @override
+    def setUp(self) -> None:
         self.addCleanup(mock.patch.stopall)
 
         lock_patcher = mock.patch('blktap2.Lock', autospec=True)
@@ -176,7 +180,7 @@ class TestVDI(unittest.TestCase):
         self.mock_target.vdi.sr.handles.side_effect = mock_handles
         self.mock_target.session = self.mock_session
         mock_target.session = self.mock_session
-        self.caps = {}
+        self.caps: Set[str] = set()
         self.mock_target.has_cap.side_effect = self.get_caps
 
         self.vdi_uuid = str(uuid.uuid4())
@@ -193,7 +197,7 @@ class TestVDI(unittest.TestCase):
         log_patcher = mock.patch('blktap2.util.SMlog', autospec=True)
         self.mock_log = log_patcher.start()
 
-        self.log_lines = []
+        self.log_lines: List[str] = []
         def log_stderr(message, ident="SM", priority=syslog.LOG_INFO):
             self.log_lines.append(message)
             print(message, file=sys.stderr)
@@ -659,8 +663,8 @@ class TestVDI(unittest.TestCase):
 
 
 class TestTapCtl(unittest.TestCase):
-
-    def setUp(self):
+    @override
+    def setUp(self) -> None:
         subprocess_patcher = mock.patch("blktap2.subprocess")
         self.mock_subprocess = subprocess_patcher.start()
 
