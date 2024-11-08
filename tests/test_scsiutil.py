@@ -1,3 +1,5 @@
+from sm_typing import override
+
 import unittest
 import unittest.mock as mock
 
@@ -43,8 +45,8 @@ class Test_sg_readcap(unittest.TestCase):
 
 
 class TestGetDevicesByScsciId(unittest.TestCase):
-
-    def setUp(self):
+    @override
+    def setUp(self) -> None:
         self.addCleanup(mock.patch.stopall)
 
         listdir_patcher = mock.patch('os.listdir')
