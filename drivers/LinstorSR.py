@@ -33,11 +33,11 @@ except ImportError:
 
     LINSTOR_AVAILABLE = False
 
-from lock import Lock
 import blktap2
 import cleanup
 import errno
 import functools
+import lock
 import lvutil
 import os
 import re
@@ -354,7 +354,7 @@ class LinstorSR(SR.SR):
         # Define properties for SR parent class.
         self.ops_exclusive = OPS_EXCLUSIVE
         self.path = LinstorVolumeManager.DEV_ROOT_PATH
-        self.lock = Lock(vhdutil.LOCK_TYPE_SR, self.uuid)
+        self.lock = lock.Lock(lock.LOCK_TYPE_SR, self.uuid)
         self.sr_vditype = SR.DEFAULT_TAP
 
         if self.cmd == 'sr_create':
@@ -699,7 +699,7 @@ class LinstorSR(SR.SR):
                 opterr=str(e)
             )
 
-        Lock.cleanupAll(self.uuid)
+        lock.Lock.cleanupAll(self.uuid)
 
     @override
     @_locked_load
