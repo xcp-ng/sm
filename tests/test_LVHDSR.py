@@ -12,6 +12,7 @@ import LVHDSR
 import lvhdutil
 import lvutil
 import vhdutil
+from vditype import VdiType
 
 import testlib
 
@@ -365,7 +366,7 @@ class TestLVHDSR(unittest.TestCase, Stubs):
                 'uuid': stale_vdi_uuid,
                 'is_a_snapshot': 0,
                 'snapshot_of': '',
-                'vdi_type': vhdutil.VDI_TYPE_VHD,
+                'vdi_type': VdiType.VHD,
                 'name_label': 'StaleVDI',
                 'name_description': 'stale',
                 'type': 'User',
@@ -425,7 +426,7 @@ class TestLVHDSR(unittest.TestCase, Stubs):
                 'uuid': new_vdi_uuid,
                 'is_a_snapshot': 0,
                 'snapshot_of': '',
-                'vdi_type': vhdutil.VDI_TYPE_RAW,
+                'vdi_type': VdiType.RAW,
                 'name_label': 'NewVDI',
                 'name_description': 'new',
                 'type': 'User',
@@ -463,8 +464,6 @@ class TestLVHDVDI(unittest.TestCase, Stubs):
         self.mock_lvhdutil.LV_PREFIX = lvhdutil.LV_PREFIX
         vhdutil_patcher = mock.patch('LVHDSR.vhdutil', autospec=True)
         self.mock_vhdutil = vhdutil_patcher.start()
-        self.mock_vhdutil.VDI_TYPE_VHD = vhdutil.VDI_TYPE_VHD
-        self.mock_vhdutil.VDI_TYPE_RAW = vhdutil.VDI_TYPE_RAW
         self.mock_vhdutil.MAX_CHAIN_SIZE = vhdutil.MAX_CHAIN_SIZE
         lvutil_patcher = mock.patch('LVHDSR.lvutil', autospec=True)
         self.mock_lvutil = lvutil_patcher.start()
@@ -508,7 +507,7 @@ class TestLVHDVDI(unittest.TestCase, Stubs):
         mock_lv.size = 10240
         mock_lv.active = True
         mock_lv.hidden = False
-        mock_lv.vdiType = vhdutil.VDI_TYPE_VHD
+        mock_lv.vdiType = VdiType.VHD
 
         self.mock_lvhdutil.getLVInfo.return_value = {
             vdi_uuid: mock_lv}
@@ -575,7 +574,7 @@ class TestLVHDVDI(unittest.TestCase, Stubs):
         sr.cmd = "vdi_snapshot"
 
         vdi = sr.vdi('some VDI UUID')
-        vdi.vdi_type = vhdutil.VDI_TYPE_VHD
+        vdi.vdi_type = VdiType.VHD
         self.mock_sr_util.pathexists.return_value = True
         self.mock_sr_util.get_hosts_attached_on.return_value = ["hostref2"]
         self.mock_sr_util.get_this_host_ref.return_value = ["hostref1"]
@@ -612,7 +611,7 @@ class TestLVHDVDI(unittest.TestCase, Stubs):
         sr.cmd = "vdi_snapshot"
 
         vdi = sr.vdi('some VDI UUID')
-        vdi.vdi_type = vhdutil.VDI_TYPE_VHD
+        vdi.vdi_type = VdiType.VHD
         self.mock_sr_util.pathexists.return_value = True
         self.mock_sr_util.get_hosts_attached_on.return_value = ["hostref2"]
         self.mock_sr_util.get_this_host_ref.return_value = ["hostref1"]
@@ -645,7 +644,7 @@ class TestLVHDVDI(unittest.TestCase, Stubs):
         sr.isMaster = True
 
         vdi = sr.vdi(vdi_uuid)
-        vdi.vdi_type = vhdutil.VDI_TYPE_VHD
+        vdi.vdi_type = VdiType.VHD
 
         self.mock_sr_util.get_this_host_ref.return_value = 'ref1'
         self.mock_sr_util.get_hosts_attached_on.return_value = ['ref2']
@@ -688,7 +687,7 @@ class TestLVHDVDI(unittest.TestCase, Stubs):
         sr.cmd = "vdi_snapshot"
 
         vdi = sr.vdi('some VDI UUID')
-        vdi.vdi_type = vhdutil.VDI_TYPE_VHD
+        vdi.vdi_type = VdiType.VHD
         self.mock_sr_util.pathexists.return_value = True
         self.mock_sr_util.get_hosts_attached_on.return_value = ["hostref2"]
         self.mock_sr_util.get_this_host_ref.return_value = ["hostref1"]
