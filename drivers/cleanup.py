@@ -51,6 +51,7 @@ from lvmanager import LVActivator
 from srmetadata import LVMMetadataHandler, VDI_TYPE_TAG
 from functools import reduce
 from time import monotonic as _time
+from vditype import VdiType
 
 try:
     from linstorjournaler import LinstorJournaler
@@ -1322,9 +1323,9 @@ class LVHDVDI(VDI):
         oldUuid = self.uuid
         oldLVName = self.fileName
         VDI.rename(self, uuid)
-        self.fileName = lvhdutil.LV_PREFIX[vhdutil.VDI_TYPE_VHD] + self.uuid
+        self.fileName = lvhdutil.LV_PREFIX[VdiType.VHD] + self.uuid
         if self.raw:
-            self.fileName = lvhdutil.LV_PREFIX[vhdutil.VDI_TYPE_RAW] + self.uuid
+            self.fileName = lvhdutil.LV_PREFIX[VdiType.RAW] + self.uuid
         self.path = os.path.join(self.sr.path, self.fileName)
         assert(not self.sr.lvmCache.checkLV(self.fileName))
 
@@ -1591,7 +1592,7 @@ class LinstorVDI(VDI):
         self.drbd_size = -1
         self._hidden = info.hidden
         self.scanError = False
-        self.vdi_type = vhdutil.VDI_TYPE_VHD
+        self.vdi_type = VdiType.VHD
 
     @override
     def getSizeVHD(self, fetch=False) -> int:
@@ -2745,7 +2746,7 @@ class SR(object):
 
         # update the VDI record
         if vdi.parent.raw:
-            vdi.parent.setConfig(VDI.DB_VDI_TYPE, vhdutil.VDI_TYPE_RAW)
+            vdi.parent.setConfig(VDI.DB_VDI_TYPE, VdiType.RAW)
         vdi.parent.delConfig(VDI.DB_VHD_BLOCKS)
         util.fistpoint.activate("LVHDRT_coaleaf_after_vdirec", self.uuid)
 
@@ -3051,7 +3052,7 @@ class FileSR(SR):
             child.rename(childUuid)
             Util.log("Updating the VDI record")
             child.setConfig(VDI.DB_VHD_PARENT, parentUuid)
-            child.setConfig(VDI.DB_VDI_TYPE, vhdutil.VDI_TYPE_VHD)
+            child.setConfig(VDI.DB_VDI_TYPE, VdiType.VHD)
             util.fistpoint.activate("LVHDRT_coaleaf_undo_after_rename2", self.uuid)
 
         if child.isHidden():
@@ -3153,7 +3154,7 @@ class LVHDSR(SR):
             if not vdi:
                 self.logFilter.logNewVDI(uuid)
                 vdi = LVHDVDI(self, uuid,
-                        vdiInfo.vdiType == vhdutil.VDI_TYPE_RAW)
+                        vdiInfo.vdiType == VdiType.RAW)
                 self.vdis[uuid] = vdi
             vdi.load(vdiInfo)
         self._removeStaleVDIs(vdis.keys())
@@ -3236,11 +3237,11 @@ class LVHDSR(SR):
     def _handleInterruptedCoalesceLeaf(self) -> None:
         entries = self.journaler.getAll(VDI.JRN_LEAF)
         for uuid, parentUuid in entries.items():
-            childLV = lvhdutil.LV_PREFIX[vhdutil.VDI_TYPE_VHD] + uuid
-            tmpChildLV = lvhdutil.LV_PREFIX[vhdutil.VDI_TYPE_VHD] + \
+            childLV = lvhdutil.LV_PREFIX[VdiType.VHD] + uuid
+            tmpChildLV = lvhdutil.LV_PREFIX[VdiType.VHD] + \
                     self.TMP_RENAME_PREFIX + uuid
-            parentLV1 = lvhdutil.LV_PREFIX[vhdutil.VDI_TYPE_VHD] + parentUuid
-            parentLV2 = lvhdutil.LV_PREFIX[vhdutil.VDI_TYPE_RAW] + parentUuid
+            parentLV1 = lvhdutil.LV_PREFIX[VdiType.VHD] + parentUuid
+            parentLV2 = lvhdutil.LV_PREFIX[VdiType.RAW] + parentUuid
             parentPresent = (self.lvmCache.checkLV(parentLV1) or \
                     self.lvmCache.checkLV(parentLV2))
             if parentPresent or self.lvmCache.checkLV(tmpChildLV):
@@ -3274,7 +3275,7 @@ class LVHDSR(SR):
             child.rename(childUuid)
             Util.log("Updating the VDI record")
             child.setConfig(VDI.DB_VHD_PARENT, parentUuid)
-            child.setConfig(VDI.DB_VDI_TYPE, vhdutil.VDI_TYPE_VHD)
+            child.setConfig(VDI.DB_VDI_TYPE, VdiType.VHD)
             util.fistpoint.activate("LVHDRT_coaleaf_undo_after_rename2", self.uuid)
 
             # refcount (best effort - assume that it had succeeded if the
@@ -3352,7 +3353,7 @@ class LVHDSR(SR):
                     child)
             return
 
-        tmpName = lvhdutil.LV_PREFIX[vhdutil.VDI_TYPE_VHD] + \
+        tmpName = lvhdutil.LV_PREFIX[VdiType.VHD] + \
                 self.TMP_RENAME_PREFIX + child.uuid
         args = {"vgName": self.vgName,
                 "action1": "deactivateNoRefcount",
@@ -3540,7 +3541,7 @@ class LinstorSR(SR):
                     continue
 
                 vdi_type = volume_metadata.get(VDI_TYPE_TAG)
-                if vdi_type == vhdutil.VDI_TYPE_VHD:
+                if vdi_type == VdiType.VHD:
                     pending_vdi_uuids.append(vdi_uuid)
                 else:
                     all_vdi_info[vdi_uuid] = None
@@ -3640,7 +3641,7 @@ class LinstorSR(SR):
             child.rename(childUuid)
             Util.log('Updating the VDI record')
             child.setConfig(VDI.DB_VHD_PARENT, parentUuid)
-            child.setConfig(VDI.DB_VDI_TYPE, vhdutil.VDI_TYPE_VHD)
+            child.setConfig(VDI.DB_VDI_TYPE, VdiType.VHD)
 
         # TODO: Maybe deflate here.
 
