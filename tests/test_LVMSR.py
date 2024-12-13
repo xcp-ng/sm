@@ -415,12 +415,14 @@ class TestLVMVDI(unittest.TestCase, Stubs):
             False,
             False, # AIO
             True,  # VHD
+            False, # QCOW2
             False,
             True,
             True,
             False,
             False, # AIO
             True,  # VHD
+            False, # QCOW2
             False,
             True,
             False,
@@ -469,12 +471,14 @@ class TestLVMVDI(unittest.TestCase, Stubs):
             False,
             False, # AIO
             True,  # VHD
+            False, # QCOW2
             False,
             True,
             True,
             False,
             False, # AIO
             True,  # VHD
+            False, # QCOW2
             False,
             True,
             False,
@@ -525,12 +529,14 @@ class TestLVMVDI(unittest.TestCase, Stubs):
             False,
             False, # AIO
             True,  # VHD
+            False, # QCOW2
             False,
             True,
             True,
             False,
             False, # AIO
             True,  # VHD
+            False, # QCOW2
             False,
             True,
             False,
