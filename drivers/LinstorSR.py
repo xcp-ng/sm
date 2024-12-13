@@ -91,7 +91,8 @@ REDO_LOG_VOLUME_NAME = PERSISTENT_PREFIX + 'redo-log'
 # These values represents the types given on the command line.
 CREATE_PARAM_TYPES = {
     "raw": VdiType.RAW,
-    "vhd": VdiType.VHD
+    "vhd": VdiType.VHD,
+    "qcow2": VdiType.QCOW2
 }
 
 # ==============================================================================
