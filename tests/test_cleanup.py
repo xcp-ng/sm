@@ -18,6 +18,7 @@ import ipc
 
 import XenAPI
 
+from vditype import VdiType
 
 class FakeFile(object):
     pass
@@ -632,7 +633,7 @@ class TestSR(unittest.TestCase):
         sr = create_cleanup_sr(self.xapi_mock, uuid=str(sr_uuid))
         vdi_uuid = uuid4()
 
-        vdi = cleanup.VDI(sr, str(vdi_uuid), False)
+        vdi = cleanup.VDI(sr, str(vdi_uuid), VdiType.VHD)
 
         vdi.delete()
         mock_lock.Lock.cleanupAll.assert_called_with(str(vdi_uuid))
@@ -648,7 +649,7 @@ class TestSR(unittest.TestCase):
         sr_uuid = uuid4()
         sr = create_cleanup_sr(self.xapi_mock, uuid=str(sr_uuid))
         vdi_uuid = uuid4()
-        vdi = cleanup.VDI(sr, str(vdi_uuid), False)
+        vdi = cleanup.VDI(sr, str(vdi_uuid), VdiType.VHD)
 
         res = sr._coalesceLeaf(vdi)
         self.assertEqual(res, "This is a test")
@@ -669,7 +670,7 @@ class TestSR(unittest.TestCase):
         sr_uuid = uuid4()
         sr = create_cleanup_sr(self.xapi_mock, uuid=str(sr_uuid))
         vdi_uuid = uuid4()
-        vdi = cleanup.VDI(sr, str(vdi_uuid), False)
+        vdi = cleanup.VDI(sr, str(vdi_uuid), VdiType.VHD)
 
         res = sr._coalesceLeaf(vdi)
         self.assertFalse(res)
@@ -687,7 +688,7 @@ class TestSR(unittest.TestCase):
         sr_uuid = uuid4()
         sr = create_cleanup_sr(self.xapi_mock, uuid=str(sr_uuid))
         vdi_uuid = uuid4()
-        vdi = cleanup.VDI(sr, str(vdi_uuid), False)
+        vdi = cleanup.VDI(sr, str(vdi_uuid), VdiType.VHD)
 
         mock_vhdSize.side_effect = iter([1024, 4096, 4096, 8000, 8000, 16000])
 
@@ -721,7 +722,7 @@ class TestSR(unittest.TestCase):
         sr_uuid = uuid4()
         sr = create_cleanup_sr(self.xapi_mock, uuid=str(sr_uuid))
         vdi_uuid = uuid4()
-        vdi = cleanup.VDI(sr, str(vdi_uuid), False)
+        vdi = cleanup.VDI(sr, str(vdi_uuid), VdiType.VHD)
 
         res = sr._coalesceLeaf(vdi)
 
@@ -802,13 +803,13 @@ class TestSR(unittest.TestCase):
             mock_getConfig.side_effect = goodConfig
         else:
             mock_getConfig.side_effect = iter(["good", False, "blah", "blah"])
-        good = cleanup.VDI(sr, str(vdi_uuid), False)
+        good = cleanup.VDI(sr, str(vdi_uuid), VdiType.VHD)
         sr.vdis = {"good": good}
         return sr, good
 
     def addBadVDITOSR(self, sr, config, coalesceable=True):
         vdi_uuid = uuid4()
-        bad = cleanup.VDI(sr, str(vdi_uuid), False)
+        bad = cleanup.VDI(sr, str(vdi_uuid), VdiType.VHD)
         bad.getConfig = mock.MagicMock(side_effect=iter(config))
         bad.isLeafCoalesceable = mock.MagicMock(return_value=coalesceable)
         sr.vdis.update({"bad": bad})
@@ -919,7 +920,7 @@ class TestSR(unittest.TestCase):
 
     def makeVDIReturningSize(self, sr, size, canLiveCoalesce, liveSize):
         vdi_uuid = uuid4()
-        vdi = cleanup.VDI(sr, str(vdi_uuid), False)
+        vdi = cleanup.VDI(sr, str(vdi_uuid), VdiType.VHD)
         vdi._calcExtraSpaceForSnapshotCoalescing = \
             mock.MagicMock(return_value=size)
         vdi.canLiveCoalesce = mock.MagicMock(return_value=canLiveCoalesce)
@@ -1209,7 +1210,7 @@ class TestSR(unittest.TestCase):
         sr_uuid = uuid4()
         sr = create_cleanup_sr(self.xapi_mock, uuid=str(sr_uuid))
         vdi_uuid = uuid4()
-        vdi = cleanup.VDI(sr, str(vdi_uuid), False)
+        vdi = cleanup.VDI(sr, str(vdi_uuid), VdiType.VHD)
         # Fast enough to for size 10/10 = 1 second and not forcing
         self.canLiveCoalesce(vdi, 10, "blah", 10, True)
 
@@ -1456,13 +1457,13 @@ class TestSR(unittest.TestCase):
         vdis = {}
 
         parent_uuid = str(uuid4())
-        parent = cleanup.FileVDI(sr, parent_uuid, False)
+        parent = cleanup.FileVDI(sr, parent_uuid, VdiType.VHD)
         parent.path = '%s.vhd' % (parent_uuid)
         sr.vdis[parent_uuid] = parent
         vdis['parent'] = parent
 
         vdi_uuid = str(uuid4())
-        vdi = cleanup.FileVDI(sr, vdi_uuid, False)
+        vdi = cleanup.FileVDI(sr, vdi_uuid, VdiType.VHD)
         vdi.path = '%s.vhd' % (vdi_uuid)
         vdi.parent = parent
         # Set an initial value to make Mock happy.
@@ -1473,7 +1474,7 @@ class TestSR(unittest.TestCase):
         vdis['vdi'] = vdi
 
         child_vdi_uuid = str(uuid4())
-        child_vdi = cleanup.FileVDI(sr, child_vdi_uuid, False)
+        child_vdi = cleanup.FileVDI(sr, child_vdi_uuid, VdiType.VHD)
         child_vdi.path = '%s.vhd' % (child_vdi_uuid)
         vdi.children.append(child_vdi)
         sr.vdis[child_vdi_uuid] = child_vdi
@@ -1597,7 +1598,7 @@ class TestSR(unittest.TestCase):
         mock_ipc_flag.test.return_value = None
 
         vdis = self.add_vdis_for_coalesce(sr)
-        vdis['parent'].raw = True
+        vdis['parent'].vdi_type = VdiType.RAW
         mock_journaler.get.return_value = None
 
         mock_vhdutil.getParent.return_value = vdis['parent'].path
