@@ -1,8 +1,8 @@
+from sm_typing import override
 
 import unittest
 import zlib
 
-import lvhdutil
 import vhdutil
 import xs_errors
 
@@ -16,41 +16,41 @@ VHD_UTIL = '/usr/bin/vhd-util'
 
 
 class TestVhdUtil(unittest.TestCase):
+    @override
+    def setUp(self):
+        self.vhdutil = vhdutil.VhdUtil()
 
     def test_validate_and_round_min_size(self):
-        size = vhdutil.validate_and_round_vhd_size(2 * 1024 * 1024)
-
+        size = self.vhdutil.validateAndRoundImageSize(2 * 1024 * 1024)
         self.assertTrue(size == 2 * 1024 * 1024)
 
     def test_validate_and_round_max_size(self):
-        size = vhdutil.validate_and_round_vhd_size(vhdutil.MAX_VHD_SIZE)
-
-        self.assertTrue(size == vhdutil.MAX_VHD_SIZE)
+        size = self.vhdutil.validateAndRoundImageSize(self.vhdutil.getMaxImageSize())
+        self.assertTrue(size == self.vhdutil.getMaxImageSize())
 
     def test_validate_and_round_odd_size_up_to_next_boundary(self):
-        size = vhdutil.validate_and_round_vhd_size(vhdutil.MAX_VHD_SIZE - 1)
-
-        self.assertTrue(size == vhdutil.MAX_VHD_SIZE)
+        size = self.vhdutil.validateAndRoundImageSize(self.vhdutil.getMaxImageSize() - 1)
+        self.assertTrue(size == self.vhdutil.getMaxImageSize())
 
     def test_validate_and_round_negative(self):
         with self.assertRaises(xs_errors.SROSError):
-            vhdutil.validate_and_round_vhd_size(-1)
+            self.vhdutil.validateAndRoundImageSize(-1)
 
     def test_validate_and_round_too_large(self):
         with self.assertRaises(xs_errors.SROSError):
-            vhdutil.validate_and_round_vhd_size(vhdutil.MAX_VHD_SIZE + 1)
+            self.vhdutil.validateAndRoundImageSize(self.vhdutil.getMaxImageSize() + 1)
 
     @testlib.with_context
     def test_calc_overhead_empty_small(self, context):
         virtual_size = 25 * 1024 * 1024
-        result = vhdutil.calcOverheadEmpty(virtual_size)
+        result = self.vhdutil.calcOverheadEmpty(virtual_size)
 
         self.assertEqual(4096, result)
 
     @testlib.with_context
     def test_calc_overhead_empty_max(self, context):
         virtual_size = 2 * 1024 * 1024 * 1024 * 1024  # 2TB
-        result = vhdutil.calcOverheadEmpty(virtual_size)
+        result = self.vhdutil.calcOverheadEmpty(virtual_size)
 
         # Footer -> 3 * 1024
         # BAT -> (Size in MB / 2) * 4 = 4194304
@@ -63,14 +63,14 @@ class TestVhdUtil(unittest.TestCase):
     def test_calc_overhead_bitmap_round_blocks(self, context):
         virtual_size = 24 * 1024 * 1024
 
-        result = vhdutil.calcOverheadBitmap(virtual_size)
+        result = self.vhdutil.calcOverheadBitmap(virtual_size)
 
         self.assertEqual(49152, result)
     @testlib.with_context
     def test_calc_overhead_bitmap_extra_block(self, context):
         virtual_size = 25 * 1024 * 1024
 
-        result = vhdutil.calcOverheadBitmap(virtual_size)
+        result = self.vhdutil.calcOverheadBitmap(virtual_size)
 
         self.assertEqual(53248, result)
 
@@ -86,7 +86,7 @@ class TestVhdUtil(unittest.TestCase):
         context.add_executable(VHD_UTIL, test_function)
 
         # Act
-        result = vhdutil.getSizeVirt(TEST_VHD_NAME)
+        result = self.vhdutil.getSizeVirt(TEST_VHD_NAME)
 
         # Assert
         self.assertEqual(25*1024*1024, result)
@@ -107,7 +107,7 @@ class TestVhdUtil(unittest.TestCase):
         context.add_executable(VHD_UTIL, test_function)
 
         # Act
-        vhdutil.setSizeVirt(
+        self.vhdutil.setSizeVirt(
             TEST_VHD_NAME, 30*1024*1024,
             '/test/path/test-vdi.jrnl')
 
@@ -129,7 +129,7 @@ class TestVhdUtil(unittest.TestCase):
         context.add_executable(VHD_UTIL, test_function)
 
         # Act
-        vhdutil.setSizeVirtFast(
+        self.vhdutil.setSizeVirtFast(
             TEST_VHD_NAME, 30*1024*1024)
 
         # Assert
@@ -151,7 +151,7 @@ class TestVhdUtil(unittest.TestCase):
         context.add_executable(VHD_UTIL, test_function)
 
         # Act
-        result = vhdutil.getBlockBitmap(TEST_VHD_NAME)
+        result = self.vhdutil.getBlockBitmap(TEST_VHD_NAME)
 
         # Assert
         self.assertIsNotNone(result)
@@ -175,7 +175,7 @@ class TestVhdUtil(unittest.TestCase):
         context.add_executable(VHD_UTIL,
                                test_function)
         # Act
-        vhdutil.create(TEST_VHD_NAME, 30 * 1024 * 1024, False)
+        self.vhdutil.create(TEST_VHD_NAME, 30 * 1024 * 1024, False)
 
         # Assert
         self.assertEqual(
@@ -196,7 +196,7 @@ class TestVhdUtil(unittest.TestCase):
 
         context.add_executable(VHD_UTIL, test_function)
         # Act
-        vhdutil.create(TEST_VHD_NAME, 30 * 1024 * 1024, True)
+        self.vhdutil.create(TEST_VHD_NAME, 30 * 1024 * 1024, True)
 
         # Assert
         self.assertEqual(
@@ -217,8 +217,9 @@ class TestVhdUtil(unittest.TestCase):
 
         context.add_executable(VHD_UTIL, test_function)
         # Act
-        vhdutil.create(TEST_VHD_NAME, 30 * 1024 * 1024, False,
-                       msize=lvhdutil.MSIZE_MB)
+        self.vhdutil.create(
+            TEST_VHD_NAME, 30 * 1024 * 1024, False, msize=self.vhdutil.getDefaultPreallocationSizeVirt()
+        )
 
         # Assert
         self.assertEqual(
@@ -241,7 +242,7 @@ class TestVhdUtil(unittest.TestCase):
         context.add_executable(VHD_UTIL, test_function)
 
         # Act
-        vhdutil.snapshot(
+        self.vhdutil.snapshot(
             TEST_VHD_NAME,
             TEST_VHD_PATH,
             False)
@@ -267,7 +268,7 @@ class TestVhdUtil(unittest.TestCase):
         context.add_executable(VHD_UTIL, test_function)
 
         # Act
-        vhdutil.snapshot(
+        self.vhdutil.snapshot(
             TEST_VHD_NAME,
             TEST_VHD_PATH,
             True)
@@ -293,11 +294,12 @@ class TestVhdUtil(unittest.TestCase):
         context.add_executable(VHD_UTIL, test_function)
 
         # Act
-        vhdutil.snapshot(
+        self.vhdutil.snapshot(
             TEST_VHD_NAME,
             TEST_VHD_PATH,
             False,
-            msize=lvhdutil.MSIZE_MB)
+            msize=self.vhdutil.getDefaultPreallocationSizeVirt()
+        )
 
         # Assert
         self.assertEqual(
@@ -321,7 +323,7 @@ class TestVhdUtil(unittest.TestCase):
         context.add_executable(VHD_UTIL, test_function)
 
         # Act
-        vhdutil.snapshot(
+        self.vhdutil.snapshot(
             TEST_VHD_NAME,
             TEST_VHD_PATH,
             False,
@@ -347,7 +349,7 @@ class TestVhdUtil(unittest.TestCase):
         context.add_executable(VHD_UTIL, test_function)
 
         # Act/Assert
-        self.assertEqual(0, vhdutil.coalesce(TEST_VHD_PATH))
+        self.assertEqual(0, self.vhdutil.coalesce(TEST_VHD_PATH))
 
     @testlib.with_context
     def test_coalesce_with_sector_count(self, context):
@@ -361,12 +363,12 @@ class TestVhdUtil(unittest.TestCase):
         context.add_executable(VHD_UTIL, test_function)
 
         # Act/Assert
-        self.assertEqual(25, vhdutil.coalesce(TEST_VHD_PATH))
+        self.assertEqual(25 * vhdutil.VHD_SECTOR_SIZE, self.vhdutil.coalesce(TEST_VHD_PATH))
 
     @testlib.with_context
     def test_get_vhd_info_allocated_size(self, context):
         """
-        Test that vhdutil.getVHDInfo return the allocated size in byte
+        Test that vhdutil.getInfo return the allocated size in byte
         """
         # Arrange
         def test_function(args, inp):
@@ -374,7 +376,7 @@ class TestVhdUtil(unittest.TestCase):
 
         context.add_executable(VHD_UTIL, test_function)
         import FileSR
-        vhdinfo = vhdutil.getVHDInfo(TEST_VHD_PATH, FileSR.FileVDI.extractUuid)
+        vhdinfo = self.vhdutil.getInfo(TEST_VHD_PATH, FileSR.FileVDI.extractUuid)
 
         # Act/Assert
         self.assertEqual(18856*2*1024*1024 , vhdinfo.sizeAllocated)
@@ -394,7 +396,7 @@ class TestVhdUtil(unittest.TestCase):
         context.add_executable(VHD_UTIL, test_function)
 
         # Act
-        result = vhdutil.getAllocatedSize(TEST_VHD_NAME)
+        result = self.vhdutil.getAllocatedSize(TEST_VHD_NAME)
 
         # Assert
         self.assertEqual(18856*2*1024*1024, result)

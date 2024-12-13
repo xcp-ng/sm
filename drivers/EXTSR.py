@@ -31,7 +31,6 @@ import scsiutil
 import lock
 import os
 import xs_errors
-import vhdutil
 from constants import EXT_PREFIX
 
 CAPABILITIES = ["SR_PROBE", "SR_UPDATE", "SR_SUPPORTS_LOCAL_CACHING",
