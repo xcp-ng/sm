@@ -15,7 +15,7 @@
 # along with this program; if not, write to the Free Software Foundation, Inc.,
 # 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 #
-# LVMSR: VHD on LVM storage repository
+# LVMSR: VHD and QCOW2 on LVM storage repository
 #
 
 from sm_typing import Dict, List, override
@@ -68,8 +68,8 @@ CAPABILITIES = ["SR_PROBE", "SR_UPDATE", "SR_TRIM",
 CONFIGURATION = [['device', 'local device path (required) (e.g. /dev/sda3)']]
 
 DRIVER_INFO = {
-    'name': 'Local VHD on LVM',
-    'description': 'SR plugin which represents disks as VHD disks on ' + \
+    'name': 'Local VHD and QCOW2 on LVM',
+    'description': 'SR plugin which represents disks as VHD and QCOW2 disks on ' + \
             'Logical Volumes within a locally-attached Volume Group',
     'vendor': 'XenSource Inc',
     'copyright': '(C) 2008 XenSource Inc',
@@ -81,7 +81,8 @@ DRIVER_INFO = {
 
 CREATE_PARAM_TYPES = {
     "raw": VdiType.RAW,
-    "vhd": VdiType.VHD
+    "vhd": VdiType.VHD,
+    "qcow2": VdiType.QCOW2
 }
 
 OPS_EXCLUSIVE = [
