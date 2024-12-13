@@ -667,7 +667,7 @@ class Blktap(ClassDevice):
 
 class Tapdisk(object):
 
-    TYPES = ['aio', 'vhd']
+    TYPES = ['aio', 'vhd', 'qcow2']
 
     def __init__(self, pid, minor, _type, path, state):
         self.pid = pid
@@ -1129,6 +1129,7 @@ class VDI(object):
         return {
             'raw': 'aio',
             'vhd': 'vhd',
+            'qcow2': 'qcow2',
             'iso': 'aio',  # for ISO SR
             'aio': 'aio',  # for LVHD
             'file': 'aio',
@@ -1159,7 +1160,8 @@ class VDI(object):
                       'aio': 'tap',  # for LVM raw nodes
                       'iso': 'tap',  # for ISOSR
                       'file': 'tap',
-                      'vhd': 'tap'}
+                      'vhd': 'tap',
+                      'qcow2': 'tap'}
 
     def tap_wanted(self):
         # 1. Let the target vdi_type decide
@@ -1216,8 +1218,6 @@ class VDI(object):
 
         def get_vdi_type(self):
             _type = self.vdi.vdi_type
-            if not _type:
-                _type = self.vdi.sr.sr_vditype
             if not _type:
                 raise VDI.UnexpectedVDIType(_type, self.vdi)
             return _type
