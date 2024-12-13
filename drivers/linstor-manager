@@ -27,15 +27,15 @@ import XenAPI
 import XenAPIPlugin
 
 from json import JSONEncoder
+from cowutil import getCowUtil
+from linstorcowutil import LinstorCowUtil
 from linstorjournaler import LinstorJournaler
-from linstorvhdutil import LinstorVhdUtil, check_ex
 from linstorvolumemanager import get_controller_uri, get_local_volume_openers, LinstorVolumeManager
 import json
 import LinstorSR
 import lock
 import re
 import util
-import vhdutil
 
 BACKING_DISK_RE = re.compile('^/dev/([^/]+)/(?:[^/]+)$')
 LVM_PLUGIN = 'lvm.py'
@@ -281,6 +281,12 @@ def get_ip_addr_of_pif(session, pif_uuid):
         raise XenAPIPlugin.Failure('-1', ['PIF has no IP'])
     return ip_addr
 
+
+def extract_uuid(device_path):
+    return linstor.get_volume_uuid_from_device_path(
+        device_path.rstrip('\n')
+    )
+
 # ------------------------------------------------------------------------------
 
 
@@ -387,20 +393,21 @@ def destroy(session, args):
 
 def check(session, args):
     try:
+        cowutil = getCowUtil(args['vdiType'])
         device_path = args['devicePath']
         ignore_missing_footer = util.strtobool(
             args['ignoreMissingFooter']
         )
         fast = util.strtobool(args['fast'])
-        check_ex(device_path, ignore_missing_footer, fast)
-        return str(True)
+        return cowutil.check(device_path, ignore_missing_footer, fast)
     except Exception as e:
         util.SMlog('linstor-manager:check error: {}'.format(e))
         raise
 
 
-def get_vhd_info(session, args):
+def get_info(session, args):
     try:
+        cowutil = getCowUtil(args['vdiType'])
         device_path = args['devicePath']
         group_name = args['groupName']
         include_parent = util.strtobool(args['includeParent'])
@@ -411,25 +418,20 @@ def get_vhd_info(session, args):
             logger=util.SMlog
         )
 
-        def extract_uuid(device_path):
-            # TODO: Remove new line in the vhdutil module. Not here.
-            return linstor.get_volume_uuid_from_device_path(
-                device_path.rstrip('\n')
-            )
-
-        vhd_info = vhdutil.getVHDInfo(
+        image_info = cowutil.getInfo(
             device_path, extract_uuid, include_parent, False
         )
-        return json.dumps(vhd_info.__dict__)
+        return json.dumps(image_info.__dict__)
     except Exception as e:
-        util.SMlog('linstor-manager:get_vhd_info error: {}'.format(e))
+        util.SMlog('linstor-manager:get_info error: {}'.format(e))
         raise
 
 
 def has_parent(session, args):
     try:
+        cowutil = getCowUtil(args['vdiType'])
         device_path = args['devicePath']
-        return str(vhdutil.hasParent(device_path))
+        return str(cowutil.hasParent(device_path))
     except Exception as e:
         util.SMlog('linstor-manager:has_parent error: {}'.format(e))
         raise
@@ -437,6 +439,7 @@ def has_parent(session, args):
 
 def get_parent(session, args):
     try:
+        cowutil = getCowUtil(args['vdiType'])
         device_path = args['devicePath']
         group_name = args['groupName']
 
@@ -446,13 +449,7 @@ def get_parent(session, args):
             logger=util.SMlog
         )
 
-        def extract_uuid(device_path):
-            # TODO: Remove new line in the vhdutil module. Not here.
-            return linstor.get_volume_uuid_from_device_path(
-                device_path.rstrip('\n')
-            )
-
-        return vhdutil.getParent(device_path, extract_uuid)
+        return cowutil.getParent(device_path, extract_uuid)
     except Exception as e:
         util.SMlog('linstor-manager:get_parent error: {}'.format(e))
         raise
@@ -460,8 +457,9 @@ def get_parent(session, args):
 
 def get_size_virt(session, args):
     try:
+        cowutil = getCowUtil(args['vdiType'])
         device_path = args['devicePath']
-        return str(vhdutil.getSizeVirt(device_path))
+        return str(cowutil.getSizeVirt(device_path))
     except Exception as e:
         util.SMlog('linstor-manager:get_size_virt error: {}'.format(e))
         raise
@@ -469,8 +467,9 @@ def get_size_virt(session, args):
 
 def get_size_phys(session, args):
     try:
+        cowutil = getCowUtil(args['vdiType'])
         device_path = args['devicePath']
-        return str(vhdutil.getSizePhys(device_path))
+        return str(cowutil.getSizePhys(device_path))
     except Exception as e:
         util.SMlog('linstor-manager:get_size_phys error: {}'.format(e))
         raise
@@ -478,8 +477,9 @@ def get_size_phys(session, args):
 
 def get_allocated_size(session, args):
     try:
+        cowutil = getCowUtil(args['vdiType'])
         device_path = args['devicePath']
-        return str(vhdutil.getAllocatedSize(device_path))
+        return str(cowutil.getAllocatedSize(device_path))
     except Exception as e:
         util.SMlog('linstor-manager:get_allocated_size error: {}'.format(e))
         raise
@@ -496,8 +496,9 @@ def get_max_resize_size(session, args):
 
 def get_depth(session, args):
     try:
+        cowutil = getCowUtil(args['vdiType'])
         device_path = args['devicePath']
-        return str(vhdutil.getDepth(device_path))
+        return str(cowutil.getDepth(device_path))
     except Exception as e:
         util.SMlog('linstor-manager:get_depth error: {}'.format(e))
         raise
@@ -505,8 +506,9 @@ def get_depth(session, args):
 
 def get_key_hash(session, args):
     try:
+        cowutil = getCowUtil(args['vdiType'])
         device_path = args['devicePath']
-        return vhdutil.getKeyHash(device_path) or ''
+        return cowutil.getKeyHash(device_path) or ''
     except Exception as e:
         util.SMlog('linstor-manager:get_key_hash error: {}'.format(e))
         raise
@@ -514,8 +516,9 @@ def get_key_hash(session, args):
 
 def get_block_bitmap(session, args):
     try:
+        cowutil = getCowUtil(args['vdiType'])
         device_path = args['devicePath']
-        return base64.b64encode(vhdutil.getBlockBitmap(device_path)).decode('ascii')
+        return base64.b64encode(cowutil.getBlockBitmap(device_path)).decode('ascii')
     except Exception as e:
         util.SMlog('linstor-manager:get_block_bitmap error: {}'.format(e))
         raise
@@ -537,8 +540,8 @@ def set_size_virt(session, args):
     try:
         device_path = args['devicePath']
         size = int(args['size'])
-        jfile = args['jfile']
-        vhdutil.setSizeVirt(device_path, size, jfile)
+        jFile = args['jFile']
+        vhdutil.setSizeVirt(device_path, size, jFile)
         return ''
     except Exception as e:
         util.SMlog('linstor-manager:set_size_virt error: {}'.format(e))
@@ -558,9 +561,10 @@ def set_size_virt_fast(session, args):
 
 def set_parent(session, args):
     try:
+        cowutil = getCowUtil(args['vdiType'])
         device_path = args['devicePath']
         parent_path = args['parentPath']
-        vhdutil.setParent(device_path, parent_path, False)
+        cowutil.setParent(device_path, parent_path, False)
         return ''
     except Exception as e:
         util.SMlog('linstor-manager:set_parent error: {}'.format(e))
@@ -569,8 +573,9 @@ def set_parent(session, args):
 
 def coalesce(session, args):
     try:
+        cowutil = getCowUtil(args['vdiType'])
         device_path = args['devicePath']
-        return str(vhdutil.coalesce(device_path))
+        return str(cowutil.coalesce(device_path))
     except Exception as e:
         util.SMlog('linstor-manager:coalesce error: {}'.format(e))
         raise
@@ -578,8 +583,9 @@ def coalesce(session, args):
 
 def repair(session, args):
     try:
+        cowutil = getCowUtil(args['vdiType'])
         device_path = args['devicePath']
-        vhdutil.repair(device_path)
+        cowutil.repair(device_path)
         return ''
     except Exception as e:
         util.SMlog('linstor-manager:repair error: {}'.format(e))
@@ -588,6 +594,7 @@ def repair(session, args):
 
 def deflate(session, args):
     try:
+        cowutil = getCowUtil(args['vdiType'])
         device_path = args['devicePath']
         new_size = int(args['newSize'])
         old_size = int(args['oldSize'])
@@ -599,7 +606,7 @@ def deflate(session, args):
             group_name,
             logger=util.SMlog
         )
-        LinstorVhdUtil(session, linstor).deflate(device_path, new_size, old_size, zeroize)
+        LinstorCowUtil(session, linstor, cowutil).deflate(device_path, new_size, old_size, zeroize)
         return ''
     except Exception as e:
         util.SMlog('linstor-manager:deflate error: {}'.format(e))
@@ -1232,14 +1239,14 @@ if __name__ == '__main__':
         'detach': detach,
         'destroy': destroy,
 
-        # vhdutil wrappers called by linstorvhdutil.
-        # Note: When a VHD is open in RO mode (so for all vhdutil getters),
+        # cowutil wrappers called by LinstorCowUtil.
+        # Note: When a COW image is open in RO mode (so for all cowutil getters),
         # the LVM layer is used directly to bypass DRBD verifications.
         # In this case there can't be EROFS errors.
-        # Note 2: We assume linstorvhdutil executes remote calls on diskful
+        # Note 2: We assume LinstorCowUtil executes remote calls on diskful
         # DRBDs, otherwise we still have EROFS errors...
         'check': check,
-        'getVHDInfo': get_vhd_info,
+        'getInfo': get_info,
         'hasParent': has_parent,
         'getParent': get_parent,
         'getSizeVirt': get_size_virt,

@@ -33,7 +33,6 @@ import xmlrpc.client
 import xs_errors
 import lock
 import nfs
-import vhdutil
 import cleanup
 
 CAPABILITIES = ["SR_PROBE", "SR_UPDATE", "SR_CACHING",

@@ -6,10 +6,11 @@ import unittest.mock as mock
 
 import uuid
 
+import cowutil
+import lvmcowutil
 import LVMSR
-import lvhdutil
 import lvutil
-import vhdutil
+
 from vditype import VdiType
 
 import testlib
@@ -59,22 +60,24 @@ class TestLVMSR(unittest.TestCase, Stubs):
         return LVMSR.LVMSR(srcmd, sr_uuid)
 
     @mock.patch('lvutil.Fairlock', autospec=True)
-    @mock.patch('lvhdutil.getVDIInfo', autospec=True)
+    @mock.patch('lvmcowutil.LvmCowUtil.getVDIInfo')
     @mock.patch('LVMSR.lock.Lock', autospec=True)
     @mock.patch('SR.XenAPI')
     def test_loadvids(self, mock_xenapi, mock_lock, mock_getVDIInfo, mock_lvlock):
         """sr.allVDIs populated by _loadvdis"""
 
         vdi_uuid = 'some VDI UUID'
-        mock_getVDIInfo.return_value = {vdi_uuid: lvhdutil.VDIInfo(vdi_uuid)}
+        vdi_info = lvmcowutil.VDIInfo(vdi_uuid)
+        vdi_info.vdiType = VdiType.VHD
+        mock_getVDIInfo.return_value = {vdi_uuid: vdi_info}
         sr = self.create_LVMSR()
 
         sr._loadvdis()
 
         self.assertEqual([vdi_uuid], list(sr.allVDIs.keys()))
 
-    @mock.patch('lvhdutil.lvRefreshOnAllSlaves', autospec=True)
-    @mock.patch('lvhdutil.getVDIInfo', autospec=True)
+    @mock.patch('lvmcowutil.LvmCowUtil.refreshVolumeOnAllSlaves')
+    @mock.patch('lvmcowutil.LvmCowUtil.getVDIInfo')
     @mock.patch('journaler.Journaler.getAll', autospec=True)
     @mock.patch('LVMSR.lock.Lock', autospec=True)
     @mock.patch('SR.XenAPI')
@@ -84,24 +87,25 @@ class TestLVMSR(unittest.TestCase, Stubs):
             mock_lock,
             mock_getAll,
             mock_getVDIInfo,
-            mock_lvhdutil_lvRefreshOnAllSlaves):
-        """No LV refresh on slaves when Cleaning up local LVHD SR's journal"""
+            mock_lvmcowutil_refreshVolumeOnAllSlaves):
+        """No LV refresh on slaves when Cleaning up local COW image SR's journal"""
 
         self.stubout('journaler.Journaler.remove')
         self.stubout('util.zeroOut')
-        self.stubout('lvhdutil.deflate')
+        self.stubout('lvmcowutil.LvmCowUtil.deflate')
         self.stubout('util.SMlog', new_callable=SMLog)
         self.stubout('lvmcache.LVMCache')
 
         vdi_uuid = 'some VDI UUID'
-
+        vdi_info = lvmcowutil.VDIInfo(vdi_uuid)
+        vdi_info.vdiType = VdiType.VHD
         mock_getAll.return_value = {vdi_uuid: '0'}
-        mock_getVDIInfo.return_value = {vdi_uuid: lvhdutil.VDIInfo(vdi_uuid)}
+        mock_getVDIInfo.return_value = {vdi_uuid: vdi_info}
 
         sr = self.create_LVMSR()
 
         sr._undoAllInflateJournals()
-        self.assertEqual(0, mock_lvhdutil_lvRefreshOnAllSlaves.call_count)
+        self.assertEqual(0, mock_lvmcowutil_refreshVolumeOnAllSlaves.call_count)
 
     @mock.patch('LVMSR.cleanup', autospec=True)
     @mock.patch('LVMSR.IPCFlag', autospec=True)
@@ -257,19 +261,41 @@ class TestLVMVDI(unittest.TestCase, Stubs):
     def setUp(self) -> None:
         self.init_stubs()
 
-        lvhdutil_patcher = mock.patch('LVMSR.lvhdutil', autospec=True)
-        self.mock_lvhdutil = lvhdutil_patcher.start()
-        self.mock_lvhdutil.VG_LOCATION = lvhdutil.VG_LOCATION
-        self.mock_lvhdutil.VG_PREFIX = lvhdutil.VG_PREFIX
-        self.mock_lvhdutil.LV_PREFIX = lvhdutil.LV_PREFIX
-        vhdutil_patcher = mock.patch('LVMSR.vhdutil', autospec=True)
-        self.mock_vhdutil = vhdutil_patcher.start()
-        self.mock_vhdutil.MAX_CHAIN_SIZE = vhdutil.MAX_CHAIN_SIZE
+        getInfo_patcher = mock.patch('vhdutil.VhdUtil.getInfo')
+        self.mock_getInfo = getInfo_patcher.start()
+
+        getAllInfoFromVG_patcher = mock.patch('vhdutil.VhdUtil.getAllInfoFromVG', autospec=True)
+        self.mock_getAllInfoFromVG = getAllInfoFromVG_patcher.start()
+
+        getDepth_patcher = mock.patch('vhdutil.VhdUtil.getDepth')
+        self.mock_getDepth = getDepth_patcher.start()
+
+        setHidden_patcher = mock.patch('vhdutil.VhdUtil.setHidden', autospec=True)
+        self.mock_setHidden = setHidden_patcher.start()
+
+        snapshot_patcher = mock.patch('vhdutil.VhdUtil.snapshot')
+        self.mock_snapshot = snapshot_patcher.start()
+
+        getParent_patcher = mock.patch('vhdutil.VhdUtil.getParent')
+        self.getParent = getParent_patcher.start()
+
+        getSizePhys_patcher = mock.patch('vhdutil.VhdUtil.getSizePhys', autospec=True)
+        self.mock_getSizePhys = getSizePhys_patcher.start()
+
+        mock_getVDIInfo_patcher = mock.patch('LVMSR.LvmCowUtil.getVDIInfo')
+        self.mock_getVDIInfo = mock_getVDIInfo_patcher.start()
+
+        mock_getVolumeInfo_patcher = mock.patch('LVMSR.LvmCowUtil.getVolumeInfo')
+        self.mock_getVolumeInfo = mock_getVolumeInfo_patcher.start()
+
+        mock_deflate_patcher = mock.patch('LVMSR.LvmCowUtil.deflate', autospec=True)
+        self.mock_deflate = mock_deflate_patcher.start()
+
         lvutil_patcher = mock.patch('LVMSR.lvutil', autospec=True)
         self.mock_lvutil = lvutil_patcher.start()
         vdi_util_patcher = mock.patch('VDI.util', autospec=True)
         self.mock_vdi_util = vdi_util_patcher.start()
-        sr_util_patcher = mock.patch('LVMSR.util', autospec=True)
+        sr_util_patcher = mock.patch('LVMSR.util')
         self.mock_sr_util = sr_util_patcher.start()
         self.mock_sr_util.gen_uuid.side_effect = str(uuid.uuid4())
         xmlrpclib_patcher = mock.patch('VDI.xmlrpc.client', autospec=True)
@@ -300,8 +326,7 @@ class TestLVMVDI(unittest.TestCase, Stubs):
         return LVMSR.LVMSR(srcmd, "some SR UUID")
 
     def get_dummy_vdi(self, vdi_uuid):
-        self.mock_lvhdutil.getVDIInfo.return_value = {
-            vdi_uuid: lvhdutil.VDIInfo(vdi_uuid)}
+        self.mock_getVDIInfo.return_value = {vdi_uuid: lvmcowutil.VDIInfo(vdi_uuid)}
 
         mock_lv =  lvutil.LVInfo('test-lv')
         mock_lv.size = 10240
@@ -309,15 +334,14 @@ class TestLVMVDI(unittest.TestCase, Stubs):
         mock_lv.hidden = False
         mock_lv.vdiType = VdiType.VHD
 
-        self.mock_lvhdutil.getLVInfo.return_value = {
-            vdi_uuid: mock_lv}
+        self.mock_getVolumeInfo.return_value = {vdi_uuid: mock_lv}
 
         return mock_lv
 
     def get_dummy_vhd(self, vdi_uuid, hidden):
-        test_vhdInfo = vhdutil.VHDInfo(vdi_uuid)
-        test_vhdInfo.hidden = hidden
-        self.mock_vhdutil.getVHDInfo.return_value = test_vhdInfo
+        test_imageInfo = cowutil.CowImageInfo(vdi_uuid)
+        test_imageInfo.hidden = hidden
+        self.mock_getInfo.return_value = test_imageInfo
 
     @mock.patch('LVMSR.lock.Lock', autospec=True)
     @mock.patch('SR.XenAPI')
@@ -325,6 +349,7 @@ class TestLVMVDI(unittest.TestCase, Stubs):
         """
         Successfully create clone
         """
+        import sys
 
         # Arrange
         xapi_session = mock_xenapi.xapi_local.return_value
@@ -338,10 +363,29 @@ class TestLVMVDI(unittest.TestCase, Stubs):
         sr.legacyMode = False
         sr.srcmd.params = {'vdi_ref': 'test ref'}
 
-        vdi = sr.vdi('some VDI UUID')
-        self.mock_sr_util.pathexists.return_value = True
+        self.mock_sr_util.pathexists.side_effect = [
+            False,
+            False,
+            False, # AIO
+            True,  # VHD
+            False,
+            True,
+            True,
+            False,
+            False, # AIO
+            True,  # VHD
+            False,
+            True,
+            False,
+            True,
+            False,
+            True,
+            False
+        ]
 
-        self.mock_vhdutil.getDepth.return_value = 1
+        vdi = sr.vdi('some VDI UUID')
+
+        self.mock_getDepth.return_value = 1
 
         # Act
         clone = vdi.clone(sr.uuid, 'some VDI UUID')
@@ -373,12 +417,32 @@ class TestLVMVDI(unittest.TestCase, Stubs):
             }
         sr.cmd = "vdi_snapshot"
 
+        self.mock_sr_util.pathexists.side_effect = [
+            False,
+            False,
+            False, # AIO
+            True,  # VHD
+            False,
+            True,
+            True,
+            False,
+            False, # AIO
+            True,  # VHD
+            False,
+            True,
+            False,
+            True,
+            False,
+            True,
+            False
+        ]
+
         vdi = sr.vdi('some VDI UUID')
         vdi.vdi_type = VdiType.VHD
         self.mock_sr_util.pathexists.return_value = True
         self.mock_sr_util.get_hosts_attached_on.return_value = ["hostref2"]
         self.mock_sr_util.get_this_host_ref.return_value = ["hostref1"]
-        self.mock_vhdutil.getDepth.return_value = 1
+        self.mock_getDepth.return_value = 1
 
         # Act
         snap = vdi.snapshot(sr.uuid, "Dummy UUID")
@@ -410,14 +474,33 @@ class TestLVMVDI(unittest.TestCase, Stubs):
             }
         sr.cmd = "vdi_snapshot"
 
+        self.mock_sr_util.pathexists.side_effect = [
+            False,
+            False,
+            False, # AIO
+            True,  # VHD
+            False,
+            True,
+            True,
+            False,
+            False, # AIO
+            True,  # VHD
+            False,
+            True,
+            False,
+            True,
+            False,
+            True,
+            False
+        ]
+
         vdi = sr.vdi('some VDI UUID')
         vdi.vdi_type = VdiType.VHD
-        self.mock_sr_util.pathexists.return_value = True
         self.mock_sr_util.get_hosts_attached_on.return_value = ["hostref2"]
         self.mock_sr_util.get_this_host_ref.return_value = ["hostref1"]
         self.mock_vdi_util.sr_get_capability.return_value = {
             'VDI_CONFIG_CBT'}
-        self.mock_vhdutil.getDepth.return_value = 1
+        self.mock_getDepth.return_value = 1
 
         # Act
         with mock.patch('lock.Lock'):
