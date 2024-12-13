@@ -33,10 +33,12 @@ IMAGE_FORMAT_COW_FLAG: Final = 1 << 8
 class ImageFormat(IntEnum):
     RAW   = 1
     VHD   = 2 | IMAGE_FORMAT_COW_FLAG
+    QCOW2 = 3 | IMAGE_FORMAT_COW_FLAG
 
 IMAGE_FORMAT_TO_STR: Final = {
     ImageFormat.RAW:   "raw",
-    ImageFormat.VHD:   "vhd"
+    ImageFormat.VHD:   "vhd",
+    ImageFormat.QCOW2: "qcow2"
 }
 
 STR_TO_IMAGE_FORMAT: Final = {v: k for k, v in IMAGE_FORMAT_TO_STR.items()}
@@ -303,6 +305,8 @@ def getImageFormatFromVdiType(vdi_type: str) -> ImageFormat:
         return ImageFormat.RAW
     if vdi_type == VdiType.VHD:
         return ImageFormat.VHD
+    if vdi_type == VdiType.QCOW2:
+        return ImageFormat.QCOW2
 
     assert False, f"Unsupported vdi type: {vdi_type}"
 
@@ -311,6 +315,8 @@ def getVdiTypeFromImageFormat(image_format: ImageFormat) -> str:
         return VdiType.RAW
     if image_format == ImageFormat.VHD:
         return VdiType.VHD
+    if image_format == ImageFormat.QCOW2:
+        return VdiType.QCOW2
 
     assert False, f"Unsupported image format: {IMAGE_FORMAT_TO_STR[image_format]}"
 

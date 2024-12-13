@@ -48,12 +48,12 @@ CAPABILITIES = ["SR_PROBE", "SR_UPDATE", \
 
 CONFIGURATION = [
     ['location', 'local directory path (required)'],
-    ['preferred-image-formats', 'list of preferred image formats to use (default: VHD)']
+    ['preferred-image-formats', 'list of preferred image formats to use (default: VHD,QCOW2)']
 ]
 
 DRIVER_INFO = {
-    'name': 'Local Path VHD',
-    'description': 'SR plugin which represents disks as VHD files stored on a local path',
+    'name': 'Local Path VHD and QCOW2',
+    'description': 'SR plugin which represents disks as VHD and QCOW2 files stored on a local path',
     'vendor': 'Citrix Systems Inc',
     'copyright': '(C) 2008 Citrix Systems Inc',
     'driver_version': '1.0',
@@ -102,7 +102,7 @@ class FileSR(SR.SR):
     def load(self, sr_uuid) -> None:
         self.ops_exclusive = OPS_EXCLUSIVE
         self.lock = lock.Lock(lock.LOCK_TYPE_SR, self.uuid)
-        self.sr_vditype = VdiType.VHD
+        self.sr_vditype = SR.DEFAULT_TAP
         if 'location' not in self.dconf or  not self.dconf['location']:
             raise xs_errors.XenError('ConfigLocationMissing')
         self.remotepath = self.dconf['location']
@@ -439,9 +439,11 @@ class FileSR(SR.SR):
 class FileVDI(VDI.VDI):
     PARAM_RAW = "raw"
     PARAM_VHD = "vhd"
+    PARAM_QCOW2 = "qcow2"
     VDI_TYPE = {
             PARAM_RAW: VdiType.RAW,
-            PARAM_VHD: VdiType.VHD
+            PARAM_VHD: VdiType.VHD,
+            PARAM_QCOW2: VdiType.QCOW2
     }
 
     def _find_path_with_retries(self, vdi_uuid, maxretry=5, period=2.0):
@@ -449,6 +451,8 @@ class FileVDI(VDI.VDI):
                                 (vdi_uuid, self.PARAM_RAW))
         vhd_path = os.path.join(self.sr.path, "%s.%s" % \
                                 (vdi_uuid, self.PARAM_VHD))
+        qcow2_path = os.path.join(self.sr.path, "%s.%s" % \
+                                (vdi_uuid, self.PARAM_QCOW2))
         cbt_path = os.path.join(self.sr.path, "%s.%s" %
                                 (vdi_uuid, CBTLOG_TAG))
         found = False
@@ -458,6 +462,10 @@ class FileVDI(VDI.VDI):
             if util.ioretry(lambda: util.pathexists(vhd_path)):
                 self.vdi_type = VdiType.VHD
                 self.path = vhd_path
+                found = True
+            elif util.ioretry(lambda: util.pathexists(qcow2_path)):
+                self.vdi_type = VdiType.QCOW2
+                self.path = qcow2_path
                 found = True
             elif util.ioretry(lambda: util.pathexists(raw_path)):
                 self.vdi_type = VdiType.RAW

@@ -32,13 +32,13 @@ from cowutil import ImageFormat, getCowUtilFromImageFormat, getVdiTypeFromImageF
 from vditype import VdiType
 
 MOUNT_BASE = '/var/run/sr-mount'
-DEFAULT_TAP = "vhd"
+DEFAULT_TAP = "vhd,qcow2"
 MASTER_LVM_CONF = '/etc/lvm/master'
 
 # LUN per VDI key for XenCenter
 LUNPERVDI = "LUNperVDI"
 
-DEFAULT_IMAGE_FORMATS = [ImageFormat.VHD]
+DEFAULT_IMAGE_FORMATS = [ImageFormat.VHD, ImageFormat.QCOW2]
 
 
 

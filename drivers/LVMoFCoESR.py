@@ -42,7 +42,7 @@ CONFIGURATION = [['SCSIid', 'The scsi_id of the destination LUN'],
 
 DRIVER_INFO = {
     'name': 'LVM over FCoE',
-    'description': 'SR plugin which represents disks as VHDs on Logical \
+    'description': 'SR plugin which represents disks as VHDs and QCOW2s on Logical \
     Volumes within a Volume Group created on a FCoE LUN',
     'vendor': 'Citrix Systems Inc',
     'copyright': '(C) 2015 Citrix Systems Inc',
