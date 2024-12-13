@@ -9,10 +9,10 @@ import uuid
 from uuid import uuid4
 
 import cleanup
+import cowutil
 import lock
 
 import util
-import vhdutil
 
 import ipc
 
@@ -1484,7 +1484,7 @@ class TestSR(unittest.TestCase):
 
     @mock.patch('cleanup.os.unlink', autospec=True)
     @mock.patch('cleanup.util', autospec=True)
-    @mock.patch('cleanup.vhdutil', autospec=True)
+    @mock.patch('vhdutil.VhdUtil')
     @mock.patch('cleanup.journaler.Journaler', autospec=True)
     @mock.patch('cleanup.Util.runAbortable')
     def test_coalesce_success(
@@ -1496,6 +1496,7 @@ class TestSR(unittest.TestCase):
         self.xapi_mock.getConfigVDI.return_value = {}
 
         mock_abortable.side_effect = self.runAbortable
+        mock_vhdutil.return_value.check.return_value = cowutil.CowUtil.CheckResult.Success
 
         sr_uuid = uuid4()
         sr = create_cleanup_sr(self.xapi_mock, uuid=str(sr_uuid))
@@ -1533,7 +1534,7 @@ class TestSR(unittest.TestCase):
 
     @mock.patch('cleanup.os.unlink', autospec=True)
     @mock.patch('cleanup.util', autospec=True)
-    @mock.patch('cleanup.vhdutil', autospec=True)
+    @mock.patch('vhdutil.VhdUtil')
     @mock.patch('cleanup.journaler.Journaler', autospec=True)
     @mock.patch('cleanup.Util.runAbortable')
     def test_coalesce_error(
@@ -1543,6 +1544,7 @@ class TestSR(unittest.TestCase):
         Handle errors in coalesce
         """
         mock_util.SMException = util.SMException
+        mock_vhdutil.return_value.check.return_value = cowutil.CowUtil.CheckResult.Success
 
         self.xapi_mock.getConfigVDI.return_value = {}
 
@@ -1562,16 +1564,16 @@ class TestSR(unittest.TestCase):
         vdis = self.add_vdis_for_coalesce(sr)
         mock_journaler.get.return_value = None
 
-        mock_vhdutil.getParent.return_value = vdis['parent'].path
+        mock_vhdutil.return_value.getParent.return_value = vdis['parent'].path
 
         sr.coalesce(vdis['vdi'], False)
 
         self.assertIn(vdis['vdi'], sr._failedCoalesceTargets)
-        mock_vhdutil.repair.assert_called_with(vdis['parent'].path)
+        mock_vhdutil.return_value.repair.assert_called_with(vdis['parent'].path)
 
     @mock.patch('cleanup.os.unlink', autospec=True)
     @mock.patch('cleanup.util', autospec=True)
-    @mock.patch('cleanup.vhdutil', autospec=True)
+    @mock.patch('vhdutil.VhdUtil')
     @mock.patch('cleanup.journaler.Journaler', autospec=True)
     @mock.patch('cleanup.Util.runAbortable')
     def test_coalesce_error_raw_parent(
@@ -1581,6 +1583,7 @@ class TestSR(unittest.TestCase):
         Handle errors in coalesce with raw parent
         """
         mock_util.SMException = util.SMException
+        mock_vhdutil.return_value.check.return_value = cowutil.CowUtil.CheckResult.Success
 
         self.xapi_mock.getConfigVDI.return_value = {}
 
@@ -1601,12 +1604,12 @@ class TestSR(unittest.TestCase):
         vdis['parent'].vdi_type = VdiType.RAW
         mock_journaler.get.return_value = None
 
-        mock_vhdutil.getParent.return_value = vdis['parent'].path
+        mock_vhdutil.return_value.getParent.return_value = vdis['parent'].path
 
         sr.coalesce(vdis['vdi'], False)
 
         self.assertIn(vdis['vdi'], sr._failedCoalesceTargets)
-        self.assertEqual(0, mock_vhdutil.repair.call_count)
+        self.assertEqual(0, mock_vhdutil.return_value.repair.call_count)
 
     def test_tag_children_for_relink_activation(self):
         """

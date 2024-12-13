@@ -114,6 +114,9 @@ LVM_RETRY_ERRORS = [
     "Incorrect checksum in metadata area header"
 ]
 
+def calcSizeLV(size: int) -> int:
+    return util.roundup(LVM_SIZE_INCREMENT, size)
+
 
 def lvmretry(func):
     def check_exception(exception):
