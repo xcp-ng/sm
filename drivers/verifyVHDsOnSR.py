@@ -24,13 +24,13 @@ import os
 import sys
 import util
 import lvutil
-import lvhdutil
-import vhdutil
 
 import VDI
 
 from constants import NS_PREFIX_LVM, VG_LOCATION, VG_PREFIX
+from cowutil import getCowUtil
 from lock import Lock
+from lvmcowutil import LV_PREFIX, LvmCowUtil
 from refcounter import RefCounter
 from vditype import VdiType
 
@@ -55,8 +55,11 @@ def activateVdiChainAndCheck(vhd_info, vg_name):
         return activated_list
 
     activated_list.append([vhd_info.uuid, vhd_path])
+
+    cowutil = getCowUtil(VdiType.VHD)
+
     # Do a vhdutil check with -i option, to ignore error in primary
-    if not vhdutil.check(vhd_path, True):
+    if cowutil.check(vhd_path, True) != cowutil.CheckResult.Success:
         util.SMlog("VHD check for %s failed, continuing with the rest!" % vg_name)
         VHDs_failed += 1
     else:
@@ -113,10 +116,11 @@ def checkAllVHD(sr_uuid):
     VHDs_total = 0
 
     vg_name = VG_PREFIX + sr_uuid
-    pattern = "%s*" % lvhdutil.LV_PREFIX[VdiType.VHD]
+    vdi_type = VdiType.VHD
+    pattern = "%s*" % LV_PREFIX[vdi_type]
 
     # Do a vhd scan and gets all the VHDs
-    vhds = vhdutil.getAllVHDs(pattern, lvhdutil.extractUuid, vg_name)
+    vhds = getCowUtil(vdi_type).getAllInfoFromVG(pattern, LvmCowUtil.extractUuid, vg_name)
     VHDs_total = len(vhds)
 
     # Build VHD chain, that way it will be easier to activate all the VHDs
