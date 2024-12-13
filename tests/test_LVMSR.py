@@ -423,11 +423,14 @@ class TestLVMVDI(unittest.TestCase, Stubs):
         self.mock_sr_util.pathexists.side_effect = [
             False, # SR UUID/LV-some VDI UUID
             False, # SR UUID/VHD-some VDI UUID
+            False, # SR_UUID/QCOW2-some VDI UUID
             True,  # SR UUID/test-lv
             False, # SR UUID/LV-some VDI UUID
             True,  # SR UUID/VHD-some VDI UUID
+            False, # SR UUID/QCOW2-SOME VDI UUID
             False, # SR UUID/LV-x
             True,  # SR UUID/VHD-x
+            False, # SR UUID/QCOW2-x
         ]
 
         vdi = sr.vdi('some VDI UUID')
@@ -467,11 +470,14 @@ class TestLVMVDI(unittest.TestCase, Stubs):
         self.mock_sr_util.pathexists.side_effect = [
             False, # SR UUID/LV-some VDI UUID
             False, # SR UUID/VHD-some VDI UUID
+            False, # SR_UUID/QCOW2-some VDI UUID
             True,  # SR UUID/test-lv
             False, # SR UUID/LV-some VDI UUID
             True,  # SR UUID/VHD-some VDI UUID
+            False, # SR UUID/QCOW2-SOME VDI UUID
             False, # SR UUID/LV-x
             True,  # SR UUID/VHD-x
+            False, # SR UUID/QCOW2-x
         ]
 
         vdi = sr.vdi('some VDI UUID')
@@ -513,11 +519,14 @@ class TestLVMVDI(unittest.TestCase, Stubs):
         self.mock_sr_util.pathexists.side_effect = [
             False, # SR UUID/LV-some VDI UUID
             False, # SR UUID/VHD-some VDI UUID
+            False, # SR_UUID/QCOW2-some VDI UUID
             True,  # SR UUID/test-lv
             False, # SR UUID/LV-some VDI UUID
             True,  # SR UUID/VHD-some VDI UUID
+            False, # SR UUID/QCOW2-SOME VDI UUID
             False, # SR UUID/LV-x
             True,  # SR UUID/VHD-x
+            False, # SR UUID/QCOW2-x
         ]
 
         vdi = sr.vdi('some VDI UUID')
@@ -555,11 +564,14 @@ class TestLVMVDI(unittest.TestCase, Stubs):
         self.mock_sr_util.pathexists.side_effect = [
             False, # SR UUID/LV-some VDI UUID
             False, # SR UUID/VHD-some VDI UUID
+            False, # SR_UUID/QCOW2-some VDI UUID
             True,  # SR UUID/test-lv
             False, # SR UUID/LV-some VDI UUID
             True,  # SR UUID/VHD-some VDI UUID
+            False, # SR UUID/QCOW2-SOME VDI UUID
             False, # SR UUID/LV-x
             True,  # SR UUID/VHD-x
+            False, # SR UUID/QCOW2-x
         ]
 
         vdi = sr.vdi(vdi_uuid)
@@ -608,11 +620,14 @@ class TestLVMVDI(unittest.TestCase, Stubs):
         self.mock_sr_util.pathexists.side_effect = [
             False, # SR UUID/LV-some VDI UUID
             False, # SR UUID/VHD-some VDI UUID
+            False, # SR_UUID/QCOW2-some VDI UUID
             True,  # SR UUID/test-lv
             False, # SR UUID/LV-some VDI UUID
             True,  # SR UUID/VHD-some VDI UUID
+            False, # SR UUID/QCOW2-SOME VDI UUID
             False, # SR UUID/LV-x
             True,  # SR UUID/VHD-x
+            False, # SR UUID/QCOW2-x
         ]
 
         vdi = sr.vdi('some VDI UUID')
