@@ -182,7 +182,7 @@ class TestVDI(unittest.TestCase):
             return sr
         self.mock_sr.from_uuid.side_effect = from_uuid
 
-        vhdutil_patcher = mock.patch("blktap2.vhdutil", autospec=True)
+        vhdutil_patcher = mock.patch('vhdutil.VhdUtil', autospec=True)
         self.mock_vhdutil = vhdutil_patcher.start()
 
         mkdir_patcher = mock.patch('blktap2.os.mkdir', autospec=True)
@@ -495,7 +495,7 @@ class TestVDI(unittest.TestCase):
         mock_vdi.path = "prt_path"
 
         # Return some sizes (all the same here)
-        self.mock_vhdutil.getSizeVirt.return_value = 20 * 1024 * 1024
+        self.mock_vhdutil.return_value.getSizeVirt.return_value = 20 * 1024 * 1024
 
         prt_tapdisk = blktap2.Tapdisk(
             1457, 3, 'vhd', 'dummy', 1)
@@ -529,7 +529,7 @@ class TestVDI(unittest.TestCase):
         mock_vdi.path = "prt_path"
 
         # Return some sizes (all the same here)
-        self.mock_vhdutil.getSizeVirt.return_value = 20 * 1024 * 1024
+        self.mock_vhdutil.return_value.getSizeVirt.return_value = 20 * 1024 * 1024
 
         # No existing tapdisk paths
         mock_find_by_path.return_value = {}
