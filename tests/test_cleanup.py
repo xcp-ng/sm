@@ -1565,8 +1565,6 @@ class TestSR(unittest.TestCase):
         vdis = self.add_vdis_for_coalesce(sr)
         mock_journaler.get.return_value = None
 
-        mock_vhdutil.FILE_EXTN_VHD = vhdutil.FILE_EXTN_VHD
-        mock_vhdutil.FILE_EXTN_RAW = vhdutil.FILE_EXTN_RAW
         mock_vhdutil.getParent.return_value = vdis['parent'].path
 
         sr.coalesce(vdis['vdi'], False)
@@ -1606,8 +1604,6 @@ class TestSR(unittest.TestCase):
         vdis['parent'].raw = True
         mock_journaler.get.return_value = None
 
-        mock_vhdutil.FILE_EXTN_VHD = vhdutil.FILE_EXTN_VHD
-        mock_vhdutil.FILE_EXTN_RAW = vhdutil.FILE_EXTN_RAW
         mock_vhdutil.getParent.return_value = vdis['parent'].path
 
         sr.coalesce(vdis['vdi'], False)
