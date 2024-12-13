@@ -5,10 +5,9 @@ import unittest
 import unittest.mock as mock
 import uuid
 
-import lvhdutil
 import lvmcache
+import lvmcowutil
 import util
-import vhdutil
 
 import on_slave
 
@@ -208,7 +207,7 @@ class Test_on_slave_multi(unittest.TestCase):
         child_uuid = str(uuid.uuid4())
         child_fileName = "child-vdi.vhd"
         parent_fileName = "parent-vdi.vhd"
-        tmpName = lvhdutil.LV_PREFIX[VdiType.VHD] + \
+        tmpName = lvmcowutil.LV_PREFIX[VdiType.VHD] + \
                 self.TMP_RENAME_PREFIX + child_uuid
 
         args = {"vgName": vgName,

@@ -93,7 +93,7 @@ generated-members=REQUEST,acl_users,aq_parent,linstor.*
 ignored-modules=bitarray
 
 # List of decorators that change the signature of a decorated function.
-signature-mutators=linstorvhdutil.linstorhostcall
+signature-mutators=linstorcowutil.linstorhostcall
 
 [SIMILARITIES]
 

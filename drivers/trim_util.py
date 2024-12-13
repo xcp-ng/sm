@@ -21,8 +21,6 @@ import os
 import time
 import util
 import lock
-import lvhdutil
-import vhdutil
 import lvutil
 
 from constants import VG_LOCATION, VG_PREFIX
