@@ -16,7 +16,7 @@
 # 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 
 """
-Helper functions for LVMSR. This module knows about RAW and VHD VDI's that live in LV's.
+Helper functions for LVMSR. This module knows about RAW, VHD and QCOW2 VDI's that live in LV's.
 """
 
 from sm_typing import Dict, Final, List, Optional, Tuple, cast
@@ -43,7 +43,8 @@ LOCK_RETRY_ATTEMPTS: Final = 20
 
 LV_PREFIX: Final = {
     VdiType.RAW: "LV-",
-    VdiType.VHD: "VHD-"
+    VdiType.VHD: "VHD-",
+    VdiType.QCOW2: "QCOW2-"
 }
 
 LV_PREFIX_TO_VDI_TYPE: Final = {v: k for k, v in LV_PREFIX.items()}
@@ -269,7 +270,7 @@ class LvmCowUtil(object):
     @classmethod
     def getVDIInfo(cls, lvmCache: LVMCache) -> Dict[str, VDIInfo]:
         """
-        Load VDI info (both LV and if the VDI is not raw, VHD info).
+        Load VDI info (both LV and if the VDI is not raw, VHD/QCOW2 info).
         """
         vdis: Dict[str, VDIInfo] = {}
         lvs = cls.getVolumeInfo(lvmCache)

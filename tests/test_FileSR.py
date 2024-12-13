@@ -99,8 +99,11 @@ class TestFileVDI(unittest.TestCase):
         sr.path = "sr_path"
         vdi = createFakeFileVDI(sr, None)
         vdi.sr = sr
-        mock_os_stat.side_effect = [OSError(errno.ENOENT),
-                                     os.stat_result((stat.S_IFREG, 0, 0, 0, 0, 0, 1024, 0, 0, 0))]
+        mock_os_stat.side_effect = [
+            OSError(errno.ENOENT),
+            OSError(errno.ENOENT),
+            os.stat_result((stat.S_IFREG, 0, 0, 0, 0, 0, 1024, 0, 0, 0))
+        ]
 
         found = vdi._find_path_with_retries(vdi_uuid)
 
@@ -117,10 +120,13 @@ class TestFileVDI(unittest.TestCase):
         sr.path = "sr_path"
         vdi = createFakeFileVDI(sr, None)
         vdi.sr = sr
-        mock_os_stat.side_effect = [OSError(errno.ENOENT),
-                                     OSError(errno.ENOENT),
-                                     OSError(errno.ENOENT),
-                                     os.stat_result((stat.S_IFREG, 0, 0, 0, 0, 0, 1024, 0, 0, 0))]
+        mock_os_stat.side_effect = [
+            OSError(errno.ENOENT),
+            OSError(errno.ENOENT),
+            OSError(errno.ENOENT),
+            OSError(errno.ENOENT),
+            os.stat_result((stat.S_IFREG, 0, 0, 0, 0, 0, 1024, 0, 0, 0))
+        ]
 
         found = vdi._find_path_with_retries(vdi_uuid)
 
