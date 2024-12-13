@@ -34,11 +34,12 @@ SM_LIBS += util
 SM_LIBS += verifyVHDsOnSR
 SM_LIBS += scsiutil
 SM_LIBS += scsi_host_rescan
+SM_LIBS += cowutil
 SM_LIBS += vhdutil
+SM_LIBS += linstorcowutil
 SM_LIBS += linstorjournaler
-SM_LIBS += linstorvhdutil
 SM_LIBS += linstorvolumemanager
-SM_LIBS += lvhdutil
+SM_LIBS += lvmcowutil
 SM_LIBS += cifutils
 SM_LIBS += xs_errors
 SM_LIBS += nfs
@@ -203,7 +204,7 @@ install: build
 	  ln -sf $$i"SR.py" $$i"SR"; \
 	done
 	rm $(SM_STAGING)$(SM_DEST)/SHMSR
-	cd $(SM_STAGING)$(SM_DEST) && rm -f LVMSR && ln -sf LVMSR.py LVHDSR
+	cd $(SM_STAGING)$(SM_DEST) && rm -f LVMSR && ln -sf LVMSR.py LVMSR
 	cd $(SM_STAGING)$(SM_DEST) && rm -f RawISCSISR && ln -sf RawISCSISR.py ISCSISR
 	cd $(SM_STAGING)$(SM_DEST) && rm -f LVMoISCSISR && ln -sf LVMoISCSISR.py LVMoISCSISR
 	cd $(SM_STAGING)$(SM_DEST) && rm -f LVMoHBASR && ln -sf LVMoHBASR.py LVMoHBASR

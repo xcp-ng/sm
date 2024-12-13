@@ -38,7 +38,6 @@ import VDI
 import cleanup
 import lock
 import util
-import vhdutil
 import xs_errors
 
 CAPABILITIES = ["SR_PROBE", "SR_UPDATE",

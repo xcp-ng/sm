@@ -29,7 +29,6 @@ import os
 import xmlrpc.client
 import xs_errors
 import lock
-import vhdutil
 import cleanup
 import cifutils
 

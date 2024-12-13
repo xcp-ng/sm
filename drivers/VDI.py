@@ -23,7 +23,6 @@ import SR
 import xmlrpc.client
 import xs_errors
 import util
-import vhdutil
 import cbtutil
 import os
 import base64
@@ -622,7 +621,7 @@ class VDI(object):
     def data_destroy(self, sr_uuid, vdi_uuid):
         """Delete the data associated with a CBT enabled snapshot
 
-        Can only be called for a snapshot VDI on a VHD chain that has
+        Can only be called for a snapshot VDI on a COW chain that has
         had CBT enabled on it at some point. The latter is enforced
         by upper layers
         """

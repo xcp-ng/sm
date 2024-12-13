@@ -18,7 +18,6 @@
 
 import time
 import util
-import lvhdutil
 
 from constants import NS_PREFIX_LVM
 
