@@ -681,7 +681,7 @@ class TestSR(unittest.TestCase):
 
     @mock.patch('cleanup.VDI.canLiveCoalesce', autospec=True,
                 return_value=False)
-    @mock.patch('cleanup.VDI.getSizeVHD', autospec=True)
+    @mock.patch('cleanup.VDI.getSizePhys', autospec=True)
     @mock.patch('cleanup.SR._snapshotCoalesce', autospec=True,
                 return_value=True)
     @mock.patch('cleanup.Util.log')
@@ -707,7 +707,7 @@ class TestSR(unittest.TestCase):
                       str(exc.exception))
 
     @mock.patch('cleanup.VDI.canLiveCoalesce', autospec=True)
-    @mock.patch('cleanup.VDI.getSizeVHD', autospec=True)
+    @mock.patch('cleanup.VDI.getSizePhys', autospec=True)
     @mock.patch('cleanup.SR._snapshotCoalesce', autospec=True,
                 return_value=True)
     @mock.patch('cleanup.SR._liveLeafCoalesce', autospec=True,
@@ -1830,13 +1830,13 @@ class TestSR(unittest.TestCase):
         mock_parent.vdi_type = VdiType.VHD
         mock_parent.parent = None
         mock_parent.raw = False
-        mock_parent.getSizeVHD.return_value = 10 * MEGA
+        mock_parent.getSizePhys.return_value = 10 * MEGA
 
         vdi_uuid = str(uuid.uuid4())
         mock_vdi = mock.MagicMock()
         mock_vdi.uuid = vdi_uuid
         mock_vdi.vdi_type = VdiType.VHD
-        mock_vdi.getSizeVHD.return_value = 10 * MEGA
+        mock_vdi.getSizePhys.return_value = 10 * MEGA
         mock_vdi.parent = mock_parent
 
         sr._doCoalesceLeaf(mock_vdi)
@@ -1852,13 +1852,13 @@ class TestSR(unittest.TestCase):
         mock_parent.vdi_type = VdiType.VHD
         mock_parent.parent = mock.MagicMock()
         mock_parent.raw = False
-        mock_parent.getSizeVHD.return_value = 10 * MEGA
+        mock_parent.getSizePhys.return_value = 10 * MEGA
 
         vdi_uuid = str(uuid.uuid4())
         mock_vdi = mock.MagicMock()
         mock_vdi.uuid = vdi_uuid
         mock_vdi.vdi_type = VdiType.VHD
-        mock_vdi.getSizeVHD.return_value = 10 * MEGA
+        mock_vdi.getSizePhys.return_value = 10 * MEGA
         mock_vdi.parent = mock_parent
 
         sr._doCoalesceLeaf(mock_vdi)
