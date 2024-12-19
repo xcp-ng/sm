@@ -505,7 +505,7 @@ class VDI(object):
     DEVICE_MAJOR = 202
 
     # config keys & values
-    DB_VHD_PARENT = "vhd-parent"
+    DB_VDI_PARENT = "vhd-parent"
     DB_VDI_TYPE = "vdi_type"
     DB_VHD_BLOCKS = "vhd-blocks"
     DB_VDI_PAUSED = "paused"
@@ -526,7 +526,7 @@ class VDI(object):
     DB_ALLOW_CACHING = "allow_caching"
 
     CONFIG_TYPE = {
-            DB_VHD_PARENT: XAPI.CONFIG_SM,
+            DB_VDI_PARENT: XAPI.CONFIG_SM,
             DB_VDI_TYPE: XAPI.CONFIG_SM,
             DB_VHD_BLOCKS: XAPI.CONFIG_SM,
             DB_VDI_PAUSED: XAPI.CONFIG_SM,
@@ -1048,7 +1048,7 @@ class VDI(object):
         self.parentUuid = parent.uuid
         parent.children.append(self)
         try:
-            self.setConfig(self.DB_VHD_PARENT, self.parentUuid)
+            self.setConfig(self.DB_VDI_PARENT, self.parentUuid)
             Util.log("Updated the vhd-parent field for child %s with %s" % \
                      (self.uuid, self.parentUuid))
         except:
@@ -1444,7 +1444,7 @@ class LVHDVDI(VDI):
         self.parentUuid = parent.uuid
         parent.children.append(self)
         try:
-            self.setConfig(self.DB_VHD_PARENT, self.parentUuid)
+            self.setConfig(self.DB_VDI_PARENT, self.parentUuid)
             Util.log("Updated the vhd-parent field for child %s with %s" % \
                      (self.uuid, self.parentUuid))
         except:
@@ -1711,7 +1711,7 @@ class LinstorVDI(VDI):
         self.parentUuid = parent.uuid
         parent.children.append(self)
         try:
-            self.setConfig(self.DB_VHD_PARENT, self.parentUuid)
+            self.setConfig(self.DB_VDI_PARENT, self.parentUuid)
             Util.log("Updated the vhd-parent field for child %s with %s" % \
                      (self.uuid, self.parentUuid))
         except:
@@ -2735,7 +2735,7 @@ class SR(object):
         vdi.parent = None
 
         if parent.parent is None:
-            parent.delConfig(VDI.DB_VHD_PARENT)
+            parent.delConfig(VDI.DB_VDI_PARENT)
 
         extraSpace = self._calcExtraSpaceNeeded(vdi, parent)
         freeSpace = self.getFreeSpace()
@@ -3026,7 +3026,7 @@ class FileSR(SR):
             Util.log("Renaming child back to %s" % childUuid)
             child.rename(childUuid)
             Util.log("Updating the VDI record")
-            child.setConfig(VDI.DB_VHD_PARENT, parentUuid)
+            child.setConfig(VDI.DB_VDI_PARENT, parentUuid)
             child.setConfig(VDI.DB_VDI_TYPE, VdiType.VHD)
             util.fistpoint.activate("LVHDRT_coaleaf_undo_after_rename2", self.uuid)
 
@@ -3248,7 +3248,7 @@ class LVHDSR(SR):
             Util.log("Renaming child back to %s" % childUuid)
             child.rename(childUuid)
             Util.log("Updating the VDI record")
-            child.setConfig(VDI.DB_VHD_PARENT, parentUuid)
+            child.setConfig(VDI.DB_VDI_PARENT, parentUuid)
             child.setConfig(VDI.DB_VDI_TYPE, VdiType.VHD)
             util.fistpoint.activate("LVHDRT_coaleaf_undo_after_rename2", self.uuid)
 
@@ -3616,7 +3616,7 @@ class LinstorSR(SR):
             Util.log('Renaming child back to {}'.format(childUuid))
             child.rename(childUuid)
             Util.log('Updating the VDI record')
-            child.setConfig(VDI.DB_VHD_PARENT, parentUuid)
+            child.setConfig(VDI.DB_VDI_PARENT, parentUuid)
             child.setConfig(VDI.DB_VDI_TYPE, VdiType.VHD)
 
         # TODO: Maybe deflate here.
