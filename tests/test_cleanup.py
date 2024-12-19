@@ -682,12 +682,12 @@ class TestSR(unittest.TestCase):
 
     @mock.patch('cleanup.VDI.canLiveCoalesce', autospec=True,
                 return_value=False)
-    @mock.patch('cleanup.VDI.getSizeVHD', autospec=True)
+    @mock.patch('cleanup.VDI.getSizePhys', autospec=True)
     @mock.patch('cleanup.SR._snapshotCoalesce', autospec=True,
                 return_value=True)
     @mock.patch('cleanup.Util.log')
     def test_coalesceLeaf_size_bigger(self, mock_log,
-                                      mock_snapshotCoalesce, mock_vhdSize,
+                                      mock_snapshotCoalesce, mock_sizePhys,
                                       mock_vdiLiveCoalesce):
 
         sr_uuid = uuid4()
@@ -695,7 +695,7 @@ class TestSR(unittest.TestCase):
         vdi_uuid = uuid4()
         vdi = cleanup.VDI(sr, str(vdi_uuid), VdiType.VHD)
 
-        mock_vhdSize.side_effect = iter([1024, 4096, 4096, 8000, 8500, 9000, 9500, 10000, 10500, 16000])
+        mock_sizePhys.side_effect = iter([1024, 4096, 4096, 8000, 8500, 9000, 9500, 10000, 10500, 16000])
 
         sr._snapshotCoalesce = mock.MagicMock(autospec=True)
         sr._snapshotCoalesce.return_value = True
@@ -708,7 +708,7 @@ class TestSR(unittest.TestCase):
                       str(exc.exception))
 
     @mock.patch('cleanup.VDI.canLiveCoalesce', autospec=True)
-    @mock.patch('cleanup.VDI.getSizeVHD', autospec=True)
+    @mock.patch('cleanup.VDI.getSizePhys', autospec=True)
     @mock.patch('cleanup.SR._snapshotCoalesce', autospec=True,
                 return_value=True)
     @mock.patch('cleanup.SR._liveLeafCoalesce', autospec=True,
@@ -718,11 +718,11 @@ class TestSR(unittest.TestCase):
                                                      mock_log,
                                                      mock_liveLeafCoalesce,
                                                      mock_snapshotCoalesce,
-                                                     mock_vhdSize,
+                                                     mock_sizePhys,
                                                      mock_vdiLiveCoalesce):
         mock_vdiLiveCoalesce.side_effect = iter([False, False, False, True])
         mock_snapshotCoalesce.side_effect = iter([True, True, True])
-        mock_vhdSize.side_effect = iter([1024, 1023, 1023, 1022, 1022, 1021])
+        mock_sizePhys.side_effect = iter([1024, 1023, 1023, 1022, 1022, 1021])
 
         sr_uuid = uuid4()
         sr = create_cleanup_sr(self.xapi_mock, uuid=str(sr_uuid))
@@ -734,7 +734,7 @@ class TestSR(unittest.TestCase):
         self.assertEqual(res, "This is a Test")
         self.assertEqual(4, mock_vdiLiveCoalesce.call_count)
         self.assertEqual(3, mock_snapshotCoalesce.call_count)
-        self.assertEqual(6, mock_vhdSize.call_count)
+        self.assertEqual(6, mock_sizePhys.call_count)
 
     @mock.patch('cleanup.Util.log')
     def test_findLeafCoalesceable_forbidden1(self, mock_log):
@@ -1890,13 +1890,13 @@ class TestSR(unittest.TestCase):
         mock_parent.vdi_type = VdiType.VHD
         mock_parent.parent = None
         mock_parent.raw = False
-        mock_parent.getSizeVHD.return_value = 10 * MEGA
+        mock_parent.getSizePhys.return_value = 10 * MEGA
 
         vdi_uuid = str(uuid.uuid4())
         mock_vdi = mock.MagicMock()
         mock_vdi.uuid = vdi_uuid
         mock_vdi.vdi_type = VdiType.VHD
-        mock_vdi.getSizeVHD.return_value = 10 * MEGA
+        mock_vdi.getSizePhys.return_value = 10 * MEGA
         mock_vdi.parent = mock_parent
 
         sr._doCoalesceLeaf(mock_vdi)
@@ -1912,13 +1912,13 @@ class TestSR(unittest.TestCase):
         mock_parent.vdi_type = VdiType.VHD
         mock_parent.parent = mock.MagicMock()
         mock_parent.raw = False
-        mock_parent.getSizeVHD.return_value = 10 * MEGA
+        mock_parent.getSizePhys.return_value = 10 * MEGA
 
         vdi_uuid = str(uuid.uuid4())
         mock_vdi = mock.MagicMock()
         mock_vdi.uuid = vdi_uuid
         mock_vdi.vdi_type = VdiType.VHD
-        mock_vdi.getSizeVHD.return_value = 10 * MEGA
+        mock_vdi.getSizePhys.return_value = 10 * MEGA
         mock_vdi.parent = mock_parent
 
         sr._doCoalesceLeaf(mock_vdi)
