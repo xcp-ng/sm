@@ -1388,7 +1388,7 @@ class LVHDVDI(VDI):
 
     @override
     def __str__(self) -> str:
-        strType = "VHD"
+        strType = self.vdi_type
         if self.vdi_type == VdiType.RAW:
             strType = "RAW"
         strHidden = ""
