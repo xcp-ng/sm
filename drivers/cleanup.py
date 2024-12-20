@@ -2518,11 +2518,11 @@ class SR(object):
         tracker.printSummary()
         return self._liveLeafCoalesce(vdi)
 
-    def calcStorageSpeed(self, startTime, endTime, vhdSize):
+    def calcStorageSpeed(self, startTime, endTime, coalescedSize):
         speed = None
         total_time = endTime - startTime
         if total_time > 0:
-            speed = float(vhdSize) / float(total_time)
+            speed = float(coalescedSize) / float(total_time)
         return speed
 
     def writeSpeedToFile(self, speed):
@@ -2550,8 +2550,8 @@ class SR(object):
             Util.log("Closing file: {myfile}".format(myfile=path))
             self.unlock()
 
-    def recordStorageSpeed(self, startTime, endTime, vhdSize):
-        speed = self.calcStorageSpeed(startTime, endTime, vhdSize)
+    def recordStorageSpeed(self, startTime, endTime, coalescedSize):
+        speed = self.calcStorageSpeed(startTime, endTime, coalescedSize)
         if speed is None:
             return
 
