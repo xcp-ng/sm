@@ -21,15 +21,13 @@ class TestTapdiskPause(unittest.TestCase):
         self.mock_tapdisk = mock.create_autospec(blktap2.Tapdisk)
         blktap2_patcher = mock.patch('tapdisk_pause.blktap2')
         self.mock_blktap2 = blktap2_patcher.start()
-        self.mock_blktap2.Tapdisk.major.return_value = 254
         vdi_patcher = mock.patch('tapdisk_pause.VDI')
         self.mock_vdi = vdi_patcher.start()
         self.mock_blktap2.Tapdisk.from_minor.side_effect = lambda x: self.mock_tapdisk
         readlink_patcher = mock.patch('tapdisk_pause.os.readlink')
         self.mock_readlink = readlink_patcher.start()
         self.mock_readlink.side_effect = lambda x: x
-        get_dev_patcher = mock.patch('tapdisk_pause._getDevMajor_minor')
-        self.mock_getdev = get_dev_patcher.start()
+        self.mock_blktap2.VDI.NBDLink.return_value.read_minor_from_path.return_value = 5
         self.addCleanup(mock.patch.stopall)
 
     def test_refresh_success(self):
@@ -41,7 +39,6 @@ class TestTapdiskPause(unittest.TestCase):
             'sr_uuid': sr_uuid
         }
 
-        self.mock_getdev.return_value = (254, 5)
         test_vdi = self.mock_vdi.VDI.from_uuid.return_value
         test_vdi._get_blocktracking_status.return_value = False
         self.mock_tapdisk.is_paused.return_value = False
@@ -66,7 +63,6 @@ class TestTapdiskPause(unittest.TestCase):
             'sr_uuid': sr_uuid
         }
 
-        self.mock_getdev.return_value = (254, 5)
         test_vdi = self.mock_vdi.VDI.from_uuid.return_value
         test_vdi._get_blocktracking_status.return_value = False
         self.mock_tapdisk.is_paused.return_value = True
