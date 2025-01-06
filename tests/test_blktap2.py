@@ -194,10 +194,9 @@ class TestVDI(unittest.TestCase):
     @mock.patch('blktap2.util.get_this_host', autospec=True)
     @mock.patch('blktap2.VDI._attach', autospec=True)
     @mock.patch('blktap2.VDI.PhyLink', autospec=True)
-    @mock.patch('blktap2.VDI.BackendLink', autospec=True)
     @mock.patch('blktap2.VDI.NBDLink', autospec=True)
     @mock.patch('blktap2.Tapdisk')
-    def test_activate(self, mock_tapdisk, mock_nbd_link, mock_backend,
+    def test_activate(self, mock_tapdisk, mock_nbd_link,
                       mock_phy, mock_attach,
                       mock_this_host, mock_sleep):
         """
@@ -223,11 +222,10 @@ class TestVDI(unittest.TestCase):
     @mock.patch('blktap2.util.get_this_host', autospec=True)
     @mock.patch('blktap2.VDI._attach', autospec=True)
     @mock.patch('blktap2.VDI.PhyLink', autospec=True)
-    @mock.patch('blktap2.VDI.BackendLink', autospec=True)
     @mock.patch('blktap2.VDI.NBDLink', autospec=True)
     @mock.patch('blktap2.Tapdisk')
     def test_activate_relink_retry(
-            self, mock_tapdisk, mock_nbd_link, mock_backend,
+            self, mock_tapdisk, mock_nbd_link,
             mock_phy, mock_attach,
             mock_this_host, mock_sleep):
         """
@@ -251,11 +249,10 @@ class TestVDI(unittest.TestCase):
     @mock.patch('blktap2.util.get_this_host', autospec=True)
     @mock.patch('blktap2.VDI._attach', autospec=True)
     @mock.patch('blktap2.VDI.PhyLink', autospec=True)
-    @mock.patch('blktap2.VDI.BackendLink', autospec=True)
     @mock.patch('blktap2.VDI.NBDLink', autospec=True)
     @mock.patch('blktap2.Tapdisk')
     def test_activate_pause_retry(
-            self, mock_tapdisk, mock_nbd_link, mock_backend,
+            self, mock_tapdisk, mock_nbd_link,
             mock_phy, mock_attach,
             mock_this_host, mock_sleep):
         """
@@ -278,11 +275,10 @@ class TestVDI(unittest.TestCase):
     @mock.patch('blktap2.util.get_this_host', autospec=True)
     @mock.patch('blktap2.VDI._attach', autospec=True)
     @mock.patch('blktap2.VDI.PhyLink', autospec=True)
-    @mock.patch('blktap2.VDI.BackendLink', autospec=True)
     @mock.patch('blktap2.VDI.NBDLink', autospec=True)
     @mock.patch('blktap2.Tapdisk')
     def test_activate_paused_while_tagging(
-            self, mock_tapdisk, mock_nbd_link, mock_backend,
+            self, mock_tapdisk, mock_nbd_link,
             mock_phy, mock_attach,
             mock_this_host, mock_sleep):
         """
@@ -311,11 +307,10 @@ class TestVDI(unittest.TestCase):
     @mock.patch('blktap2.util.get_this_host', autospec=True)
     @mock.patch('blktap2.VDI._attach', autospec=True)
     @mock.patch('blktap2.VDI.PhyLink', autospec=True)
-    @mock.patch('blktap2.VDI.BackendLink', autospec=True)
     @mock.patch('blktap2.VDI.NBDLink', autospec=True)
     @mock.patch('blktap2.Tapdisk')
     def test_activate_relink_while_tagging(
-            self, mock_tapdisk, mock_nbd_link, mock_backend,
+            self, mock_tapdisk, mock_nbd_link,
             mock_phy, mock_attach,
             mock_this_host, mock_sleep):
         """
@@ -344,11 +339,10 @@ class TestVDI(unittest.TestCase):
     @mock.patch('blktap2.util.get_this_host', autospec=True)
     @mock.patch('blktap2.VDI._attach', autospec=True)
     @mock.patch('blktap2.VDI.PhyLink', autospec=True)
-    @mock.patch('blktap2.VDI.BackendLink', autospec=True)
     @mock.patch('blktap2.VDI.NBDLink', autospec=True)
     @mock.patch('blktap2.Tapdisk')
     def test_activate_ro_already_activating_retry(
-            self, mock_tapdisk, mock_nbd_link, mock_backend,
+            self, mock_tapdisk, mock_nbd_link,
             mock_phy, mock_attach,
             mock_this_host, mock_sleep):
         """
@@ -382,11 +376,10 @@ class TestVDI(unittest.TestCase):
     @mock.patch('blktap2.util.get_this_host', autospec=True)
     @mock.patch('blktap2.VDI._attach', autospec=True)
     @mock.patch('blktap2.VDI.PhyLink', autospec=True)
-    @mock.patch('blktap2.VDI.BackendLink', autospec=True)
     @mock.patch('blktap2.VDI.NBDLink', autospec=True)
     @mock.patch('blktap2.Tapdisk')
     def test_activate_rw_already_activating_fail(
-            self, mock_tapdisk, mock_nbd_link, mock_backend,
+            self, mock_tapdisk, mock_nbd_link,
             mock_phy, mock_attach,
             mock_this_host, mock_sleep):
         """
