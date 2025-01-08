@@ -166,10 +166,11 @@ class LVHDSR(SR.SR):
         self.mdpath = os.path.join(self.path, self.MDVOLUME_NAME)
         self.provision = self.PROVISIONING_DEFAULT
 
-        self.other_conf = None
         has_sr_ref = self.srcmd.params.get("sr_ref")
         if has_sr_ref:
             self.other_conf = self.session.xenapi.SR.get_other_config(self.sr_ref)
+        else:
+            self.other_conf = None
 
         self.lvm_conf = None
         if self.other_conf:
