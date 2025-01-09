@@ -3316,7 +3316,7 @@ class LinstorSR(SR):
 
         SR.__init__(self, uuid, xapi, createLock, force)
         self.path = LinstorVolumeManager.DEV_ROOT_PATH
-        self._reloadLinstor()
+        self._reloadLinstor(journaler_only=True)
 
     @override
     def deleteVDI(self, vdi) -> None:
@@ -3351,7 +3351,7 @@ class LinstorSR(SR):
         )
         return super(LinstorSR, self).pauseVDIs(vdiList)
 
-    def _reloadLinstor(self):
+    def _reloadLinstor(self, journaler_only=False):
         session = self.xapi.session
         host_ref = util.get_this_host_ref(session)
         sr_ref = session.xenapi.SR.get_by_uuid(self.uuid)
@@ -3367,6 +3367,9 @@ class LinstorSR(SR):
         self.journaler = LinstorJournaler(
             controller_uri, group_name, logger=util.SMlog
         )
+
+        if journaler_only:
+            return
 
         self._linstor = LinstorVolumeManager(
             controller_uri,
