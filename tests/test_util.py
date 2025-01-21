@@ -27,8 +27,8 @@ CAPABILITIES = ["SR_PROBE", "SR_UPDATE", "SR_SUPPORTS_LOCAL_CACHING",
 CONFIGURATION = [['device', 'local device path (required) (e.g. /dev/sda3)']]
 
 DRIVER_INFO = {
-    'name': 'Local EXT3 VHD',
-    'description': 'SR plugin which represents disks as VHD files stored on a local EXT3 filesystem, created inside an LVM volume',  # noqa E501
+    'name': 'Local EXT4 VHD',
+    'description': 'SR plugin which represents disks as VHD files stored on a local EXT4 filesystem, created inside an LVM volume',  # noqa E501
     'vendor': 'Citrix Systems Inc',
     'copyright': '(C) 2008 Citrix Systems Inc',
     'driver_version': '1.0',
