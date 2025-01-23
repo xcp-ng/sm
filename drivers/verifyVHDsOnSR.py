@@ -29,6 +29,7 @@ import vhdutil
 
 import VDI
 
+from constants import NS_PREFIX_LVM, VG_LOCATION, VG_PREFIX
 from lock import Lock
 from refcounter import RefCounter
 from vditype import VdiType
@@ -42,9 +43,9 @@ def activateVdiChainAndCheck(vhd_info, vg_name):
     global VHDs_passed
     global VHDs_failed
     activated_list = []
-    vhd_path = os.path.join(lvhdutil.VG_LOCATION, vg_name, vhd_info.path)
+    vhd_path = os.path.join(VG_LOCATION, vg_name, vhd_info.path)
     if not activateVdi(
-                       vg_name.lstrip(lvhdutil.VG_PREFIX),
+                       vg_name.lstrip(VG_PREFIX),
                        vhd_info.uuid,
                        vhd_path):
         # If activation fails, do not run check, also no point on running
@@ -69,7 +70,7 @@ def activateVdiChainAndCheck(vhd_info, vg_name):
 
 
 def activateVdi(sr_uuid, vdi_uuid, vhd_path):
-    name_space = lvhdutil.NS_PREFIX_LVM + sr_uuid
+    name_space = NS_PREFIX_LVM + sr_uuid
     lock = Lock(vdi_uuid, name_space)
     lock.acquire()
     try:
@@ -89,7 +90,7 @@ def activateVdi(sr_uuid, vdi_uuid, vhd_path):
 
 
 def deactivateVdi(sr_uuid, vdi_uuid, vhd_path):
-    name_space = lvhdutil.NS_PREFIX_LVM + sr_uuid
+    name_space = NS_PREFIX_LVM + sr_uuid
     lock = Lock(vdi_uuid, name_space)
     lock.acquire()
     try:
@@ -111,7 +112,7 @@ def checkAllVHD(sr_uuid):
     vhd_trees = []
     VHDs_total = 0
 
-    vg_name = lvhdutil.VG_PREFIX + sr_uuid
+    vg_name = VG_PREFIX + sr_uuid
     pattern = "%s*" % lvhdutil.LV_PREFIX[VdiType.VHD]
 
     # Do a vhd scan and gets all the VHDs
