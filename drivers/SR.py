@@ -39,7 +39,7 @@ MASTER_LVM_CONF = '/etc/lvm/master'
 # LUN per VDI key for XenCenter
 LUNPERVDI = "LUNperVDI"
 
-DEFAULT_IMAGE_FORMATS = [ImageFormat.VHD, ImageFormat.QCOW2]
+DEFAULT_IMAGE_FORMATS = [ImageFormat.QCOW2, ImageFormat.VHD]
 
 
 
