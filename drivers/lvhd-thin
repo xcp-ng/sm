@@ -28,12 +28,14 @@ from journaler import Journaler
 import lvutil
 import os
 
+from constants import VG_PREFIX
+
 def attach(session, args):
     if util.is_master(session):
         os.environ['LVM_SYSTEM_DIR'] = lvutil.MASTER_LVM_CONF
     srUuid = args["srUuid"]
     vdiUuid = args["vdiUuid"]
-    vgName = "%s%s" % (lvhdutil.VG_PREFIX, srUuid)
+    vgName = "%s%s" % (VG_PREFIX, srUuid)
     lvmCache = LVMCache(vgName)
     journaler = Journaler(lvmCache)
     try:
@@ -48,7 +50,7 @@ def detach(session, args):
         os.environ['LVM_SYSTEM_DIR'] = lvutil.MASTER_LVM_CONF
     srUuid = args["srUuid"]
     vdiUuid = args["vdiUuid"]
-    vgName = "%s%s" % (lvhdutil.VG_PREFIX, srUuid)
+    vgName = "%s%s" % (VG_PREFIX, srUuid)
     lvmCache = LVMCache(vgName)
     try:
         lvhdutil.detachThin(session, lvmCache, args["srUuid"], args["vdiUuid"])
