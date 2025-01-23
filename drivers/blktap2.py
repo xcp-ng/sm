@@ -41,6 +41,7 @@ import json
 import xs_errors
 import XenAPI # pylint: disable=import-error
 import scsiutil
+from constants import NS_PREFIX_LVM
 from syslog import openlog, syslog
 from stat import *  # S_ISBLK(), ...
 from vditype import VdiType
@@ -1675,7 +1676,7 @@ class VDI(object):
             if hasattr(self.target.vdi.sr, 'DRIVER_TYPE') and \
                self.target.vdi.sr.DRIVER_TYPE == 'lvhd' and \
                VdiType.isCowImage(vdi_type):
-                lock = Lock("lvchange-p", lvhdutil.NS_PREFIX_LVM + sr_uuid)
+                lock = Lock("lvchange-p", NS_PREFIX_LVM + sr_uuid)
                 lock.acquire()
 
             # When we attach a static VDI for HA, we cannot communicate with

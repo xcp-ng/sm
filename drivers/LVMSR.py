@@ -41,6 +41,7 @@ import blktap2
 from journaler import Journaler
 from refcounter import RefCounter
 from ipc import IPCFlag
+from constants import NS_PREFIX_LVM, VG_LOCATION, VG_PREFIX
 from lvmanager import LVActivator
 from vditype import VdiType
 import XenAPI # pylint: disable=import-error
@@ -55,7 +56,7 @@ from xmlrpc.client import DateTime
 import glob
 from constants import CBTLOG_TAG
 from fairlock import Fairlock
-DEV_MAPPER_ROOT = os.path.join('/dev/mapper', lvhdutil.VG_PREFIX)
+DEV_MAPPER_ROOT = os.path.join('/dev/mapper', VG_PREFIX)
 
 geneology: Dict[str, List[str]] = {}
 CAPABILITIES = ["SR_PROBE", "SR_UPDATE", "SR_TRIM",
@@ -162,8 +163,8 @@ class LVMSR(SR.SR):
         self.lock = lock.Lock(lock.LOCK_TYPE_SR, self.uuid)
         self.sr_vditype = SR.DEFAULT_TAP
         self.uuid = sr_uuid
-        self.vgname = lvhdutil.VG_PREFIX + self.uuid
-        self.path = os.path.join(lvhdutil.VG_LOCATION, self.vgname)
+        self.vgname = VG_PREFIX + self.uuid
+        self.path = os.path.join(VG_LOCATION, self.vgname)
         self.mdpath = os.path.join(self.path, self.MDVOLUME_NAME)
         self.provision = self.PROVISIONING_DEFAULT
 
@@ -860,8 +861,8 @@ class LVMSR(SR.SR):
     @deviceCheck
     def probe(self) -> str:
         return lvutil.srlist_toxml(
-                lvutil.scan_srlist(lvhdutil.VG_PREFIX, self.dconf['device']),
-                lvhdutil.VG_PREFIX,
+                lvutil.scan_srlist(VG_PREFIX, self.dconf['device']),
+                VG_PREFIX,
                 ('metadata' in self.srcmd.params['sr_sm_config'] and \
                  self.srcmd.params['sr_sm_config']['metadata'] == 'true'))
 
@@ -990,7 +991,7 @@ class LVMSR(SR.SR):
         if base.readonly:
             self.lvmCache.setReadonly(base.name, False)
 
-        ns = lvhdutil.NS_PREFIX_LVM + self.uuid
+        ns = NS_PREFIX_LVM + self.uuid
         origRefcountBinary = RefCounter.check(origUuid, ns)[1]
         origRefcountNormal = 0
 
@@ -1248,7 +1249,7 @@ class LVMSR(SR.SR):
                 "action1": "refresh",
                 "lvName1": origLV,
                 "action2": "activate",
-                "ns2": lvhdutil.NS_PREFIX_LVM + self.uuid,
+                "ns2": NS_PREFIX_LVM + self.uuid,
                 "lvName2": baseLV,
                 "uuid2": baseUuid}
 
@@ -1288,7 +1289,7 @@ class LVMSR(SR.SR):
         args = {"vgName": self.vgname,
                 "action1": "cleanupLockAndRefcount",
                 "uuid1": baseUuid,
-                "ns1": lvhdutil.NS_PREFIX_LVM + self.uuid}
+                "ns1": NS_PREFIX_LVM + self.uuid}
 
         masterRef = util.get_this_host_ref(self.session)
         for hostRef in hostRefs:
@@ -1303,11 +1304,11 @@ class LVMSR(SR.SR):
 
     def _cleanup(self, skipLockCleanup=False):
         """delete stale refcounter, flag, and lock files"""
-        RefCounter.resetAll(lvhdutil.NS_PREFIX_LVM + self.uuid)
+        RefCounter.resetAll(NS_PREFIX_LVM + self.uuid)
         IPCFlag(self.uuid).clearAll()
         if not skipLockCleanup:
             lock.Lock.cleanupAll(self.uuid)
-            lock.Lock.cleanupAll(lvhdutil.NS_PREFIX_LVM + self.uuid)
+            lock.Lock.cleanupAll(NS_PREFIX_LVM + self.uuid)
 
     def _prepareTestMode(self):
         util.SMlog("Test mode: %s" % self.testMode)
@@ -1469,7 +1470,7 @@ class LVMVDI(VDI.VDI):
 
         try:
             self.sr.lvmCache.remove(self.lvname)
-            self.sr.lock.cleanup(vdi_uuid, lvhdutil.NS_PREFIX_LVM + sr_uuid)
+            self.sr.lock.cleanup(vdi_uuid, NS_PREFIX_LVM + sr_uuid)
             self.sr.lock.cleanupAll(vdi_uuid)
         except xs_errors.SRException as e:
             util.SMlog(
@@ -1786,7 +1787,7 @@ class LVMVDI(VDI.VDI):
             baseLV = lvhdutil.LV_PREFIX[self.vdi_type] + baseUuid
             self.sr.lvmCache.rename(self.lvname, baseLV)
             self.sr.lvActivator.replace(self.uuid, baseUuid, baseLV, False)
-            RefCounter.set(baseUuid, 1, 0, lvhdutil.NS_PREFIX_LVM + self.sr.uuid)
+            RefCounter.set(baseUuid, 1, 0, NS_PREFIX_LVM + self.sr.uuid)
             self.uuid = baseUuid
             self.lvname = baseLV
             self.path = os.path.join(self.sr.path, baseLV)
@@ -1861,7 +1862,7 @@ class LVMVDI(VDI.VDI):
         self.sr.lvmCache.create(snapLV, int(snapSizeLV))
         util.fistpoint.activate("LVHDRT_clone_vdi_after_lvcreate", self.sr.uuid)
         if isNew:
-            RefCounter.set(snapUuid, 1, 0, lvhdutil.NS_PREFIX_LVM + self.sr.uuid)
+            RefCounter.set(snapUuid, 1, 0, NS_PREFIX_LVM + self.sr.uuid)
         self.sr.lvActivator.add(snapUuid, snapLV, False)
         parentRaw = (self.vdi_type == VdiType.RAW)
         vhdutil.snapshot(snapPath, self.path, parentRaw, lvhdutil.MSIZE_MB)
@@ -1898,7 +1899,7 @@ class LVMVDI(VDI.VDI):
                 (not snapVDI2 or snap2Parent != self.uuid):
             util.SMlog("%s != %s != %s => deleting unused base %s" % \
                     (snapParent, self.uuid, snap2Parent, self.lvname))
-            RefCounter.put(self.uuid, False, lvhdutil.NS_PREFIX_LVM + self.sr.uuid)
+            RefCounter.put(self.uuid, False, NS_PREFIX_LVM + self.sr.uuid)
             self.sr.lvmCache.remove(self.lvname)
             self.sr.lvActivator.remove(self.uuid, False)
             if hostRefs:
@@ -1921,7 +1922,7 @@ class LVMVDI(VDI.VDI):
             # cannot affect the VDIs here because they cannot  possibly be
             # involved in coalescing at this point, and at the relinkSkip step
             # that activates the children, which takes the SR lock.)
-            ns = lvhdutil.NS_PREFIX_LVM + self.sr.uuid
+            ns = NS_PREFIX_LVM + self.sr.uuid
             (cnt, bcnt) = RefCounter.check(snapVDI.uuid, ns)
             RefCounter.set(self.uuid, bcnt + 1, 0, ns)
 
@@ -2124,7 +2125,7 @@ class LVMVDI(VDI.VDI):
     def _chainSetActive(self, active, binary, persistent=False):
         if binary:
             (count, bcount) = RefCounter.checkLocked(self.uuid,
-                lvhdutil.NS_PREFIX_LVM + self.sr.uuid)
+                NS_PREFIX_LVM + self.sr.uuid)
             if (active and bcount > 0) or (not active and bcount == 0):
                 return  # this is a redundant activation/deactivation call
 

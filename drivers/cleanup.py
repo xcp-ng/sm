@@ -53,6 +53,8 @@ from functools import reduce
 from time import monotonic as _time
 from vditype import VdiType, VdiTypeExtension, VDI_TYPE_TO_EXTENSION
 
+from constants import NS_PREFIX_LVM, VG_LOCATION, VG_PREFIX
+
 try:
     from linstorjournaler import LinstorJournaler
     from linstorvhdutil import LinstorVhdUtil
@@ -782,7 +784,7 @@ class VDI(object):
 
     def delete(self) -> None:
         "Physically delete the VDI"
-        lock.Lock.cleanup(self.uuid, lvhdutil.NS_PREFIX_LVM + self.sr.uuid)
+        lock.Lock.cleanup(self.uuid, NS_PREFIX_LVM + self.sr.uuid)
         lock.Lock.cleanupAll(self.uuid)
         self._clear()
 
@@ -1311,7 +1313,7 @@ class LVMVDI(VDI):
         if self.sr.lvActivator.get(oldUuid, False):
             self.sr.lvActivator.replace(oldUuid, self.uuid, self.fileName, False)
 
-        ns = lvhdutil.NS_PREFIX_LVM + self.sr.uuid
+        ns = NS_PREFIX_LVM + self.sr.uuid
         (cnt, bcnt) = RefCounter.check(oldUuid, ns)
         RefCounter.set(self.uuid, cnt, bcnt, ns)
         RefCounter.reset(oldUuid, ns)
@@ -1327,7 +1329,7 @@ class LVMVDI(VDI):
             self.sr.forgetVDI(self.uuid)
         finally:
             self.sr.unlock()
-        RefCounter.reset(self.uuid, lvhdutil.NS_PREFIX_LVM + self.sr.uuid)
+        RefCounter.reset(self.uuid, NS_PREFIX_LVM + self.sr.uuid)
         VDI.delete(self)
 
     @override
@@ -3031,8 +3033,8 @@ class LVMSR(SR):
 
     def __init__(self, uuid, xapi, createLock, force):
         SR.__init__(self, uuid, xapi, createLock, force)
-        self.vgName = "%s%s" % (lvhdutil.VG_PREFIX, self.uuid)
-        self.path = os.path.join(lvhdutil.VG_LOCATION, self.vgName)
+        self.vgName = "%s%s" % (VG_PREFIX, self.uuid)
+        self.path = os.path.join(VG_LOCATION, self.vgName)
 
         sr_ref = self.xapi.session.xenapi.SR.get_by_uuid(self.uuid)
         other_conf = self.xapi.session.xenapi.SR.get_other_config(sr_ref)
@@ -3158,7 +3160,7 @@ class LVMSR(SR):
         # this node is really the parent node) - minus 1 if it is online (since
         # non-leaf nodes increment their normal counts when they are online and
         # we are now a leaf, storing that 1 in the binary refcount).
-        ns = lvhdutil.NS_PREFIX_LVM + self.uuid
+        ns = NS_PREFIX_LVM + self.uuid
         cCnt, cBcnt = RefCounter.check(vdi.uuid, ns)
         pCnt, pBcnt = RefCounter.check(vdi.parent.uuid, ns)
         pCnt = pCnt - cBcnt
@@ -3224,7 +3226,7 @@ class LVMSR(SR):
             # refcount (best effort - assume that it had succeeded if the
             # second rename succeeded; if not, this adjustment will be wrong,
             # leading to a non-deactivation of the LV)
-            ns = lvhdutil.NS_PREFIX_LVM + self.uuid
+            ns = NS_PREFIX_LVM + self.uuid
             cCnt, cBcnt = RefCounter.check(child.uuid, ns)
             pCnt, pBcnt = RefCounter.check(parent.uuid, ns)
             pCnt = pCnt + cBcnt
@@ -3271,7 +3273,7 @@ class LVMSR(SR):
                 "lvName1": vdi.fileName,
                 "action2": "cleanupLockAndRefcount",
                 "uuid2": vdi.uuid,
-                "ns2": lvhdutil.NS_PREFIX_LVM + self.uuid}
+                "ns2": NS_PREFIX_LVM + self.uuid}
         onlineHosts = self.xapi.getOnlineHosts()
         abortFlag = IPCFlag(self.uuid)
         for pbdRecord in self.xapi.getAttachedPBDs():
@@ -3329,7 +3331,7 @@ class LVMSR(SR):
                 "lvName2": vdi.fileName,
                 "action3": "cleanupLockAndRefcount",
                 "uuid3": origParentUuid,
-                "ns3": lvhdutil.NS_PREFIX_LVM + self.uuid}
+                "ns3": NS_PREFIX_LVM + self.uuid}
         for slave in slaves:
             Util.log("Updating %s to %s on slave %s" % \
                     (oldNameLV, vdi.fileName,
@@ -4135,7 +4137,7 @@ def debug(sr_uuid, cmd, vdi_uuid):
         vdi._activate()
         print("VDI file: %s" % vdi.path)
     if cmd == "deactivate":
-        ns = lvhdutil.NS_PREFIX_LVM + sr.uuid
+        ns = NS_PREFIX_LVM + sr.uuid
         sr.lvmCache.deactivate(ns, vdi.uuid, vdi.fileName, False)
     if cmd == "inflate":
         vdi.inflateFully()
