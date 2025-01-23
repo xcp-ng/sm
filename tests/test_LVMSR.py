@@ -459,8 +459,6 @@ class TestLVMVDI(unittest.TestCase, Stubs):
 
         lvhdutil_patcher = mock.patch('LVMSR.lvhdutil', autospec=True)
         self.mock_lvhdutil = lvhdutil_patcher.start()
-        self.mock_lvhdutil.VG_LOCATION = lvhdutil.VG_LOCATION
-        self.mock_lvhdutil.VG_PREFIX = lvhdutil.VG_PREFIX
         self.mock_lvhdutil.LV_PREFIX = lvhdutil.LV_PREFIX
         vhdutil_patcher = mock.patch('LVMSR.vhdutil', autospec=True)
         self.mock_vhdutil = vhdutil_patcher.start()
