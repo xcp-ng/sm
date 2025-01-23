@@ -20,6 +20,8 @@ import os
 import util
 import lvutil
 import lvhdutil
+
+from constants import NS_PREFIX_LVM
 from lock import Lock
 from refcounter import RefCounter
 
@@ -226,7 +228,7 @@ class LVMCache:
         path = self._getPath(lvName)
         if self.lvs[lvName].readonly != readonly:
             uuids = util.findall_uuid(path)
-            ns = lvhdutil.NS_PREFIX_LVM + uuids[0]
+            ns = NS_PREFIX_LVM + uuids[0]
             # Taking this lock is needed to avoid a race condition
             # with tap-ctl open (which is now taking the same lock)
             lock = Lock("lvchange-p", ns)

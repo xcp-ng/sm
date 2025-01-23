@@ -28,6 +28,8 @@ import XenAPI
 import lvhdutil
 import vhdutil
 import lvmcache
+
+from constants import NS_PREFIX_LVM, VG_PREFIX
 from vditype import VdiType
 
 try:
@@ -209,8 +211,8 @@ class Tapdisk:
             return str(False)
         if self.activate_parents:
             util.SMlog("Activating parents of %s" % self.vdi_uuid)
-            vg_name = lvhdutil.VG_PREFIX + self.sr_uuid
-            ns = lvhdutil.NS_PREFIX_LVM + self.sr_uuid
+            vg_name = VG_PREFIX + self.sr_uuid
+            ns = NS_PREFIX_LVM + self.sr_uuid
             lvm_cache = lvmcache.LVMCache(vg_name)
             lv_name = lvhdutil.LV_PREFIX[VdiType.VHD] + self.vdi_uuid
             vdi_list = vhdutil.getParentChain(lv_name,

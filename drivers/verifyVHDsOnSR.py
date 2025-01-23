@@ -29,6 +29,7 @@ import vhdutil
 
 import VDI
 
+from constants import NS_PREFIX_LVM, VG_LOCATION, VG_PREFIX
 from lock import Lock
 from refcounter import RefCounter
 from vditype import VdiType
