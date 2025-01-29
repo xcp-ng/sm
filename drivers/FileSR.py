@@ -95,7 +95,7 @@ class FileSR(SR.SR):
         # "super" sometimes failed due to circular imports
         SR.SR.__init__(self, srcmd, sr_uuid)
         self.image_info = {}
-        self.init_preferred_image_formats()
+        self._init_preferred_image_formats()
         self._check_o_direct()
 
     @override

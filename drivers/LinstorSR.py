@@ -312,6 +312,10 @@ class LinstorSR(SR.SR):
     def handles(type) -> bool:
         return type == LinstorSR.DRIVER_TYPE
 
+    def __init__(self, srcmd, sr_uuid):
+        SR.SR.__init__(self, srcmd, sr_uuid)
+        self._init_preferred_image_formats()
+
     @override
     def load(self, sr_uuid) -> None:
         if not LINSTOR_AVAILABLE:

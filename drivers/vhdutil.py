@@ -369,6 +369,10 @@ class VhdUtil(CowUtil):
         self._ioretry(cmd)
 
     @override
+    def canSnapshotRaw(self, size: int) -> bool:
+        return size <= MAX_VHD_SIZE
+
+    @override
     def check(
         self,
         path: str,

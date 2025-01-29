@@ -35,11 +35,12 @@ def attach(session, args):
         os.environ['LVM_SYSTEM_DIR'] = lvutil.MASTER_LVM_CONF
     srUuid = args["srUuid"]
     vdiUuid = args["vdiUuid"]
-    vgName = "%s%s" % (lvmcowutil.VG_PREFIX, srUuid)
+    vdiType = args["vdiType"]
+    vgName = "%s%s" % (VG_PREFIX, srUuid)
     lvmCache = LVMCache(vgName)
     journaler = Journaler(lvmCache)
     try:
-        lvcowutil.attachThin(journaler, srUuid, vdiUuid, vdiType)
+        LvmCowUtil(getCowUtil(vdiType)).attachThin(journaler, srUuid, vdiUuid, vdiType)
         return str(True)
     except Exception as e:
         util.logException("lvhd-thin:attach %s" % e)
@@ -50,10 +51,11 @@ def detach(session, args):
         os.environ['LVM_SYSTEM_DIR'] = lvutil.MASTER_LVM_CONF
     srUuid = args["srUuid"]
     vdiUuid = args["vdiUuid"]
-    vgName = "%s%s" % (lvmcowutil.VG_PREFIX, srUuid)
+    vdiType = args["vdiType"]
+    vgName = "%s%s" % (VG_PREFIX, srUuid)
     lvmCache = LVMCache(vgName)
     try:
-        lvcowutil.detachThin(session, lvmCache, srUuid, vdiUuid, vdiType)
+        LvmCowUtil(getCowUtil(vdiType)).detachThin(session, lvmCache, srUuid, vdiUuid, vdiType)
         return str(True)
     except Exception as e:
         util.logException("lvhd-thin:detach %s" % e)

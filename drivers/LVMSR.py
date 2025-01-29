@@ -40,7 +40,7 @@ from journaler import Journaler
 from refcounter import RefCounter
 from ipc import IPCFlag
 from constants import NS_PREFIX_LVM, VG_LOCATION, VG_PREFIX
-from cowutil import getCowUtil
+from cowutil import getCowUtil, getVdiTypeFromImageFormat
 from lvmcowutil import LV_PREFIX, LvmCowUtil
 from lvmanager import LVActivator
 from vditype import VdiType
@@ -154,6 +154,10 @@ class LVMSR(SR.SR):
         elif name.endswith("EXTSR"):
             return type == "ext"
         return type == LVMSR.DRIVER_TYPE
+
+    def __init__(self, srcmd, sr_uuid):
+        SR.SR.__init__(self, srcmd, sr_uuid)
+        self._init_preferred_image_formats()
 
     @override
     def load(self, sr_uuid) -> None:
@@ -594,7 +598,7 @@ class LVMSR(SR.SR):
                 self.session, self.sr_ref,
                 scsiutil.devlist_to_serialstring(self.dconf['device'].split(',')))
 
-        # Test Legacy Mode Flag and update if VHD volumes exist
+        # Test Legacy Mode Flag and update if COW volumes exist
         if self.isMaster and self.legacyMode:
             vdiInfo = LvmCowUtil.getVDIInfo(self.lvmCache)
             for uuid, info in vdiInfo.items():
@@ -735,7 +739,7 @@ class LVMSR(SR.SR):
                             parent = cowutil.getParentNoCheck(lvPath)
 
                             if parent is not None:
-                                sm_config['vhd-parent'] = parent[len(LV_PREFIX[VdiType.VHD]):]
+                                sm_config['vhd-parent'] = parent[parent.find('-') + 1:]
                             size = cowutil.getSizeVirt(lvPath)
                             if self.provision == "thin":
                                 utilisation = util.roundup(
@@ -1368,13 +1372,16 @@ class LVMVDI(VDI.VDI):
         if "vdi_sm_config" in self.sr.srcmd.params and \
                 "type" in self.sr.srcmd.params["vdi_sm_config"]:
             type = self.sr.srcmd.params["vdi_sm_config"]["type"]
-            
+
             try:
                 self._setType(CREATE_PARAM_TYPES[type])
             except:
                 raise xs_errors.XenError('VDICreate', opterr='bad type')
             if self.sr.legacyMode and self.sr.cmd == 'vdi_create' and VdiType.isCowImage(self.vdi_type):
                 raise xs_errors.XenError('VDICreate', opterr='Cannot create COW type disk in legacy mode')
+
+        if not self.vdi_type:
+            self._setType(getVdiTypeFromImageFormat(self.sr.preferred_image_formats[0]))
 
         self.lvname = "%s%s" % (LV_PREFIX[self.vdi_type], vdi_uuid)
         self.path = os.path.join(self.sr.path, self.lvname)
@@ -1514,7 +1521,7 @@ class LVMVDI(VDI.VDI):
 
         if needInflate:
             try:
-                self._prepareThin(True)
+                self._prepareThin(True, self.vdi_type)
             except:
                 util.logException("attach")
                 raise xs_errors.XenError('LVMProvisionAttach')
@@ -1530,7 +1537,7 @@ class LVMVDI(VDI.VDI):
         util.SMlog("LVMVDI.detach for %s" % self.uuid)
         self._loadThis()
         already_deflated = (self.utilisation < \
-                LvmCowUtil.calcVolumeSize(self.size))
+                self.lvmcowutil.calcVolumeSize(self.size))
         needDeflate = True
         if not VdiType.isCowImage(self.vdi_type) or already_deflated:
             needDeflate = False
@@ -1545,7 +1552,7 @@ class LVMVDI(VDI.VDI):
 
         if needDeflate:
             try:
-                self._prepareThin(False)
+                self._prepareThin(False, self.vdi_type)
             except:
                 util.logException("_prepareThin")
                 raise xs_errors.XenError('VDIUnavailable', opterr='deflate')
@@ -1582,7 +1589,7 @@ class LVMVDI(VDI.VDI):
             lvSizeNew = util.roundup(lvutil.LVM_SIZE_INCREMENT, size)
         else:
             lvSizeOld = self.utilisation
-            lvSizeNew = LvmCowUtil.calcVolumeSize(size)
+            lvSizeNew = self.lvmcowutil.calcVolumeSize(size)
             if self.sr.provision == "thin":
                 # VDI is currently deflated, so keep it deflated
                 lvSizeNew = lvSizeOld
@@ -1724,6 +1731,8 @@ class LVMVDI(VDI.VDI):
         if self.hidden:
             raise xs_errors.XenError('VDISnapshot', opterr='hidden VDI')
 
+        snapVdiType = self.sr._get_snap_vdi_type(self.vdi_type, self.size)
+
         self.sm_config = self.session.xenapi.VDI.get_sm_config( \
                 self.sr.srcmd.params['vdi_ref'])
         if "type" in self.sm_config and self.sm_config['type'] == 'raw':
@@ -1815,11 +1824,11 @@ class LVMVDI(VDI.VDI):
                 self.utilisation = lvSizeBase
             util.fistpoint.activate("LVHDRT_clone_vdi_after_shrink_parent", self.sr.uuid)
 
-            snapVDI = self._createSnap(origUuid, lvSizeOrig, False)
+            snapVDI = self._createSnap(origUuid, snapVdiType, lvSizeOrig, False)
             util.fistpoint.activate("LVHDRT_clone_vdi_after_first_snap", self.sr.uuid)
             snapVDI2 = None
             if snapType == VDI.SNAPSHOT_DOUBLE:
-                snapVDI2 = self._createSnap(clonUuid, lvSizeClon, True)
+                snapVDI2 = self._createSnap(clonUuid, snapVdiType, lvSizeClon, True)
                 # If we have CBT enabled on the VDI,
                 # set CBT status for the new snapshot disk
                 if cbtlog:
@@ -1867,9 +1876,10 @@ class LVMVDI(VDI.VDI):
 
         return self._finishSnapshot(snapVDI, snapVDI2, hostRefs, cloneOp, snapType)
 
-    def _createSnap(self, snapUuid, snapSizeLV, isNew):
+    def _createSnap(self, snapUuid, snapVdiType, snapSizeLV, isNew):
         """Snapshot self and return the snapshot VDI object"""
-        snapLV = LV_PREFIX[self.vdi_type] + snapUuid
+
+        snapLV = LV_PREFIX[snapVdiType] + snapUuid
         snapPath = os.path.join(self.sr.path, snapLV)
         self.sr.lvmCache.create(snapLV, int(snapSizeLV))
         util.fistpoint.activate("LVHDRT_clone_vdi_after_lvcreate", self.sr.uuid)
@@ -1893,7 +1903,7 @@ class LVMVDI(VDI.VDI):
                     "type", "vdi_type", "vhd-parent", "paused", "relinking", "activating"] and \
                     not key.startswith("host_"):
                 snapVDI.sm_config[key] = val
-        snapVDI.sm_config["vdi_type"] = snapType
+        snapVDI.sm_config["vdi_type"] = snapVdiType
         snapVDI.sm_config["vhd-parent"] = snapParent
         snapVDI.lvname = snapLV
         return snapVDI
@@ -2030,8 +2040,8 @@ class LVMVDI(VDI.VDI):
                 snap = snapVDI
         return snap.get_params()
 
-    def _setType(self, vdiType) -> None:
-        self.vdi_type = vdiInfo.vdiType
+    def _setType(self, vdiType: str) -> None:
+        self.vdi_type = vdiType
         self.cowutil = getCowUtil(self.vdi_type)
         self.lvmcowutil = LvmCowUtil(self.cowutil)
 
@@ -2183,7 +2193,7 @@ class LVMVDI(VDI.VDI):
             self.cowutil.setHidden(self.path)
         self.hidden = 1
 
-    def _prepareThin(self, attach):
+    def _prepareThin(self, attach, vdiType):
         origUtilisation = self.sr.lvmCache.getSize(self.lvname)
         if self.sr.isMaster:
             # the master can prepare the VDI locally
@@ -2198,8 +2208,15 @@ class LVMVDI(VDI.VDI):
             pools = self.session.xenapi.pool.get_all()
             master = self.session.xenapi.pool.get_master(pools[0])
             rv = self.session.xenapi.host.call_plugin(
-                    master, self.sr.THIN_PLUGIN, fn,
-                    {"srUuid": self.sr.uuid, "vdiUuid": self.uuid})
+                master,
+                self.sr.THIN_PLUGIN,
+                fn,
+                {
+                    "srUuid": self.sr.uuid,
+                    "vdiUuid": self.uuid,
+                    "vdiType": vdiType
+                }
+            )
             util.SMlog("call-plugin returned: %s" % rv)
             if not rv:
                 raise Exception('plugin %s failed' % self.sr.THIN_PLUGIN)

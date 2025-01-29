@@ -28,7 +28,8 @@ import copy
 import os
 import traceback
 
-from cowutil import ImageFormat, parseImageFormats
+from cowutil import ImageFormat, getCowUtilFromImageFormat, getVdiTypeFromImageFormat, parseImageFormats
+from vditype import VdiType
 
 MOUNT_BASE = '/var/run/sr-mount'
 DEFAULT_TAP = "vhd,qcow2"
@@ -520,11 +521,20 @@ class SR(object):
 
         return missing_keys
 
-    def init_preferred_image_formats(self):
+    def _init_preferred_image_formats(self) -> None:
         self.preferred_image_formats = parseImageFormats(
             self.dconf and self.dconf.get('preferred-image-formats'),
             DEFAULT_IMAGE_FORMATS
         )
+
+    def _get_snap_vdi_type(self, vdi_type: str, size: int) -> str:
+        if VdiType.isCowImage(vdi_type):
+            return vdi_type
+        if vdi_type == VdiType.RAW:
+            for image_format in self.preferred_image_formats:
+                if getCowUtilFromImageFormat(image_format).canSnapshotRaw(size):
+                    return getVdiTypeFromImageFormat(image_format)
+        raise xs_errors.XenError('VDISnapshot', opterr=f"cannot snap from `{vdi_type}`")
 
 class ScanRecord:
     def __init__(self, sr):

@@ -204,7 +204,7 @@ install: build
 	  ln -sf $$i"SR.py" $$i"SR"; \
 	done
 	rm $(SM_STAGING)$(SM_DEST)/SHMSR
-	cd $(SM_STAGING)$(SM_DEST) && rm -f LVMSR && ln -sf LVMSR.py LVHDSR
+	cd $(SM_STAGING)$(SM_DEST) && rm -f LVMSR && ln -sf LVMSR.py LVMSR
 	cd $(SM_STAGING)$(SM_DEST) && rm -f RawISCSISR && ln -sf RawISCSISR.py ISCSISR
 	cd $(SM_STAGING)$(SM_DEST) && rm -f LVMoISCSISR && ln -sf LVMoISCSISR.py LVMoISCSISR
 	cd $(SM_STAGING)$(SM_DEST) && rm -f LVMoHBASR && ln -sf LVMoHBASR.py LVMoHBASR

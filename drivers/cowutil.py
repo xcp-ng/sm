@@ -234,6 +234,10 @@ class CowUtil(ABC):
         pass
 
     @abstractmethod
+    def canSnapshotRaw(self, size: int) -> bool:
+        pass
+
+    @abstractmethod
     def check(
         self,
         path: str,
@@ -316,10 +320,15 @@ def getVdiTypeFromImageFormat(image_format: ImageFormat) -> str:
 
     assert False, f"Unsupported image format: {IMAGE_FORMAT_TO_STR[image_format]}"
 
-def getCowUtil(vdi_type: str) -> CowUtil:
+# ------------------------------------------------------------------------------
+
+def getCowUtilFromImageFormat(image_format: ImageFormat) -> CowUtil:
     import vhdutil
 
-    if getImageFormatFromVdiType(vdi_type) in (ImageFormat.RAW, ImageFormat.VHD):
+    if image_format in (ImageFormat.RAW, ImageFormat.VHD):
         return vhdutil.VhdUtil()
 
     assert False, f"Unsupported VDI type: {vdi_type}"
+
+def getCowUtil(vdi_type: str) -> CowUtil:
+    return getCowUtilFromImageFormat(getImageFormatFromVdiType(vdi_type))
