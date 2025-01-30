@@ -33,7 +33,7 @@ from lvmcowutil import LV_PREFIX, LV_PREFIX_TO_VDI_TYPE
 from vditype import VdiType
 
 try:
-    from linstorvhdutil import LinstorVhdUtil
+    from linstorcowutil import LinstorCowUtil
     from linstorvolumemanager import get_controller_uri, LinstorVolumeManager
     LINSTOR_AVAILABLE = True
 except ImportError:

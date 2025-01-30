@@ -123,7 +123,8 @@ def linstorhostcall(local_method, remote_method):
             # B. Execute the plugin on master or slave.
             remote_args = {
                 'devicePath': device_path,
-                'groupName': self._linstor.group_name
+                'groupName': self._linstor.group_name,
+                'vdiType': self._vdi_type
             }
             remote_args.update(**kwargs)
             remote_args = {str(key): str(value) for key, value in remote_args.items()}
@@ -153,16 +154,15 @@ def linstormodifier():
     return decorated
 
 
-class LinstorVhdUtil:
-    MAX_SIZE = 2 * 1024 * 1024 * 1024 * 1024  # Max VHD size.
-
+class LinstorCowUtil:
     def __init__(self, session, linstor, vdi_type: str):
-        self._cowutil = getCowUtil(vdi_type)
         self._session = session
         self._linstor = linstor
+        self._cowutil = getCowUtil(vdi_type)
+        self._vdi_type = vdi_type
 
     def create_chain_paths(self, vdi_uuid, readonly=False):
-        # OPTIMIZE: Add a limit_to_first_allocated_block param to limit vhdutil calls.
+        # OPTIMIZE: Add a limit_to_first_allocated_block param to limit cowutil calls.
         # Useful for the snapshot code algorithm.
 
         leaf_vdi_path = self._linstor.get_device_path(vdi_uuid)
@@ -191,7 +191,7 @@ class LinstorVhdUtil:
                     break
             util.retry(check_volume_usable, 15, 2)
 
-            vdi_uuid = self.get_vhd_info(vdi_uuid).parentUuid
+            vdi_uuid = self.get_info(vdi_uuid).parentUuid
             if not vdi_uuid:
                 break
             path = self._linstor.get_device_path(vdi_uuid)
@@ -219,17 +219,17 @@ class LinstorVhdUtil:
     def _check(self, vdi_uuid, response):
         return util.strtobool(response)
 
-    def get_vhd_info(self, vdi_uuid, include_parent=True):
+    def get_info(self, vdi_uuid, include_parent=True):
         kwargs = {
             'includeParent': include_parent,
             'resolveParent': False
         }
         # TODO: Replace pylint comment with this feature when possible:
         # https://github.com/PyCQA/pylint/pull/2926
-        return self._get_vhd_info(vdi_uuid, self._extract_uuid, **kwargs)  # pylint: disable = E1123
+        return self._get_info(vdi_uuid, self._extract_uuid, **kwargs)  # pylint: disable = E1123
 
     @linstorhostcall(CowUtil.getInfo, 'getInfo')
-    def _get_vhd_info(self, vdi_uuid, response):
+    def _get_info(self, vdi_uuid, response):
         obj = json.loads(response)
 
         image_info = CowImageInfo(vdi_uuid)
@@ -421,12 +421,11 @@ class LinstorVhdUtil:
     # Helpers.
     # --------------------------------------------------------------------------
 
-    @classmethod
-    def compute_volume_size(cls, virtual_size, vdi_type: str):
+    def compute_volume_size(cls, virtual_size: int) -> int:
         if VdiType.isCowImage(vdi_type):
             # All LINSTOR VDIs have the metadata area preallocated for
             # the maximum possible virtual size (for fast online VDI.resize).
-            meta_overhead = self._cowutil.calcOverheadEmpty(self.MAX_SIZE)
+            meta_overhead = self._cowutil.calcOverheadEmpty(self.MAX_SIZE) # TODO: getDefaultPreallocaqatio... + max
             bitmap_overhead = self._cowutil.calcOverheadBitmap(virtual_size)
             virtual_size += meta_overhead + bitmap_overhead
         else:
@@ -442,9 +441,9 @@ class LinstorVhdUtil:
 
     def _get_readonly_host(self, vdi_uuid, device_path, node_names):
         """
-        When vhd-util is called to fetch VDI info we must find a
+        When CowUtil is called to fetch VDI info we must find a
         diskful DRBD disk to read the data. It's the goal of this function.
-        Why? Because when a VHD is open in RO mode, the LVM layer is used
+        Why? Because when a COW image is open in RO mode, the LVM layer is used
         directly to bypass DRBD verifications (we can have only one process
         that reads/writes to disk with DRBD devices).
         """
@@ -508,7 +507,7 @@ class LinstorVhdUtil:
             # Retry only locally if it's not an EROFS exception.
             return util.retry(local_call, 5, 2, exceptions=[util.CommandException])
         except util.CommandException as e:
-            util.SMlog('failed to execute locally vhd-util (sys {})'.format(e.code))
+            util.SMlog('failed to execute locally CowUtil (sys {})'.format(e.code))
             raise e
 
     def _call_local_method_or_fail(self, local_method, device_path, *args, **kwargs):
@@ -519,7 +518,7 @@ class LinstorVhdUtil:
             self._raise_openers_exception(device_path, e.cmd_err)
 
     def _call_method(self, local_method, remote_method, device_path, use_parent, *args, **kwargs):
-        # Note: `use_parent` exists to know if the VHD parent is used by the local/remote method.
+        # Note: `use_parent` exists to know if the COW image parent is used by the local/remote method.
         # Normally in case of failure, if the parent is unused we try to execute the method on
         # another host using the DRBD opener list. In the other case, if the parent is required,
         # we must check where this last one is open instead of the child.
@@ -542,7 +541,7 @@ class LinstorVhdUtil:
         except Exception as e:
             raise xs_errors.XenError(
                 'VDIUnavailable',
-                opterr='Unable to get host list to run vhd-util command `{}` (path={}): {}'
+                opterr='Unable to get host list to run CowUtil command `{}` (path={}): {}'
                 .format(remote_method, device_path, e)
             )
 
@@ -570,7 +569,7 @@ class LinstorVhdUtil:
             except Exception as e:
                 raise xs_errors.XenError(
                     'VDIUnavailable',
-                    opterr='Unable to get DRBD openers to run vhd-util command `{}` (path={}): {}'
+                    opterr='Unable to get DRBD openers to run CowUtil command `{}` (path={}): {}'
                     .format(remote_method, device_path, e)
                 )
 
@@ -598,7 +597,7 @@ class LinstorVhdUtil:
 
             raise xs_errors.XenError(
                 'VDIUnavailable',
-                opterr='No valid host found to run vhd-util command `{}` (path=`{}`, openers=`{}`)'
+                opterr='No valid host found to run CowUtil command `{}` (path=`{}`, openers=`{}`)'
                 .format(remote_method, device_path, openers)
             )
         return util.retry(remote_call, 5, 2)
@@ -607,5 +606,5 @@ class LinstorVhdUtil:
         if not util.zeroOut(path, size, self._cowutil.getFooterSize()):
             raise xs_errors.XenError(
                 'EIO',
-                opterr='Failed to zero out VHD footer {}'.format(path)
+                opterr='Failed to zero out COW image footer {}'.format(path)
             )

@@ -292,28 +292,30 @@ class LvmCowUtil(object):
         if not hasCowVdis:
             return vdis
 
+        scan_result: Dict[str, CowImageInfo] = {}
         for vdi_type in VDI_COW_TYPES:
             pattern = "%s*" % LV_PREFIX[vdi_type]
-            scan_result = getCowUtil(vdi_type).getAllInfoFromVG(pattern, cls.extractUuid, lvmCache.vgName)
-            uuids = vdis.keys()
-            for uuid in uuids:
-                vdi = vdis[uuid]
-                if VdiType.isCowImage(vdi.vdiType):
-                    if not scan_result.get(uuid):
-                        lvmCache.refresh()
-                        if lvmCache.checkLV(vdi.lvName):
-                            util.SMlog("*** COW image info missing: %s" % uuid)
-                            vdis[uuid].scanError = True
-                        else:
-                            util.SMlog("LV disappeared since last scan: %s" % uuid)
-                            del vdis[uuid]
-                    elif scan_result[uuid].error:
-                        util.SMlog("*** cow-scan error: %s" % uuid)
+            scan_result.update(getCowUtil(vdi_type).getAllInfoFromVG(pattern, cls.extractUuid, lvmCache.vgName))
+
+        uuids = vdis.keys()
+        for uuid in uuids:
+            vdi = vdis[uuid]
+            if VdiType.isCowImage(vdi.vdiType):
+                if not scan_result.get(uuid):
+                    lvmCache.refresh()
+                    if lvmCache.checkLV(vdi.lvName):
+                        util.SMlog("*** COW image info missing: %s" % uuid)
                         vdis[uuid].scanError = True
                     else:
-                        vdis[uuid].sizeVirt = vdis[uuid].sizeVirt
-                        vdis[uuid].parentUuid = vdis[uuid].parentUuid
-                        vdis[uuid].hidden = vdis[uuid].hidden
+                        util.SMlog("LV disappeared since last scan: %s" % uuid)
+                        del vdis[uuid]
+                elif scan_result[uuid].error:
+                    util.SMlog("*** cow-scan error: %s" % uuid)
+                    vdis[uuid].scanError = True
+                else:
+                    vdis[uuid].sizeVirt = scan_result[uuid].sizeVirt
+                    vdis[uuid].parentUuid = scan_result[uuid].parentUuid
+                    vdis[uuid].hidden = scan_result[uuid].hidden
         return vdis
 
     @staticmethod

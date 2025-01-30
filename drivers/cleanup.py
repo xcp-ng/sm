@@ -56,8 +56,8 @@ from lvmcowutil import LV_PREFIX, LvmCowUtil
 from vditype import VdiType, VdiTypeExtension, VDI_COW_TYPES, VDI_TYPE_TO_EXTENSION
 
 try:
+    from linstorcowutil import LinstorCowUtil
     from linstorjournaler import LinstorJournaler
-    from linstorvhdutil import LinstorVhdUtil
     from linstorvolumemanager import get_controller_uri
     from linstorvolumemanager import LinstorVolumeManager
     from linstorvolumemanager import LinstorVolumeManagerError
