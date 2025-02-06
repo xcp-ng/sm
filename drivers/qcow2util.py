@@ -1,13 +1,16 @@
-from sm_typing import Any, Callable, Dict, Final, List, Optional, override, cast
+from sm_typing import Any, Callable, cast, Dict, Final, List, Optional, override
 from typing import BinaryIO
 
 import errno
-import struct
-from pathlib import Path
-import zlib
 import os
+import re
+import struct
+import zlib
+from pathlib import Path
 
 import util
+import xs_errors
+from lvmcache import LVMCache
 from cowutil import CowUtil, CowImageInfo
 
 MAX_QCOW_CHAIN_LENGTH: Final = 30
@@ -19,10 +22,9 @@ MIN_QCOW_SIZE: Final = QCOW_CLUSTER_SIZE
 MAX_QCOW_SIZE: Final = 16 * 1024 * 1024 * 1024 * 1024
 
 QEMU_IMG: Final = "/usr/bin/qemu-img"
-#QEMU_IMG: Final = "/usr/lib64/xen/bin/qemu-img"
 
 QCOW2_TYPE: Final = "qcow2"
-
+RAW_TYPE: Final = "raw"
 
 class QCowUtil(CowUtil):
 
@@ -48,6 +50,7 @@ class QCowUtil(CowUtil):
         self.qcow_read = False
 
     def _read_qcow2(self, path: str):
+        phys_disk_size = self.getSizePhys(path)
         with open(path, "rb") as qcow2_file:
             self.filename = path  # Keep the filename if clean is called
             self.header = self._read_qcow2_header(qcow2_file)
@@ -60,6 +63,8 @@ class QCowUtil(CowUtil):
                 l2_offset = l1_entry & self.L2_OFFSET_MASK
                 if l2_offset == 0:
                     self.l1_to_l2[l1_entry] = []
+                elif l2_offset > phys_disk_size:
+                    raise xs_errors.XenError("VDISize", "L2 Offset is bigger than physical disk {}".format(path))
                 else:
                     self.l1_to_l2[l1_entry] = self._get_l2_entries(
                         qcow2_file, l2_offset
@@ -381,9 +386,9 @@ class QCowUtil(CowUtil):
         idx: int = 0
         bitmap = list()
         b = 0
-        for l1_idx, l1_entry in enumerate(self.l1):
+        for l1_entry in self.l1:
             if not self._is_l1_allocated(l1_entry):
-                bitmap.extend(self._set_l1_zero()) #Should define cluster_size/8 page to 0
+                bitmap.extend(self._set_l1_zero())
                 continue
 
             l2_table = self.l1_to_l2[l1_entry] #L2 is cluster_size/8 entries of cluster_size page
@@ -472,7 +477,21 @@ class QCowUtil(CowUtil):
     def getInfoFromLVM(
         self, lvName: str, extractUuidFunction: Callable[[str], str], vgName: str
     ) -> Optional[CowImageInfo]:
-        pass
+        lvcache = LVMCache(vgName)
+        lvcache.refresh()
+        if lvName not in self.lvs:
+            return None
+        if not lvcache.is_active(lvName):
+                        lvcache.activateNoRefcount(lvName)
+                        was_activated = True
+        path = "/dev/{}/{}".format(vgName, lvName)
+        cowinfo = self.getInfo(path, extractUuidFunction)
+        if was_activated:
+            try:
+                lvcache.deactivateNoRefcount(lvName)
+            except Exception as e:
+                raise e
+        return cowinfo
 
     @override
     def getAllInfoFromVG(
@@ -484,15 +503,43 @@ class QCowUtil(CowUtil):
         exitOnError: bool = False
     ) -> Dict[str, CowImageInfo]:
         result: Dict[str, CowImageInfo] = dict()
-        pattern_p: Path = Path(pattern)
-        list_qcow = list(pattern_p.parent.glob(pattern_p.name))
         #TODO: handle parents, it needs to getinfo from parents also
         #TODO: handle exitOnError
-        for qcow in list_qcow:
-            qcow_str = str(qcow)
-            info = self.getInfo(qcow_str, extractUuidFunction)
-            result[info.uuid] = info
-        return result
+        #TODO: If a vgName is given, is it already enabled? Do we need to enable LV on it too? It also only work for FileSR but LvmCowUtil uses it.
+        if vgName:
+            reg = re.compile(pattern)
+            lvcache = LVMCache(vgName)
+            lvcache.refresh()
+            # We get size in lvcache.lvs[lvName].size (in bytes)
+            # We could read the header from the PV directly
+            for lvName in lvcache.lvs.keys():
+                was_activated = False
+                lvinfo = lvcache.lvs[lvName]
+                if reg.match(lvName):
+                    util.SMlog("Match {}: {}".format(lvName, lvinfo))
+                    lvcache.refresh()
+                    if not lvcache.is_active(lvName):
+                        lvcache.activateNoRefcount(lvName)
+                        was_activated = True
+                    path = "/dev/{}/{}".format(vgName, lvName)
+                    cowinfo = self.getInfo(path, extractUuidFunction)
+                    result[cowinfo.uuid] = cowinfo
+                    if was_activated:
+                        try:
+                            lvcache.deactivateNoRefcount(lvName)
+                        except Exception as e:
+                            raise e
+                else:
+                    util.SMlog("NOT {}: {}".format(lvName, lvinfo))
+            return result
+        else:
+            pattern_p: Path = Path(pattern)
+            list_qcow = list(pattern_p.parent.glob(pattern_p.name))
+            for qcow in list_qcow:
+                qcow_str = str(qcow)
+                info = self.getInfo(qcow_str, extractUuidFunction)
+                result[info.uuid] = info
+            return result
 
     @override
     def getParent(self, path: str, extractUuidFunction: Callable[[str], str]) -> Optional[str]:
@@ -519,7 +566,7 @@ class QCowUtil(CowUtil):
     def setParent(self, path: str, parentPath: str, parentRaw: bool) -> None:
         parentType = QCOW2_TYPE
         if parentRaw:
-            parentType = "raw"
+            parentType = RAW_TYPE
         cmd = [QEMU_IMG, "rebase", "-u", "-f", QCOW2_TYPE, "-F", parentType, "-b", parentPath, path]
         self._ioretry(cmd)
 
@@ -535,8 +582,7 @@ class QCowUtil(CowUtil):
         self._read_qcow2(path)
         custom_data_offset = self._add_or_find_custom_header()
         if custom_data_offset == 0:
-            print("ERROR: Custom data offset not found... should not reach this")
-            return False #TODO: Add exception
+            raise util.SMException("Custom data offset not found... should not reach this")
 
         with open(path, "rb") as qcow2_file:
             qcow2_file.seek(custom_data_offset)
@@ -559,8 +605,7 @@ class QCowUtil(CowUtil):
         self._read_qcow2(path)
         custom_data_offset = self._add_or_find_custom_header()
         if custom_data_offset == 0:
-            util.SMlog("ERROR: Custom data offset not found... should not reach this")
-            return #TODO: Add exception
+            raise util.SMException("Custom data offset not found... should not reach this")
 
         with open(self.filename, "rb+") as qcow2_file:
             qcow2_file.seek(custom_data_offset)
@@ -635,7 +680,11 @@ class QCowUtil(CowUtil):
 
     @override
     def getDepth(self, path: str) -> int:
-        return 0 #TODO: Get correct depth
+        cmd = [QEMU_IMG, "info", "--backing-chain", "--output=json", path]
+        ret = self._ioretry(cmd)
+        depth = len(re.findall("\"backing-filename\"", ret))+1
+        #chain depth is beginning at one for VHD, meaning a VHD without parent has depth = 1
+        return depth
 
     @override
     def getBlockBitmap(self, path: str) -> bytes:
@@ -644,10 +693,10 @@ class QCowUtil(CowUtil):
 
     @override
     def coalesce(self, path: str) -> int:
-        # -d on commit make it not empty the original image since we don't intend to keep it
         allocated_blocks = self.getAllocatedSize(path)
+        # -d on commit make it not empty the original image since we don't intend to keep it
         cmd = [QEMU_IMG, "commit", "-f", QCOW2_TYPE, path, "-d"]
-        ret = cast(str, self._ioretry(cmd))
+        ret = cast(str, self._ioretry(cmd)) #TODO: parse for errors
         return allocated_blocks
 
     @override
@@ -668,14 +717,18 @@ class QCowUtil(CowUtil):
         msize: int = 0,
         checkEmpty: Optional[bool] = True
     ) -> None:
+        parent_type = QCOW2_TYPE
         if parentRaw:
-            util.SMlog("Parent can't be raw for QCOW2 snapshot") #TODO: Shouldn't happen
-            return
+            parent_type = RAW_TYPE
         #TODO: msize is ignored for now, it's used to preallocate metadata for VHD so it can use resize without journal
         # TODO: checkEmpty? If it is False, then the parent could be empty and should still be used for snapshot
-        cmd = [QEMU_IMG, "create", "-f", QCOW2_TYPE, "-b", parent, "-F", QCOW2_TYPE, path]
+        cmd = [QEMU_IMG, "create", "-f", QCOW2_TYPE, "-b", parent, "-F", parent_type, path]
         self._ioretry(cmd)
-        self.setHidden(path, False)
+        self.setHidden(path, False) #We add hidden header at creation
+
+    @override
+    def canSnapshotRaw(self, size: int) -> bool:
+        return True
 
     @override
     def check(
@@ -699,7 +752,7 @@ class QCowUtil(CowUtil):
 
     @override
     def revert(self, path: str, jFile: str) -> None:
-        pass #TODO: Used to get back from a failed operation using a journal, NOOP for qcow for the moment
+        pass #Used to get back from a failed operation using a journal, NOOP for qcow2
 
     @override
     def repair(self, path: str) -> None:
