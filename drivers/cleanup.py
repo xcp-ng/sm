@@ -1743,7 +1743,11 @@ class LinstorVDI(VDI):
             offset = self.drbd_size
             if self.sizeVirt < size:
                 oldSize = self.drbd_size
+<<<<<<< HEAD
                 self.drbd_size = LinstorVolumeManager.round_up_volume_size(size)
+=======
+                self.drbd_size = util.roundup(LinstorVolumeManager.BLOCK_SIZE, size)
+>>>>>>> 2c746f78 (fix(cleanup.py): resize on a primary host)
                 Util.log("  Growing %s: %d->%d" % (self.path, oldSize, self.drbd_size))
                 self.sr._linstor.resize_volume(self.uuid, self.drbd_size)
                 offset = oldSize
