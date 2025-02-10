@@ -941,6 +941,7 @@ class LVMSR(SR.SR):
             raise util.SMException("base copy %s not present, " \
                     "but no original %s found" % (baseUuid, origUuid))
 
+        base = vdis[baseUuid]
         cowutil = getCowUtil(base.vdiType)
 
         if forceUndo:
@@ -960,7 +961,6 @@ class LVMSR(SR.SR):
             return
 
         orig = vdis[origUuid]
-        base = vdis[baseUuid]
         self.lvActivator.activate(baseUuid, base.lvName, False)
         self.lvActivator.activate(origUuid, orig.lvName, False)
         if orig.parentUuid != baseUuid:
@@ -2046,7 +2046,7 @@ class LVMVDI(VDI.VDI):
         self.lvmcowutil = LvmCowUtil(self.cowutil)
 
     def _initFromVDIInfo(self, vdiInfo):
-        self._setType(vdiType)
+        self._setType(vdiInfo.vdiType)
         self.lvname = vdiInfo.lvName
         self.size = vdiInfo.sizeVirt
         self.utilisation = vdiInfo.sizeLV
@@ -2104,7 +2104,7 @@ class LVMVDI(VDI.VDI):
         # LVM commands can be costly, so check the file directly first in case
         # the LV is active
         found = False
-        for vdiType, prefix in LV_PREFIX:
+        for vdi_type, prefix in LV_PREFIX.items():
             lvname = "%s%s" % (prefix, self.uuid)
             path = os.path.join(self.sr.path, lvname)
             if util.pathexists(path):
@@ -2112,7 +2112,7 @@ class LVMVDI(VDI.VDI):
                     raise xs_errors.XenError('VDILoad',
                             opterr="multiple VDI's: uuid %s" % self.uuid)
                 found = True
-                self._setType(vdiType)
+                self._setType(vdi_type)
                 self.lvname = lvname
                 self.path = path
         if found:
