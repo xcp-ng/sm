@@ -426,7 +426,7 @@ class QCowUtil(CowUtil):
 
     @override
     def getDefaultPreallocationSizeVirt(self) -> int:
-        return 0
+        return MAX_QCOW_SIZE
 
     @override
     def getMaxChainLength(self) -> int:
@@ -638,7 +638,10 @@ class QCowUtil(CowUtil):
 
     @override
     def getSizePhys(self, path: str) -> int:
-        return os.stat(path).st_size
+        size = os.stat(path).st_size
+        if size == 0:
+            size = int(self._ioretry(["blockdev", "--getsize64", path]))
+        return size
 
     @override
     def setSizePhys(self, path: str, size: int, debug: bool = True) -> None:
