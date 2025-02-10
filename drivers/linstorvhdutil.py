@@ -267,6 +267,10 @@ class LinstorVhdUtil:
     def get_size_virt(self, vdi_uuid, response):
         return int(response)
 
+    @linstorhostcall(vhdutil.getMaxResizeSize, 'getMaxResizeSize')
+    def get_max_resize_size(self, vdi_uuid, response):
+        return int(response)
+
     @linstorhostcall(vhdutil.getSizePhys, 'getSizePhys')
     def get_size_phys(self, vdi_uuid, response):
         return int(response)
@@ -300,14 +304,6 @@ class LinstorVhdUtil:
     @linstormodifier()
     def create(self, path, size, static, msize=0):
         return self._call_local_method_or_fail(vhdutil.create, path, size, static, msize)
-
-    @linstormodifier()
-    def set_size_virt(self, path, size, jfile):
-        return self._call_local_method_or_fail(vhdutil.setSizeVirt, path, size, jfile)
-
-    @linstormodifier()
-    def set_size_virt_fast(self, path, size):
-        return self._call_local_method_or_fail(vhdutil.setSizeVirtFast, path, size)
 
     @linstormodifier()
     def set_size_phys(self, path, size, debug=True):
@@ -382,6 +378,21 @@ class LinstorVhdUtil:
     # --------------------------------------------------------------------------
     # Remote setters: write locally and try on another host in case of failure.
     # --------------------------------------------------------------------------
+
+    @linstormodifier()
+    def set_size_virt(self, path, size, jfile):
+        kwargs = {
+            'size': size,
+            'jfile': jfile
+        }
+        return self._call_method(vhdutil.setSizeVirt, 'setSizeVirt', path, use_parent=False, **kwargs)
+
+    @linstormodifier()
+    def set_size_virt_fast(self, path, size):
+        kwargs = {
+            'size': size
+        }
+        return self._call_method(vhdutil.setSizeVirtFast, 'setSizeVirtFast', path, use_parent=False, **kwargs)
 
     @linstormodifier()
     def force_parent(self, path, parentPath, parentRaw=False):

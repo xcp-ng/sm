@@ -477,6 +477,15 @@ def get_size_phys(session, args):
         raise
 
 
+def get_max_resize_size(session, args):
+    try:
+        device_path = args['devicePath']
+        return str(vhdutil.getMaxResizeSize(device_path))
+    except Exception as e:
+        util.SMlog('linstor-manager:get_size_phys error: {}'.format(e))
+        raise
+
+
 def get_depth(session, args):
     try:
         device_path = args['devicePath']
@@ -513,6 +522,29 @@ def get_drbd_size(session, args):
         raise Exception('Failed to get DRBD size: {}'.format(stderr))
     except Exception:
         util.SMlog('linstor-manager:get_drbd_size error: {}'.format(stderr))
+        raise
+
+
+def set_size_virt(session, args):
+    try:
+        device_path = args['devicePath']
+        size = int(args['size'])
+        jfile = args['jfile']
+        vhdutil.setSizeVirt(device_path, size, jfile)
+        return ''
+    except Exception as e:
+        util.SMlog('linstor-manager:set_size_virt error: {}'.format(e))
+        raise
+
+
+def set_size_virt_fast(session, args):
+    try:
+        device_path = args['devicePath']
+        size = int(args['size'])
+        vhdutil.setSizeVirtFast(device_path, size)
+        return ''
+    except Exception as e:
+        util.SMlog('linstor-manager:set_size_virt_fast error: {}'.format(e))
         raise
 
 
@@ -1204,6 +1236,7 @@ if __name__ == '__main__':
         'hasParent': has_parent,
         'getParent': get_parent,
         'getSizeVirt': get_size_virt,
+        'getMaxResizeSize': get_max_resize_size,
         'getSizePhys': get_size_phys,
         'getDepth': get_depth,
         'getKeyHash': get_key_hash,
@@ -1214,6 +1247,8 @@ if __name__ == '__main__':
 
         # Called by cleanup.py to coalesce when a primary
         # is opened on a non-local host.
+        'setSizeVirt': set_size_virt,
+        'setSizeVirtFast': set_size_virt_fast,
         'setParent': set_parent,
         'coalesce': coalesce,
         'repair': repair,

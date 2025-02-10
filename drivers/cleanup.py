@@ -1567,6 +1567,60 @@ class LinstorVDI(VDI):
         else:
             VDI._setHidden(self, hidden)
 
+    def _increaseSizeVirt(self, size, atomic=True):
+        if self.raw:
+            offset = self.drbd_size
+            if self.sizeVirt < size:
+                oldSize = self.drbd_size
+                self.drbd_size = LinstorVolumeManager.round_up_volume_size(size)
+                Util.log("  Growing %s: %d->%d" % (self.path, oldSize, self.drbd_size))
+                self.sr._linstor.resize_volume(self.uuid, self.drbd_size)
+                offset = oldSize
+            unfinishedZero = False
+            jval = self.sr.journaler.get(LinstorJournaler.ZERO, self.uuid)
+            if jval:
+                unfinishedZero = True
+                offset = int(jval)
+            length = self.drbd_size - offset
+            if not length:
+                return
+
+            if unfinishedZero:
+                Util.log("  ==> Redoing unfinished zeroing out")
+            else:
+                self.sr.journaler.create(LinstorJournaler.ZERO, self.uuid, str(offset))
+            Util.log("  Zeroing %s: from %d, %dB" % (self.path, offset, length))
+            abortTest = lambda: IPCFlag(self.sr.uuid).test(FLAG_TYPE_ABORT)
+            func = lambda: util.zeroOut(self.path, offset, length)
+            Util.runAbortable(func, True, self.sr.uuid, abortTest, VDI.POLL_INTERVAL, 0)
+            self.sr.journaler.remove(LinstorJournaler.ZERO, self.uuid)
+            return
+
+        if self.sizeVirt >= size:
+            return
+        Util.log("  Expanding VHD virt size for VDI %s: %s -> %s" % \
+                (self, Util.num2str(self.sizeVirt), Util.num2str(size)))
+
+        msize = self.sr._vhdutil.get_max_resize_size(self.uuid) * 1024 * 1024
+        if (size <= msize):
+            self.sr._vhdutil.set_size_virt_fast(self.path, size)
+        else:
+            if atomic:
+                vdiList = self._getAllSubtree()
+                self.sr.lock()
+                try:
+                    self.sr.pauseVDIs(vdiList)
+                    try:
+                        self._setSizeVirt(size)
+                    finally:
+                        self.sr.unpauseVDIs(vdiList)
+                finally:
+                    self.sr.unlock()
+            else:
+                self._setSizeVirt(size)
+
+        self.sizeVirt = self.sr._vhdutil.get_size_virt(self.uuid)
+
     def _setSizeVirt(self, size):
         jfile = self.uuid + '-jvhd'
         self.sr._linstor.create_volume(
