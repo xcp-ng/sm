@@ -30,7 +30,7 @@ import xs_errors
 MANAGER_PLUGIN = 'linstor-manager'
 
 
-def call_remote_method(session, host_ref, method, device_path, args):
+def call_remote_method(session, host_ref, method, args):
     try:
         response = session.xenapi.host.call_plugin(
             host_ref, MANAGER_PLUGIN, method, args
@@ -574,7 +574,7 @@ class LinstorVhdUtil:
 
                 no_host_found = False
                 try:
-                    return call_remote_method(self._session, host_ref, remote_method, device_path, remote_args)
+                    return call_remote_method(self._session, host_ref, remote_method, remote_args)
                 except Exception:
                     pass
 
