@@ -33,7 +33,7 @@ from vditype import VdiType
 MANAGER_PLUGIN = 'linstor-manager'
 
 
-def call_remote_method(session, host_ref, method, device_path, args):
+def call_remote_method(session, host_ref, method, args):
     try:
         response = session.xenapi.host.call_plugin(
             host_ref, MANAGER_PLUGIN, method, args
@@ -132,7 +132,7 @@ def linstorhostcall(local_method, remote_method):
             try:
                 def remote_call():
                     host_ref = self._get_readonly_host(vdi_uuid, device_path, node_names)
-                    return call_remote_method(self._session, host_ref, remote_method, device_path, remote_args)
+                    return call_remote_method(self._session, host_ref, remote_method, remote_args)
                 response = util.retry(remote_call, 5, 2)
             except Exception as remote_e:
                 self._raise_openers_exception(device_path, local_e or remote_e)
@@ -585,7 +585,7 @@ class LinstorCowUtil:
 
                 no_host_found = False
                 try:
-                    return call_remote_method(self._session, host_ref, remote_method, device_path, remote_args)
+                    return call_remote_method(self._session, host_ref, remote_method, remote_args)
                 except Exception:
                     pass
 
