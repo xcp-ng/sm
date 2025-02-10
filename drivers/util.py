@@ -42,6 +42,7 @@ import copy
 import tempfile
 
 from functools import reduce
+from sm_typing import List, Optional
 
 NO_LOGGING_STAMPFILE = '/etc/xensource/no_sm_log'
 
@@ -2054,6 +2055,22 @@ def check_pid_exists(pid):
         return False
     else:
         return True
+
+
+def get_openers_pid(path: str) -> Optional[List[int]]:
+    cmd = ["lsof", "-t", path]
+
+    try:
+        list = []
+        ret = pread2(cmd)
+        for line in ret.splitlines():
+            list.append(int(line))
+        return list
+    except CommandException as e:
+        if e.code == 1: # `lsof` return 1 if there is no openers
+            return None
+        else:
+            raise e
 
 
 def make_profile(name, function):
