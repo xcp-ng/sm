@@ -201,7 +201,7 @@ def detach_thin_impl(session, linstor, sr_uuid, vdi_uuid):
     util.retry(check_vbd_count, maxretry=10, period=1)
 
     device_path = linstor.get_device_path(vdi_uuid)
-    linstorcowutil = LinstorCowUtil(session, linstor, vdi_type)
+    linstorcowutil = LinstorCowUtil(session, linstor, getCowUtil(vdi_type))
     new_volume_size = LinstorVolumeManager.round_up_volume_size(
         # TODO: Replace pylint comment with this feature when possible:
         # https://github.com/PyCQA/pylint/pull/2926
@@ -1847,7 +1847,7 @@ class LinstorVDI(VDI.VDI):
             return self._attach_using_http_nbd()
 
         # Ensure we have a path...
-        self.sr._vhdutil.create_chain_paths(self.uuid, readonly=not writable)
+        self.linstorcowutil.create_chain_paths(self.uuid, readonly=not writable)
 
         self.attached = True
         return VDI.VDI.attach(self, self.sr.uuid, self.uuid)
@@ -1902,7 +1902,7 @@ class LinstorVDI(VDI.VDI):
         while vdi_uuid:
             try:
                 path = self._linstor.build_device_path(self._linstor.get_volume_name(vdi_uuid))
-                parent_vdi_uuid = self.sr._vhdutil.get_vhd_info(vdi_uuid).parentUuid
+                parent_vdi_uuid = self.sr.cowutil.get_info(vdi_uuid).parentUuid
             except Exception:
                 break
 
