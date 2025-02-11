@@ -419,6 +419,8 @@ def sr_get_driver_info(driver_info):
     for option in driver_info['configuration']:
         options.append({'key': option[0], 'description': option[1]})
     results['configuration'] = options
+    # add supported image formats if any 
+    results["supported_image_formats"] = driver_info.get("supported_image_formats", [])
     return xmlrpc.client.dumps((results, ), "", True)
 
 
