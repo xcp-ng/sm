@@ -696,6 +696,10 @@ class QCowUtil(CowUtil):
 
     @override
     def coalesce(self, path: str) -> int:
+        pid_opener = util.get_openers_pid(path)
+        if pid_opener is not None:
+            raise xs_errors.XenError("LeafGCSkip", f"We can't coalesce the QCOW2 since it's in use. Openers: {pid_opener}")
+
         allocated_blocks = self.getAllocatedSize(path)
         # -d on commit make it not empty the original image since we don't intend to keep it
         cmd = [QEMU_IMG, "commit", "-f", QCOW2_TYPE, path, "-d"]
