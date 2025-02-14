@@ -18,7 +18,7 @@
 # blktap2: blktap/tapdisk management layer
 #
 
-from sm_typing import Any, Callable, ClassVar, Dict, override
+from sm_typing import Any, Callable, ClassVar, Dict, override, List, Union
 
 from abc import abstractmethod
 
@@ -56,6 +56,7 @@ from cowutil import getCowUtil
 from xmlrpc.client import ServerProxy, Transport
 from socket import socket, AF_UNIX, SOCK_STREAM
 
+
 try:
     from linstorvolumemanager import log_drbd_openers
     LINSTOR_AVAILABLE = True
@@ -63,6 +64,7 @@ except ImportError:
     LINSTOR_AVAILABLE = False
 
 PLUGIN_TAP_PAUSE = "tapdisk-pause"
+PLUGIN_ON_SLAVE = "on-slave"
 
 SOCKPATH = "/var/xapi/xcp-rrdd"
 
@@ -443,6 +445,27 @@ class TapCtl(object):
         major = cls._pread(args)
         return int(major)
 
+    @classmethod
+    def commit(cls, pid, minor, vdi_type, path):
+        args = ["commit", "-p", pid, "-m", minor, "-a", path]
+        cls._pread(args)
+
+    @classmethod
+    def query(cls, pid, minor, quiet=False):
+        args = ["query", "-p", pid, "-m", minor]
+        output = cls._pread(args, quiet=quiet)
+        m = re.match(r"Commit status '(.+)' \((\d+)\/(\d+)\)", output)
+        status = m.group(1)
+        coalesced = int(m.group(2))
+        total_coalesce = int(m.group(3))
+        return (status, coalesced, total_coalesce)
+
+    @classmethod
+    def cancel_commit(cls, pid, minor, wait=True):
+        args = ["cancel", "-p", pid, "-m", minor]
+        if wait:
+            args.append("-w")
+        cls._pread(args)
 
 class TapdiskExists(Exception):
     """Tapdisk already running."""
@@ -1639,6 +1662,90 @@ class VDI(object):
             time.sleep(1)
         raise util.SMException("VDI %s locked" % vdi_uuid)
 
+    def _get_sr_master_host_ref(self) -> str:
+        """
+        Give the host ref of the one responsible for Garbage Collection for a SR.
+        Meaning this host for a local SR, the master for a shared SR.
+        """
+        sr = self.target.vdi.sr
+        if sr.is_shared():
+            host_ref = util.get_master_ref(self._session)
+        else:
+            host_ref = sr.host_ref
+        return host_ref
+
+    def _get_vdi_chain(self, cowutil, extractUuid) -> List[str]:
+        vdi_chain = []
+        path = self.target.get_vdi_path()
+
+        #TODO: Need to add handling of error for getParentNoCheck, e.g. corrupted VDI where we can't read parent
+        vdi_chain.append(extractUuid(path))
+        parent = cowutil.getParentNoCheck(path)
+        while parent:
+            vdi_chain.append(extractUuid(parent))
+            parent = cowutil.getParentNoCheck(parent)
+        vdi_chain.reverse()
+        return vdi_chain
+
+    def _check_journal_coalesce_chain(self, sr_uuid: str, vdi_uuid: str) -> bool:
+        vdi_type = self.target.get_vdi_type()
+        cowutil = getCowUtil(vdi_type)
+
+        if not cowutil.isCoalesceableOnRemote(): #We only need to stop the coalesce in case of QCOW2
+            return True
+
+        path = self.target.get_vdi_path()
+
+        import fjournaler
+        import journaler
+        from lvmcowutil import LvmCowUtil
+        from FileSR import FileVDI
+        import lvmcache
+
+        journal: Union[journaler.Journaler, fjournaler.Journaler]
+        # Different extractUUID & journaler function for LVMSR and FileSR
+        if path.startswith("/dev/"): #TODO: How to identify SR type easily, we could ask XAPI since we have the sruuid (and even ref)
+            vgName = "VG_XenStorage-{}".format(sr_uuid)
+            lvmCache = lvmcache.LVMCache(vgName)
+            journal = journaler.Journaler(lvmCache)
+
+            extractUuid = LvmCowUtil.extractUuid
+        else:
+            journal = fjournaler.Journaler(os.getcwd())
+            extractUuid = FileVDI.extractUuid
+
+        # Get the VDI chain
+        vdi_chain = self._get_vdi_chain(cowutil, extractUuid)
+
+        if len(vdi_chain) == 1:
+            # We only have a leaf, do nothing
+            util.SMlog("VDI {} is only a leaf, continuing...".format(vdi_uuid))
+            return True
+
+        # Log the chain of active VDI
+        level = 0
+        util.SMlog("VDI chain:")
+        for vdi in vdi_chain:
+            prefix = "    " * level
+            level += 1
+            util.SMlog("{}{}".format(prefix, vdi))
+
+        vdi_to_cancel = []
+        for entry in journal.getAll("coalesce").keys():
+            if entry in vdi_chain:
+                vdi_to_cancel.append(entry)
+                util.SMlog("Coalescing VDI {} in chain".format(entry))
+
+        # Get the host_ref from the host doing the GC work
+        host_ref = self._get_sr_master_host_ref()
+        for vdi in vdi_to_cancel:
+            args = {"sr_uuid": sr_uuid, "vdi_uuid": vdi}
+            util.SMlog("Calling cancel_coalesce_master with args: {}".format(args))
+            self._session.xenapi.host.call_plugin(\
+                host_ref, PLUGIN_ON_SLAVE, "cancel_coalesce_master", args)
+
+        return True
+
     @locking("VDIUnavailable")
     def _activate_locked(self, sr_uuid, vdi_uuid, options):
         """Wraps target.activate and adds a tapdisk"""
@@ -1671,6 +1778,9 @@ class VDI(object):
                 self._attach(sr_uuid, vdi_uuid)
 
             vdi_type = self.target.get_vdi_type()
+
+            if not self._check_journal_coalesce_chain(sr_uuid, vdi_uuid):
+                return False
 
             # Take lvchange-p Lock before running
             # tap-ctl open
