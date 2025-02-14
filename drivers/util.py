@@ -170,6 +170,19 @@ def SMlog(message, ident="SM", priority=LOG_INFO):
             _logToSyslog(ident, _SM_SYSLOG_FACILITY, priority, message_line)
 
 
+class LoggerCounter:
+    def __init__(self, max_repeats):
+        self.previous_message = None
+        self.max_repeats = max_repeats
+        self.repeat_counter = 0
+
+    def log(self, message):
+        self.repeat_counter += 1
+        if self.previous_message != message or self.repeat_counter == self.max_repeats:
+            SMlog(message)
+            self.previous_message = message
+            self.repeat_counter = 0
+
 def _getDateString():
     d = datetime.datetime.now()
     t = d.timetuple()
@@ -775,6 +788,22 @@ def get_hosts_attached_on(session, vdi_uuids):
         for key in [x for x in sm_config.keys() if x.startswith('host_')]:
             host_refs[key[len('host_'):]] = True
     return host_refs.keys()
+
+def get_hosts_attached_on_with_vdi_uuid(session, vdi_uuids):
+    """
+    Return a dict of {vdi_uuid: host OpaqueRef}
+    """
+    host_refs = {}
+    for vdi_uuid in vdi_uuids:
+        try:
+            vdi_ref = session.xenapi.VDI.get_by_uuid(vdi_uuid)
+        except XenAPI.Failure:
+            SMlog("VDI %s not in db, ignoring" % vdi_uuid)
+            continue
+        sm_config = session.xenapi.VDI.get_sm_config(vdi_ref)
+        for key in [x for x in sm_config.keys() if x.startswith('host_')]:
+            host_refs[vdi_uuid] = key[len('host_'):]
+    return host_refs
 
 def get_this_host_address(session):
     host_uuid = get_this_host()
