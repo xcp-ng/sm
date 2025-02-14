@@ -446,6 +446,20 @@ class TapCtl(object):
         major = cls._pread(args)
         return int(major)
 
+    @classmethod
+    def commit(cls, pid, minor, vdi_type, path):
+        args = ["commit", "-p", pid, "-m", minor, "-a", "{}:{}".format(vdi_type, path)]
+        cls._pread(args)
+
+    @classmethod
+    def query(cls, pid, minor):
+        args = ["query", "-p", pid, "-m", minor]
+        output = cls._pread(args)
+        m = re.match(r"Commit status '(.+)' \((\d+)\/(\d+)\)", output)
+        status = m.group(1)
+        coalesced = int(m.group(2))
+        total_coalesce = int(m.group(3))
+        return (status, coalesced, total_coalesce)
 
 class TapdiskExists(Exception):
     """Tapdisk already running."""
