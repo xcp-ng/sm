@@ -14,20 +14,23 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-from sm_typing import Any, Callable, cast, Dict, Final, List, Optional, override
+from sm_typing import Any, Callable, Dict, Final, List, Optional, Tuple, cast, override
 from typing import BinaryIO
 
 import errno
 import os
 import re
+import time
 import struct
 import zlib
 from pathlib import Path
 
 import util
 import xs_errors
-from lvmcache import LVMCache
+from blktap2 import TapCtl
 from cowutil import CowUtil, CowImageInfo
+from lvmcache import LVMCache
+from constants import NS_PREFIX_LVM, VG_PREFIX
 
 # ------------------------------------------------------------------------------
 
@@ -504,37 +507,26 @@ class QCowUtil(CowUtil):
         self, lvName: str, extractUuidFunction: Callable[[str], str], vgName: str
     ) -> Optional[CowImageInfo]:
         lvcache = LVMCache(vgName)
-        lvcache.refresh()
-        if lvName not in lvcache.lvs:
-            return None
-        if not lvcache.is_active(lvName):
-                        lvcache.activateNoRefcount(lvName)
-                        was_activated = True
-        path = "/dev/{}/{}".format(vgName, lvName)
-        cowinfo = self.getInfo(path, extractUuidFunction)
-        if was_activated:
-            try:
-                lvcache.deactivateNoRefcount(lvName)
-            except Exception as e:
-                raise e
-        return cowinfo
+        return self._getInfoLV(lvcache, extractUuidFunction, vgName, lvName)
 
-    def _getInfoLV(self, lvcache: LVMCache, extractUuidFunction: Callable[[str], str], lvPath: str) -> Optional[CowImageInfo]:
-        was_activated = False
-        lvName = lvPath.split("/")[-1]
+    def _getInfoLV(
+        self, lvcache: LVMCache, extractUuidFunction: Callable[[str], str], vgName: str, lvName: str
+    ) -> Optional[CowImageInfo]:
+        lvPath = "/dev/{}/{}".format(vgName, lvName)
         lvcache.refresh()
         if lvName not in lvcache.lvs:
             util.SMlog("{} does not exist anymore".format(lvName))
             return None
-        if not lvcache.is_active(lvName):
-            lvcache.activateNoRefcount(lvName)
-            was_activated = True
-        cowinfo = self.getInfo(lvPath, extractUuidFunction)
-        if was_activated:
-            try:
-                lvcache.deactivateNoRefcount(lvName)
-            except Exception as e:
-                raise e
+
+        vdiUuid = extractUuidFunction(lvPath)
+        srUuid = vgName.replace(VG_PREFIX, "")
+
+        ns = NS_PREFIX_LVM + srUuid
+        lvcache.activate(ns, vdiUuid, lvName, False)
+        try:
+            cowinfo = self.getInfo(lvPath, extractUuidFunction)
+        finally:
+            lvcache.deactivate(ns, vdiUuid, lvName, False)
         return cowinfo
 
     @override
@@ -548,7 +540,6 @@ class QCowUtil(CowUtil):
     ) -> Dict[str, CowImageInfo]:
         result: Dict[str, CowImageInfo] = dict()
         #TODO: handle exitOnError
-        #TODO: If a vgName is given, is it already enabled? Do we need to enable LV on it too? It also only work for FileSR but LvmCowUtil uses it.
         if vgName:
             reg = re.compile(pattern)
             lvcache = LVMCache(vgName)
@@ -559,8 +550,7 @@ class QCowUtil(CowUtil):
             for lvName in lvList:
                 # lvinfo = lvcache.lvs[lvName]
                 if reg.match(lvName):
-                    lvPath = "/dev/{}/{}".format(vgName, lvName)
-                    cowinfo = self._getInfoLV(lvcache, extractUuidFunction, lvPath)
+                    cowinfo = self._getInfoLV(lvcache, extractUuidFunction, vgName, lvName)
                     if cowinfo is None: #We get None if the LV stopped existing in the meanwhile
                         continue
                     cowinfo.path = lvName # Function CowUtil.getParentChain expect lvName here, otherwise blktap.{_activate,_deactivate} crashes
@@ -570,7 +560,7 @@ class QCowUtil(CowUtil):
                         parentPath = cowinfo.parentPath
                         while parentUuid != "":
                             parentLvName = parentPath.split("/")[-1]
-                            parent_cowinfo = self._getInfoLV(lvcache, extractUuidFunction, parentPath)
+                            parent_cowinfo = self._getInfoLV(lvcache, extractUuidFunction, vgName, parentLvName)
                             if parent_cowinfo is None: #Parent disappeared while scanning
                                 raise util.SMException("Parent of {} wasn't found during scan".format(lvName))
                             parentUuid = parent_cowinfo.parentUuid
@@ -745,24 +735,70 @@ class QCowUtil(CowUtil):
         self._read_qcow2(path)
         return zlib.compress(self._create_bitmap())
 
+    def _getTapdisk(self, path: str) -> Tuple[int, int]:
+        """
+        Return a tuple of (PID, Minor) for the given path
+        """
+        pid_openers = util.get_openers_pid(path)
+        if pid_openers:
+            if len(pid_openers) > 1:
+                raise xs_errors.XenError("Multiple openers for {}".format(path)) # TODO: There might be multiple PID? Yes, we can have the chain enabled for multiple leaf (i.e. after a clone), taken into account in cleanup.py
+            pid = pid_openers[0]
+            tapdiskList = TapCtl.list(pid=pid)
+            if len(tapdiskList) > 1: #TODO: There might more than one minor for this blktap?
+                raise xs_errors.XenError("TapdiskAlreadyRunning", "There is multiple minor for this tapdisk process")
+            minor = tapdiskList[0]["minor"]
+            return (pid, minor)
+        raise xs_errors.XenError("TapdiskFailed", "No tapdisk process found for {}".format(path))
+
+    @override
+    def coalesceOnline(self, path: str) -> int:
+        pid, minor = self._getTapdisk(path)
+        logger = util.LoggerCounter(10)
+
+        try:
+            TapCtl.commit(pid, minor, QCOW2_TYPE, path)
+            # We need to wait for query to return concluded
+            # We are technically ininterruptible since being interrupted will only stop checking if the job is done.
+            # We need to call `tap-ctl cancel` if we are interrupted, it is done in cleanup.py code.
+
+            status, nb, _ = TapCtl.query(pid, minor)
+            if status == "undefined":
+                util.SMlog("Tapdisk {} (m: {}) coalesce status undefined for {}".format(pid, minor, path))
+                return 0
+
+            while status !=  "concluded":
+                time.sleep(1)
+                status, nb, _ = TapCtl.query(pid, minor, quiet=True)
+                logger.log("Got status {} for tapdisk {} (m: {})".format(status, pid, minor))
+            return nb
+        except TapCtl.CommandFailure:
+            util.SMlog("Query command failed on tapdisk instance {}. Raising...".format(pid))
+            raise
+
+    @override
+    def cancelCoalesceOnline(self, path: str) -> None:
+        pid, minor = self._getTapdisk(path)
+
+        try:
+            TapCtl.cancel_commit(pid, minor)
+        except TapCtl.CommandFailure:
+            util.SMlog("Cancel command failed on tapdisk instance {}. Raising...".format(pid))
+            raise
+
     @override
     def coalesce(self, path: str) -> int:
-        pid_opener = util.get_openers_pid(path)
-        if pid_opener is not None:
-            raise xs_errors.XenError("LeafGCSkip", f"We can't coalesce the QCOW2 since it's in use. Openers: {pid_opener}")
-
-        allocated_blocks = self.getAllocatedSize(path)
-        # -d on commit make it not empty the original image since we don't intend to keep it
-        cmd = [QEMU_IMG, "commit", "-f", QCOW2_TYPE, path, "-d"]
-        ret = cast(str, self._ioretry(cmd)) #TODO: parse for errors
-        return allocated_blocks
+            allocated_blocks = self.getAllocatedSize(path)
+            # -d on commit make it not empty the original image since we don't intend to keep it
+            cmd = [QEMU_IMG, "commit", "-f", QCOW2_TYPE, path, "-d"]
+            ret = cast(str, self._ioretry(cmd)) #TODO: parse for byte coalesced, our qemu-img is supposed to be patched to output it.
+            return allocated_blocks
 
     @override
     def create(self, path: str, size: int, static: bool, msize: int = 0) -> None:
         cmd = [QEMU_IMG, "create", "-f", QCOW2_TYPE, path, str(size)]
         if static:
             cmd.extend(["-o", "preallocation=full"])
-        #TODO: msize is ignored for now, it's used to preallocate metadata for VHD so it can use resize without journal
         self._ioretry(cmd)
         self.setHidden(path, False) #We add hidden header at creation
 
@@ -778,7 +814,6 @@ class QCowUtil(CowUtil):
         parent_type = QCOW2_TYPE
         if parentRaw:
             parent_type = RAW_TYPE
-        #TODO: msize is ignored for now, it's used to preallocate metadata for VHD so it can use resize without journal
         # TODO: checkEmpty? If it is False, then the parent could be empty and should still be used for snapshot
         cmd = [QEMU_IMG, "create", "-f", QCOW2_TYPE, "-b", parent, "-F", parent_type, path]
         self._ioretry(cmd)
@@ -834,3 +869,7 @@ class QCowUtil(CowUtil):
     @override
     def setKey(self, path: str, key_hash: str) -> None:
         pass
+
+    @override
+    def isCoalesceableOnRemote(self) -> bool:
+        return True
