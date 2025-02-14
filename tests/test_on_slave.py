@@ -70,7 +70,7 @@ class Test_on_slave_is_open(unittest.TestCase):
 
     def test_is_open_lvm_success(self):
         """
-        LVM srs are uplifted to lvhd
+        LVM srs are uplifted to lvm
         """
         vdi_uuid = uuid.uuid4()
         mock_session = mock.MagicMock()
