@@ -1404,16 +1404,22 @@ class LVMVDI(VDI):
     @override
     def _doCoalesce(self) -> None:
         """LVMVDI parents must first be activated, inflated, and made writable"""
+        was_RO = False
         try:
             self._activateChain()
             self.sr.lvmCache.setReadonly(self.parent.fileName, False)
             self.parent.validate()
             self.inflateParentForCoalesce()
+            if self.lvReadonly:
+                self.sr.lvmCache.setReadonly(self.fileName, False)
+                was_RO = True
             VDI._doCoalesce(self)
         finally:
             self.parent._loadInfoSizePhys()
             self.parent.deflate()
             self.sr.lvmCache.setReadonly(self.parent.fileName, True)
+            if was_RO:
+                self.sr.lvmCache.setReadonly(self.fileName, True)
 
     @override
     def _setParent(self, parent) -> None:
