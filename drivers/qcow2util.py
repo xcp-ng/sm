@@ -4,14 +4,16 @@ from typing import BinaryIO
 import errno
 import os
 import re
+import time
 import struct
 import zlib
 from pathlib import Path
 
 import util
 import xs_errors
-from lvmcache import LVMCache
+from blktap2 import TapCtl
 from cowutil import CowUtil, CowImageInfo
+from lvmcache import LVMCache
 
 MAX_QCOW_CHAIN_LENGTH: Final = 30
 
@@ -421,7 +423,7 @@ class QCowUtil(CowUtil):
         return QCOW_CLUSTER_SIZE
 
     @override
-    def getFooterSize(self, path: str) -> int:
+    def getFooterSize(self) -> int:
         return 0
 
     @override
@@ -479,7 +481,7 @@ class QCowUtil(CowUtil):
     ) -> Optional[CowImageInfo]:
         lvcache = LVMCache(vgName)
         lvcache.refresh()
-        if lvName not in self.lvs:
+        if lvName not in lvcache.lvs:
             return None
         if not lvcache.is_active(lvName):
                         lvcache.activateNoRefcount(lvName)
@@ -505,7 +507,6 @@ class QCowUtil(CowUtil):
         result: Dict[str, CowImageInfo] = dict()
         #TODO: handle parents, it needs to getinfo from parents also
         #TODO: handle exitOnError
-        #TODO: If a vgName is given, is it already enabled? Do we need to enable LV on it too? It also only work for FileSR but LvmCowUtil uses it.
         if vgName:
             reg = re.compile(pattern)
             lvcache = LVMCache(vgName)
@@ -516,7 +517,6 @@ class QCowUtil(CowUtil):
                 was_activated = False
                 lvinfo = lvcache.lvs[lvName]
                 if reg.match(lvName):
-                    util.SMlog("Match {}: {}".format(lvName, lvinfo))
                     lvcache.refresh()
                     if not lvcache.is_active(lvName):
                         lvcache.activateNoRefcount(lvName)
@@ -529,8 +529,6 @@ class QCowUtil(CowUtil):
                             lvcache.deactivateNoRefcount(lvName)
                         except Exception as e:
                             raise e
-                else:
-                    util.SMlog("NOT {}: {}".format(lvName, lvinfo))
             return result
         else:
             pattern_p: Path = Path(pattern)
@@ -696,22 +694,37 @@ class QCowUtil(CowUtil):
 
     @override
     def coalesce(self, path: str) -> int:
-        pid_opener = util.get_openers_pid(path)
-        if pid_opener is not None:
-            raise xs_errors.XenError("LeafGCSkip", f"We can't coalesce the QCOW2 since it's in use. Openers: {pid_opener}")
-
-        allocated_blocks = self.getAllocatedSize(path)
-        # -d on commit make it not empty the original image since we don't intend to keep it
-        cmd = [QEMU_IMG, "commit", "-f", QCOW2_TYPE, path, "-d"]
-        ret = cast(str, self._ioretry(cmd)) #TODO: parse for errors
-        return allocated_blocks
+        pid_openers = util.get_openers_pid(path)
+        if pid_openers:
+            if len(pid_openers) > 1:
+                util.SMlog("Multiple openers for {}".format(path)) #TODO: There might be multiple PID?
+            pid = pid_openers[0]
+            l = TapCtl.list(pid=pid)
+            if len(l) > 1: #TODO: There might more than one minor for this blktap?
+                raise xs_errors.XenError("TapdiskAlreadyRunning", "There is multiple minor for this tapdisk process")
+            minor = l[0]["minor"]
+            TapCtl.commit(pid, minor, QCOW2_TYPE, path)
+            #We need to wait for query to return finished
+            #TODO: We are technically ininterruptible since being interrupted will only stop checking if the job is done
+            status, nb, _ = TapCtl.query(pid, minor)
+            if status == "undefined":
+                return 0
+            while status !=  "concluded":
+                time.sleep(1)
+                status, nb, _ = TapCtl.query(pid, minor)
+            return nb
+        else:
+            allocated_blocks = self.getAllocatedSize(path)
+            # -d on commit make it not empty the original image since we don't intend to keep it
+            cmd = [QEMU_IMG, "commit", "-f", QCOW2_TYPE, path, "-d"]
+            ret = cast(str, self._ioretry(cmd)) #TODO: parse for errors
+            return allocated_blocks
 
     @override
     def create(self, path: str, size: int, static: bool, msize: int = 0) -> None:
         cmd = [QEMU_IMG, "create", "-f", QCOW2_TYPE, path, str(size)]
         if static:
             cmd.extend(["-o", "preallocation=full"])
-        #TODO: msize is ignored for now, it's used to preallocate metadata for VHD so it can use resize without journal
         self._ioretry(cmd)
         self.setHidden(path, False) #We add hidden header at creation
 
@@ -727,7 +740,6 @@ class QCowUtil(CowUtil):
         parent_type = QCOW2_TYPE
         if parentRaw:
             parent_type = RAW_TYPE
-        #TODO: msize is ignored for now, it's used to preallocate metadata for VHD so it can use resize without journal
         # TODO: checkEmpty? If it is False, then the parent could be empty and should still be used for snapshot
         cmd = [QEMU_IMG, "create", "-f", QCOW2_TYPE, "-b", parent, "-F", parent_type, path]
         self._ioretry(cmd)
