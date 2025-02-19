@@ -495,6 +495,21 @@ class QCowUtil(CowUtil):
                 raise e
         return cowinfo
 
+    def _getInfoLV(self, lvcache: LVMCache, extractUuidFunction: Callable[[str], str], lvPath: str) -> CowImageInfo:
+        was_activated = False
+        lvName = lvPath.split("/")[-1]
+        lvcache.refresh()
+        if not lvcache.is_active(lvName):
+            lvcache.activateNoRefcount(lvName)
+            was_activated = True
+        cowinfo = self.getInfo(lvPath, extractUuidFunction)
+        if was_activated:
+            try:
+                lvcache.deactivateNoRefcount(lvName)
+            except Exception as e:
+                raise e
+        return cowinfo
+
     @override
     def getAllInfoFromVG(
         self,
@@ -505,7 +520,6 @@ class QCowUtil(CowUtil):
         exitOnError: bool = False
     ) -> Dict[str, CowImageInfo]:
         result: Dict[str, CowImageInfo] = dict()
-        #TODO: handle parents, it needs to getinfo from parents also
         #TODO: handle exitOnError
         if vgName:
             reg = re.compile(pattern)
@@ -514,21 +528,20 @@ class QCowUtil(CowUtil):
             # We get size in lvcache.lvs[lvName].size (in bytes)
             # We could read the header from the PV directly
             for lvName in lvcache.lvs.keys():
-                was_activated = False
-                lvinfo = lvcache.lvs[lvName]
+                # lvinfo = lvcache.lvs[lvName]
                 if reg.match(lvName):
-                    lvcache.refresh()
-                    if not lvcache.is_active(lvName):
-                        lvcache.activateNoRefcount(lvName)
-                        was_activated = True
-                    path = "/dev/{}/{}".format(vgName, lvName)
-                    cowinfo = self.getInfo(path, extractUuidFunction)
+                    lvPath = "/dev/{}/{}".format(vgName, lvName)
+                    cowinfo = self._getInfoLV(lvcache, extractUuidFunction, lvPath)
                     result[cowinfo.uuid] = cowinfo
-                    if was_activated:
-                        try:
-                            lvcache.deactivateNoRefcount(lvName)
-                        except Exception as e:
-                            raise e
+                    if parents:
+                        parentUuid = cowinfo.parentUuid
+                        parentPath = cowinfo.parentPath
+                        while parentUuid != "":
+                            cowinfo = self._getInfoLV(lvcache, extractUuidFunction, parentPath)
+                            result[cowinfo.uuid] = cowinfo
+                            parentUuid = cowinfo.parentUuid
+                            parentPath = cowinfo.parentPath
+
             return result
         else:
             pattern_p: Path = Path(pattern)
