@@ -448,7 +448,7 @@ class TapCtl(object):
 
     @classmethod
     def commit(cls, pid, minor, vdi_type, path):
-        args = ["commit", "-p", pid, "-m", minor, "-a", "{}:{}".format(vdi_type, path)]
+        args = ["commit", "-p", pid, "-m", minor, "-a", path]
         cls._pread(args)
 
     @classmethod
