@@ -217,7 +217,7 @@ def write_controller_uri_cache(uri):
     try:
         if not os.path.exists(CONTROLLER_CACHE_DIRECTORY):
             os.makedirs(CONTROLLER_CACHE_DIRECTORY)
-            os.chmod(CONTROLLER_CACHE_DIRECTORY, 0o755)
+            os.chmod(CONTROLLER_CACHE_DIRECTORY, 0o700)
         if not os.path.isdir(CONTROLLER_CACHE_DIRECTORY):
             raise NotADirectoryError
         with open("{}/{}".format(CONTROLLER_CACHE_DIRECTORY, CONTROLLER_CACHE_FILE), "w") as f:
