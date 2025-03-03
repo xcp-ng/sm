@@ -239,9 +239,13 @@ def is_controller_uri_valid(uri):
 
 
 def get_controller_uri():
+    uri = get_cached_controller_uri()
+    if uri and is_controller_uri_valid(uri):
+        return uri
     for _ in range(10):
         uri = _get_controller_uri()
-        if uri:
+        if uri and is_controller_uri_valid(uri):
+            write_controller_uri_cache(uri)
             return uri
         time.sleep(1)
 
