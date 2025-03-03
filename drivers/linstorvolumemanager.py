@@ -43,6 +43,9 @@ REG_DRBDSETUP_IP = re.compile('[^\\s]+\\s+(.*):.*$')
 
 DRBD_BY_RES_PATH = '/dev/drbd/by-res/'
 
+CONTROLLER_CACHE_DIRECTORY = '/dev/shm/linstor/'
+CONTROLLER_CACHE_FILE = 'controller_uri'
+
 PLUGIN = 'linstor-manager'
 
 
@@ -195,6 +198,45 @@ def _get_controller_uri():
     except:
         # Not found, maybe we are trying to create the SR...
         pass
+
+
+def get_cached_controller_uri():
+    try:
+        f = open("{}/{}".format(CONTROLLER_CACHE_DIRECTORY, CONTROLLER_CACHE_FILE), "r")
+        return f.read().strip()
+    except Exception as e:
+        util.SMlog('Unable to open controller uri cache file: {}'.format(e))
+        return None
+
+
+def write_controller_uri_cache(uri):
+    try:
+        if not os.path.exists(CONTROLLER_CACHE_DIRECTORY):
+            os.makedirs(CONTROLLER_CACHE_DIRECTORY)
+            os.chmod(CONTROLLER_CACHE_DIRECTORY, 0o755)
+        if not os.path.isdir(CONTROLLER_CACHE_DIRECTORY):
+            raise NotADirectoryError
+        f = open("{}/{}".format(CONTROLLER_CACHE_DIRECTORY, CONTROLLER_CACHE_FILE), "w")
+        f.write(uri)
+    except Exception as e:
+        util.SMlog('Unable to open controller uri cache file: {}'.format(e))
+
+
+def is_controller_uri_valid(uri):
+    PLUGIN_CMD = 'hasControllerRunning'
+
+    if not uri:
+        return False
+    address = uri.removeprefix
+    session = util.timeout_call(10, util.get_localAPI_session)
+    for host_ref, host_record in session.xenapi.host.get_all():
+        if host_record.get('address', '') != address:
+            continue
+        return util.strtobool(
+            session.xenapi.host.call_plugin(host_ref, PLUGIN, PLUGIN_CMD, {})
+        )
+    return False
+
 
 def get_controller_uri():
     retries = 0
