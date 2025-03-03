@@ -235,7 +235,7 @@ def is_controller_uri_valid(uri):
 
     if not uri:
         return False
-    address = uri.removeprefix
+    address = uri.removeprefix("linstor://")
     session = util.timeout_call(10, util.get_localAPI_session)
     for host_ref, host_record in session.xenapi.host.get_all():
         if host_record.get('address', '') != address:
