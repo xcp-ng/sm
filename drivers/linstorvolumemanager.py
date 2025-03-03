@@ -205,8 +205,12 @@ def get_cached_controller_uri():
         with open("{}/{}".format(CONTROLLER_CACHE_DIRECTORY, CONTROLLER_CACHE_FILE), "r") as f:
             return f.read().strip()
     except Exception as e:
-        util.SMlog('Unable to open controller uri cache file: {}'.format(e))
-        return None
+        util.SMlog('Unable to read controller uri cache file at {}/{} : {}'.format(
+            CONTROLLER_CACHE_DIRECTORY,
+            CONTROLLER_CACHE_FILE,
+            e
+        ))
+    return None
 
 
 def write_controller_uri_cache(uri):
@@ -219,7 +223,11 @@ def write_controller_uri_cache(uri):
         with open("{}/{}".format(CONTROLLER_CACHE_DIRECTORY, CONTROLLER_CACHE_FILE), "w") as f:
             f.write(uri)
     except Exception as e:
-        util.SMlog('Unable to open controller uri cache file: {}'.format(e))
+        util.SMlog('Unable to write controller uri cache file at {}/{} : {}'.format(
+            CONTROLLER_CACHE_DIRECTORY,
+            CONTROLLER_CACHE_FILE,
+            e
+        ))
 
 
 def is_controller_uri_valid(uri):
