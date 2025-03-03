@@ -202,8 +202,8 @@ def _get_controller_uri():
 
 def get_cached_controller_uri():
     try:
-        f = open("{}/{}".format(CONTROLLER_CACHE_DIRECTORY, CONTROLLER_CACHE_FILE), "r")
-        return f.read().strip()
+        with open("{}/{}".format(CONTROLLER_CACHE_DIRECTORY, CONTROLLER_CACHE_FILE), "r") as f:
+            return f.read().strip()
     except Exception as e:
         util.SMlog('Unable to open controller uri cache file: {}'.format(e))
         return None
@@ -216,8 +216,8 @@ def write_controller_uri_cache(uri):
             os.chmod(CONTROLLER_CACHE_DIRECTORY, 0o755)
         if not os.path.isdir(CONTROLLER_CACHE_DIRECTORY):
             raise NotADirectoryError
-        f = open("{}/{}".format(CONTROLLER_CACHE_DIRECTORY, CONTROLLER_CACHE_FILE), "w")
-        f.write(uri)
+        with open("{}/{}".format(CONTROLLER_CACHE_DIRECTORY, CONTROLLER_CACHE_FILE), "w") as f:
+            f.write(uri)
     except Exception as e:
         util.SMlog('Unable to open controller uri cache file: {}'.format(e))
 
