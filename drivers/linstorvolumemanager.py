@@ -239,15 +239,10 @@ def is_controller_uri_valid(uri):
 
 
 def get_controller_uri():
-    retries = 0
-    while True:
+    for _ in range(10):
         uri = _get_controller_uri()
         if uri:
             return uri
-
-        retries += 1
-        if retries >= 10:
-            break
         time.sleep(1)
 
 
