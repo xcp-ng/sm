@@ -27,6 +27,7 @@ try:
     from linstorvolumemanager import LinstorVolumeManagerError
     from linstorvolumemanager import DATABASE_VOLUME_NAME
     from linstorvolumemanager import PERSISTENT_PREFIX
+    from linstorvolumemanager import write_controller_uri_cache
 
     LINSTOR_AVAILABLE = True
 except ImportError:
@@ -417,6 +418,7 @@ class LinstorSR(SR.SR):
                                 try:
                                     util.SMlog('Connecting from config to LINSTOR controller using: {}'.format(ip))
                                     create_linstor(controller_uri, attempt_count=0)
+                                    write_controller_uri_cache(controller_uri)
                                     return controller_uri
                                 except:
                                     pass
