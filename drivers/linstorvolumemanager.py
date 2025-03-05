@@ -43,7 +43,7 @@ REG_DRBDSETUP_IP = re.compile('[^\\s]+\\s+(.*):.*$')
 
 DRBD_BY_RES_PATH = '/dev/drbd/by-res/'
 
-CONTROLLER_CACHE_DIRECTORY = '/dev/shm/linstor'
+CONTROLLER_CACHE_DIRECTORY = os.environ.get('TMPDIR', '/tmp') + '/linstor'
 CONTROLLER_CACHE_FILE = 'controller_uri'
 
 PLUGIN = 'linstor-manager'
