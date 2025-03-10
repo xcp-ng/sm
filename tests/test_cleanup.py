@@ -15,7 +15,8 @@ import vhdutil
 import ipc
 
 import XenAPI
-
+from XenAPI import Failure
+from util import SMException
 
 class FakeFile(object):
     pass
@@ -1985,3 +1986,46 @@ class TestLockGCActive(unittest.TestCase):
         # When
         with self.assertRaises(BlockingIOError):
             gcLock.acquireNoblock()
+
+
+class TestFileSR(TestSR):
+    """
+    Exercise the specfic bits of the FileSR support
+    """
+
+    def setUp(self):
+        super().setUp()
+
+        self.sr_uuid = str(uuid.uuid4())
+
+    def _make_test_sr(self):
+        self.mock_sr =  cleanup.FileSR(self.sr_uuid, self.xapi_mock,
+                                       createLock=False, force=False)
+
+    def test_finishInterruptedCoalesceLeaf_no_vdi(self):
+        self._make_test_sr()
+        self.mock_sr.vdis = {}
+
+        child_vdi_uuid = str(uuid.uuid4())
+        parent_vdi_uuid = str(uuid.uuid4())
+
+        with self.assertRaises(SMException) as sme:
+            self.mock_sr._finishInterruptedCoalesceLeaf(child_vdi_uuid, parent_vdi_uuid)
+
+        self.assertRegex(str(sme.exception), r"VDI \S+ not found")
+
+    def test_finishInterruptedCoalesceLeaf_forget_fail_and_complete(self):
+        child_vdi_uuid = str(uuid.uuid4())
+        parent_vdi_uuid = str(uuid.uuid4())
+
+        self._make_test_sr()
+        self.mock_sr.vdis = {
+            child_vdi_uuid: mock.create_autospec(cleanup.FileVDI)
+        }
+
+        def forgetVdi(self, uuid):
+            raise Failure(f"ForgetVDI {uuid} failed")
+
+        self.xapi_mock.forgetVDI.side_effect = forgetVdi
+
+        self.mock_sr._finishInterruptedCoalesceLeaf(child_vdi_uuid, parent_vdi_uuid)
