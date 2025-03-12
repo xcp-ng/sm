@@ -1401,25 +1401,46 @@ class LVMVDI(VDI):
         if VdiType.isCowImage(self.vdi_type):
             VDI.validate(self, fast)
 
+    def _setChainRw(self) -> List[str]:
+        """
+        Set the readonly LV and children writable.
+        It's needed because the coalesce can be done by tapdisk directly
+        and it will need to write parent information for children.
+        The VDI we want to coalesce into it's parent need to be writable for libqcow coalesce part.
+        Return a list of the LV that were previously readonly to be made RO again after the coalesce.
+        """
+        was_ro = []
+        if self.lvReadonly:
+            self.sr.lvmCache.setReadonly(self.fileName, False)
+            was_ro.append(self.fileName)
+
+        for child in self.children:
+            if child.lvReadonly:
+                self.sr.lvmCache.setReadonly(child.fileName, False)
+                was_ro.append(child.fileName)
+
+        return was_ro
+
+    def _setChainRo(self, was_ro: List[str]) -> None:
+        """Set the list of LV in parameters to readonly"""
+        for lvName in was_ro:
+            self.sr.lvmCache.setReadonly(lvName, True)
+
     @override
     def _doCoalesce(self) -> None:
         """LVMVDI parents must first be activated, inflated, and made writable"""
-        was_RO = False
         try:
             self._activateChain()
             self.sr.lvmCache.setReadonly(self.parent.fileName, False)
             self.parent.validate()
             self.inflateParentForCoalesce()
-            if self.lvReadonly:
-                self.sr.lvmCache.setReadonly(self.fileName, False)
-                was_RO = True
+            was_ro = self._setChainRw()
             VDI._doCoalesce(self)
         finally:
             self.parent._loadInfoSizePhys()
             self.parent.deflate()
             self.sr.lvmCache.setReadonly(self.parent.fileName, True)
-            if was_RO:
-                self.sr.lvmCache.setReadonly(self.fileName, True)
+            self._setChainRo(was_ro)
 
     @override
     def _setParent(self, parent) -> None:
