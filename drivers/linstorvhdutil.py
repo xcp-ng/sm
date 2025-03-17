@@ -199,7 +199,7 @@ class LinstorVhdUtil:
             'fast': fast
         }
         try:
-            self._check(vdi_uuid, **kwargs)  # pylint: disable = E1123
+            self._check(vdi_uuid, **kwargs)
             return True
         except Exception as e:
             util.SMlog('Call to `check` failed: {}'.format(e))
@@ -214,9 +214,7 @@ class LinstorVhdUtil:
             'includeParent': include_parent,
             'resolveParent': False
         }
-        # TODO: Replace pylint comment with this feature when possible:
-        # https://github.com/PyCQA/pylint/pull/2926
-        return self._get_vhd_info(vdi_uuid, self._extract_uuid, **kwargs)  # pylint: disable = E1123
+        return self._get_vhd_info(vdi_uuid, self._extract_uuid, **kwargs)
 
     @linstorhostcall(vhdutil.getVHDInfo, 'getVHDInfo')
     def _get_vhd_info(self, vdi_uuid, response):
@@ -330,9 +328,7 @@ class LinstorVhdUtil:
         )
         self._linstor.resize_volume(vdi_uuid, new_size)
 
-        # TODO: Replace pylint comment with this feature when possible:
-        # https://github.com/PyCQA/pylint/pull/2926
-        result_size = self.get_drbd_size(vdi_uuid)  # pylint: disable = E1120
+        result_size = self.get_drbd_size(vdi_uuid)
         if result_size < new_size:
             util.SMlog(
                 'WARNING: Cannot inflate volume to {}B, result size: {}B'
