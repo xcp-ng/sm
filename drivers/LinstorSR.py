@@ -149,9 +149,7 @@ def attach_thin(session, journaler, linstor, sr_uuid, vdi_uuid):
     # If the virtual VHD size is lower than the LINSTOR volume size,
     # there is nothing to do.
     vhd_size = LinstorVhdUtil.compute_volume_size(
-        # TODO: Replace pylint comment with this feature when possible:
-        # https://github.com/PyCQA/pylint/pull/2926
-        LinstorVhdUtil(session, linstor).get_size_virt(vdi_uuid),  # pylint: disable = E1120
+        LinstorVhdUtil(session, linstor).get_size_virt(vdi_uuid),
         image_type
     )
 
@@ -194,9 +192,7 @@ def detach_thin_impl(session, linstor, sr_uuid, vdi_uuid):
     device_path = linstor.get_device_path(vdi_uuid)
     vhdutil_inst = LinstorVhdUtil(session, linstor)
     new_volume_size = LinstorVolumeManager.round_up_volume_size(
-        # TODO: Replace pylint comment with this feature when possible:
-        # https://github.com/PyCQA/pylint/pull/2926
-        vhdutil_inst.get_size_phys(vdi_uuid)  # pylint: disable = E1120
+        vhdutil_inst.get_size_phys(vdi_uuid)
     )
 
     volume_info = linstor.get_volume_info(vdi_uuid)
@@ -1203,9 +1199,7 @@ class LinstorSR(SR.SR):
             self.vdis[vdi_uuid] = vdi
 
             if USE_KEY_HASH and vdi.vdi_type == vhdutil.VDI_TYPE_VHD:
-                # TODO: Replace pylint comment with this feature when possible:
-                # https://github.com/PyCQA/pylint/pull/2926
-                vdi.sm_config_override['key_hash'] = self._vhdutil.get_key_hash(vdi_uuid)  # pylint: disable = E1120
+                vdi.sm_config_override['key_hash'] = self._vhdutil.get_key_hash(vdi_uuid)
 
             # 4.c. Update CBT status of disks either just added
             # or already in XAPI.

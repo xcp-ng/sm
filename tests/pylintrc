@@ -92,6 +92,8 @@ generated-members=REQUEST,acl_users,aq_parent,linstor.*
 # # supports qualified module names, as well as Unix pattern matching.
 ignored-modules=bitarray
 
+# List of decorators that change the signature of a decorated function.
+signature-mutators=linstorcowutil.linstorhostcall
 
 [SIMILARITIES]
 
