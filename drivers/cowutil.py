@@ -325,6 +325,10 @@ def getCowUtilFromImageFormat(image_format: ImageFormat) -> CowUtil:
     if image_format in (ImageFormat.RAW, ImageFormat.VHD):
         return vhdutil.VhdUtil()
 
+    # TODO: QCOW2
+
+    return vhdutil.VhdUtil() # TODO: REMOVE
+
     assert False, f"Unsupported image format: {image_format}"
 
 def getCowUtil(vdi_type: str) -> CowUtil:
