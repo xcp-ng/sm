@@ -7,6 +7,7 @@ import uuid
 from uuid import uuid4
 
 import cleanup
+import fjournaler
 import lock
 
 import util
@@ -17,6 +18,9 @@ import ipc
 import XenAPI
 from XenAPI import Failure
 from util import SMException
+
+MEGA = 1024 * 1024
+
 
 class FakeFile(object):
     pass
@@ -1881,6 +1885,46 @@ class TestSR(unittest.TestCase):
 
         # Assert
         self.assertIsNotNone(sr)
+
+    def test_doCoalesceLeaf_no_parent_after(self):
+        sr = create_cleanup_sr(self.xapi_mock)
+        sr.journaler = mock.create_autospec(fjournaler.Journaler)
+        parent_uuid = str(uuid.uuid4())
+        mock_parent = mock.MagicMock()
+        mock_parent.uuid = parent_uuid
+        mock_parent.parent = None
+        mock_parent.raw = False
+        mock_parent.getSizeVHD.return_value = 10 * MEGA
+
+        vdi_uuid = str(uuid.uuid4())
+        mock_vdi = mock.MagicMock()
+        mock_vdi.uuid = vdi_uuid
+        mock_vdi.getSizeVHD.return_value = 10 * MEGA
+        mock_vdi.parent = mock_parent
+
+        sr._doCoalesceLeaf(mock_vdi)
+
+        mock_parent.delConfig.assert_called_with("vhd-parent")
+
+    def test_doCoalesceLeaf_parent_remains_after(self):
+        sr = create_cleanup_sr(self.xapi_mock)
+        sr.journaler = mock.create_autospec(fjournaler.Journaler)
+        parent_uuid = str(uuid.uuid4())
+        mock_parent = mock.MagicMock()
+        mock_parent.uuid = parent_uuid
+        mock_parent.parent = mock.MagicMock()
+        mock_parent.raw = False
+        mock_parent.getSizeVHD.return_value = 10 * MEGA
+
+        vdi_uuid = str(uuid.uuid4())
+        mock_vdi = mock.MagicMock()
+        mock_vdi.uuid = vdi_uuid
+        mock_vdi.getSizeVHD.return_value = 10 * MEGA
+        mock_vdi.parent = mock_parent
+
+        sr._doCoalesceLeaf(mock_vdi)
+
+        self.assertNotIn('vhd-parent', mock_parent.delConfig.call_args)
 
 
 class TestLockGCActive(unittest.TestCase):
