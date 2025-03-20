@@ -43,6 +43,9 @@ REG_DRBDSETUP_IP = re.compile('[^\\s]+\\s+(.*):.*$')
 
 DRBD_BY_RES_PATH = '/dev/drbd/by-res/'
 
+CONTROLLER_CACHE_DIRECTORY = os.environ.get('TMPDIR', '/tmp') + '/linstor'
+CONTROLLER_CACHE_FILE = 'controller_uri'
+
 PLUGIN = 'linstor-manager'
 
 
@@ -196,16 +199,62 @@ def _get_controller_uri():
         # Not found, maybe we are trying to create the SR...
         pass
 
-def get_controller_uri():
-    retries = 0
-    while True:
-        uri = _get_controller_uri()
-        if uri:
-            return uri
 
-        retries += 1
-        if retries >= 10:
-            break
+def get_cached_controller_uri():
+    try:
+        with open("{}/{}".format(CONTROLLER_CACHE_DIRECTORY, CONTROLLER_CACHE_FILE), "r") as f:
+            return f.read().strip()
+    except Exception as e:
+        util.SMlog('Unable to read controller uri cache file at {}/{} : {}'.format(
+            CONTROLLER_CACHE_DIRECTORY,
+            CONTROLLER_CACHE_FILE,
+            e
+        ))
+    return None
+
+
+def write_controller_uri_cache(uri):
+    try:
+        if not os.path.exists(CONTROLLER_CACHE_DIRECTORY):
+            os.makedirs(CONTROLLER_CACHE_DIRECTORY)
+            os.chmod(CONTROLLER_CACHE_DIRECTORY, 0o700)
+        if not os.path.isdir(CONTROLLER_CACHE_DIRECTORY):
+            raise NotADirectoryError
+        with open("{}/{}".format(CONTROLLER_CACHE_DIRECTORY, CONTROLLER_CACHE_FILE), "w") as f:
+            f.write(uri)
+    except Exception as e:
+        util.SMlog('Unable to write controller uri cache file at {}/{} : {}'.format(
+            CONTROLLER_CACHE_DIRECTORY,
+            CONTROLLER_CACHE_FILE,
+            e
+        ))
+
+
+def is_controller_uri_valid(uri):
+    PLUGIN_CMD = 'hasControllerRunning'
+
+    if not uri:
+        return False
+    address = uri.removeprefix("linstor://")
+    session = util.timeout_call(10, util.get_localAPI_session)
+    for host_ref, host_record in session.xenapi.host.get_all():
+        if host_record.get('address', '') != address:
+            continue
+        return util.strtobool(
+            session.xenapi.host.call_plugin(host_ref, PLUGIN, PLUGIN_CMD, {})
+        )
+    return False
+
+
+def get_controller_uri():
+    uri = get_cached_controller_uri()
+    if uri and is_controller_uri_valid(uri):
+        return uri
+    for _ in range(10):
+        uri = _get_controller_uri()
+        if uri and is_controller_uri_valid(uri):
+            write_controller_uri_cache(uri)
+            return uri
         time.sleep(1)
 
 
