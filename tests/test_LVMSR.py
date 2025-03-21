@@ -12,6 +12,7 @@ import cowutil
 import lvmcowutil
 import LVMSR
 import lvutil
+import vhdutil
 
 from vditype import VdiType
 
@@ -273,11 +274,12 @@ class TestLVMSR(unittest.TestCase, Stubs):
                     'vdi_type': 'vhd'
                 }
             }})
-        with mock.patch('LVHDSR.LVMMetadataHandler', autospec=True) as m, \
-             mock.patch('LVHDSR.vhdutil', autotspec=True) as v:
+        with mock.patch('LVMSR.LVMMetadataHandler', autospec=True) as m, \
+             mock.patch('vhdutil.VhdUtil', autotspec=True) as v:
             m.return_value.getMetadata.return_value = [
                 None, self.convert_vdi_to_meta(extended_vdi_data)]
-            v._getVHDParentNoCheck.return_value = None
+            v.return_value.getParentNoCheck.return_value = None
+            v.return_value.getDefaultPreallocationSizeVirt.return_value = vhdutil.VHD_MAX_VOLUME_SIZE
             sr.scan(sr.uuid)
 
             lvm_cache = mock_lvm_cache.return_value
@@ -488,7 +490,6 @@ class TestLVMVDI(unittest.TestCase, Stubs):
 
         vdi = sr.vdi('some VDI UUID')
         vdi.vdi_type = VdiType.VHD
-        self.mock_sr_util.pathexists.return_value = True
         self.mock_sr_util.get_hosts_attached_on.return_value = ["hostref2"]
         self.mock_sr_util.get_this_host_ref.return_value = ["hostref1"]
         self.mock_getDepth.return_value = 1
@@ -561,11 +562,11 @@ class TestLVMVDI(unittest.TestCase, Stubs):
         self.assertIsNotNone(snap)
         self.assertEqual(self.mock_cbtutil.set_cbt_child.call_count, 3)
 
-    @mock.patch('LVHDSR.Lock', autospec=True)
+    @mock.patch('lock.Lock', autospec=True)
     @mock.patch('SR.XenAPI')
     def test_snapshot_secondary_success(self, mock_xenapi, mock_lock):
         """
-        LVHDSR.snapshot, attached on host with secondary mirror
+        LVMSR.snapshot, attached on host with secondary mirror
         """
         # Arrange
         xapi_session = mock_xenapi.xapi_local.return_value
@@ -577,7 +578,7 @@ class TestLVMVDI(unittest.TestCase, Stubs):
         self.get_dummy_vdi(vdi_uuid)
         self.get_dummy_vhd(vdi_uuid, False)
 
-        sr = self.create_LVHDSR()
+        sr = self.create_LVMSR()
         sr.isMaster = True
         sr.legacyMode = False
         sr.srcmd.params = {
@@ -588,12 +589,33 @@ class TestLVMVDI(unittest.TestCase, Stubs):
             }
         sr.cmd = "vdi_snapshot"
 
+        self.mock_sr_util.pathexists.side_effect = [
+            False,
+            False,
+            False, # AIO
+            True,  # VHD
+            False, # QCOW2
+            False,
+            True,
+            True,
+            False,
+            False, # AIO
+            True,  # VHD
+            False, # QCOW2
+            False,
+            True,
+            False,
+            True,
+            False,
+            True,
+            False
+        ]
+
         vdi = sr.vdi('some VDI UUID')
-        vdi.vdi_type = vhdutil.VDI_TYPE_VHD
-        self.mock_sr_util.pathexists.return_value = True
+        vdi.vdi_type = VdiType.VHD
         self.mock_sr_util.get_hosts_attached_on.return_value = ["hostref2"]
         self.mock_sr_util.get_this_host_ref.return_value = ["hostref1"]
-        self.mock_vhdutil.getDepth.return_value = 1
+        self.mock_getDepth.return_value = 1
 
         # Act
         with mock.patch('lock.Lock'):
