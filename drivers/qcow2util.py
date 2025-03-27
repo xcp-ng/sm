@@ -728,21 +728,29 @@ class QCowUtil(CowUtil):
             if len(l) > 1: #TODO: There might more than one minor for this blktap?
                 raise xs_errors.XenError("TapdiskAlreadyRunning", "There is multiple minor for this tapdisk process")
             minor = l[0]["minor"]
-            TapCtl.commit(pid, minor, QCOW2_TYPE, path)
-            #We need to wait for query to return finished
+            TapCtl.commit(pid, minor, QCOW2_TYPE, path) #TODO: Handle commit call failing
+            #We need to wait for query to return concluded
             #TODO: We are technically ininterruptible since being interrupted will only stop checking if the job is done
-            status, nb, _ = TapCtl.query(pid, minor)
-            if status == "undefined":
-                return 0
-            while status !=  "concluded":
-                time.sleep(1)
+            # We should call `tap-ctl cancel` if we are interrupted
+            try:
                 status, nb, _ = TapCtl.query(pid, minor)
-            return nb
+                if status == "undefined":
+                    return 0
+                while status !=  "concluded":
+                    time.sleep(1)
+                    status, nb, _ = TapCtl.query(pid, minor)
+                    util.SMlog("Got status {} for tapdisk {} minor: {}".format(status, pid, minor))
+                return nb
+            except TapCtl.CommandFailure as e:
+                # util.SMlog("Query command failed on tapdisk instance {}. Retrying with offline coalesce...".format(pid))
+                # return self.coalesce(path)
+                util.SMlog("Query command failed on tapdisk instance {}. Raising...".format(pid))
+                raise
         else:
             allocated_blocks = self.getAllocatedSize(path)
             # -d on commit make it not empty the original image since we don't intend to keep it
             cmd = [QEMU_IMG, "commit", "-f", QCOW2_TYPE, path, "-d"]
-            ret = cast(str, self._ioretry(cmd)) #TODO: parse for errors
+            ret = cast(str, self._ioretry(cmd)) #TODO: parse for byte coalesced, our qemu-img is supposed to be patched to output it.
             return allocated_blocks
 
     @override
