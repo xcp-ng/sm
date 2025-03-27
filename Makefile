@@ -40,6 +40,7 @@ SM_LIBS += linstorcowutil
 SM_LIBS += linstorjournaler
 SM_LIBS += linstorvolumemanager
 SM_LIBS += lvmcowutil
+SM_LIBS += qcow2util
 SM_LIBS += cifutils
 SM_LIBS += xs_errors
 SM_LIBS += nfs
