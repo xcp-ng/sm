@@ -495,10 +495,13 @@ class QCowUtil(CowUtil):
                 raise e
         return cowinfo
 
-    def _getInfoLV(self, lvcache: LVMCache, extractUuidFunction: Callable[[str], str], lvPath: str) -> CowImageInfo:
+    def _getInfoLV(self, lvcache: LVMCache, extractUuidFunction: Callable[[str], str], lvPath: str) -> Optional[CowImageInfo]:
         was_activated = False
         lvName = lvPath.split("/")[-1]
         lvcache.refresh()
+        if lvName not in lvcache.lvs:
+            util.SMlog("{} does not exist anymore".format(lvName))
+            return None
         if not lvcache.is_active(lvName):
             lvcache.activateNoRefcount(lvName)
             was_activated = True
@@ -527,21 +530,25 @@ class QCowUtil(CowUtil):
             lvcache.refresh()
             # We get size in lvcache.lvs[lvName].size (in bytes)
             # We could read the header from the PV directly
-            for lvName in lvcache.lvs.keys():
+            lvList = list(lvcache.lvs.keys())
+            for lvName in lvList:
                 # lvinfo = lvcache.lvs[lvName]
                 if reg.match(lvName):
                     lvPath = "/dev/{}/{}".format(vgName, lvName)
                     cowinfo = self._getInfoLV(lvcache, extractUuidFunction, lvPath)
+                    if cowinfo is None: #We get None if the LV stopped existing in the meanwhile
+                        continue
                     result[cowinfo.uuid] = cowinfo
                     if parents:
                         parentUuid = cowinfo.parentUuid
                         parentPath = cowinfo.parentPath
                         while parentUuid != "":
-                            cowinfo = self._getInfoLV(lvcache, extractUuidFunction, parentPath)
-                            result[cowinfo.uuid] = cowinfo
-                            parentUuid = cowinfo.parentUuid
-                            parentPath = cowinfo.parentPath
-
+                            parent_cowinfo = self._getInfoLV(lvcache, extractUuidFunction, parentPath)
+                            if parent_cowinfo is None: #Parent disappeared while scanning
+                                raise util.SMException("Parent of {} wasn't found during scan".format(lvName))
+                            result[parent_cowinfo.uuid] = parent_cowinfo
+                            parentUuid = parent_cowinfo.parentUuid
+                            parentPath = parent_cowinfo.parentPath
             return result
         else:
             pattern_p: Path = Path(pattern)
