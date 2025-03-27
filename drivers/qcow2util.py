@@ -707,7 +707,7 @@ class QCowUtil(CowUtil):
     @override
     def getDepth(self, path: str) -> int:
         cmd = [QEMU_IMG, "info", "--backing-chain", "--output=json", path]
-        ret = self._ioretry(cmd)
+        ret = str(self._ioretry(cmd))
         depth = len(re.findall("\"backing-filename\"", ret))+1
         #chain depth is beginning at one for VHD, meaning a VHD without parent has depth = 1
         return depth
