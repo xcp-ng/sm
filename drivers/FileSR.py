@@ -825,7 +825,7 @@ class FileVDI(VDI.VDI):
         extension = VDI_TYPE_TO_EXTENSION[self.vdi_type]
         if snap_type == VDI.SNAPSHOT_DOUBLE:
             dest = util.gen_uuid()
-            dst = os.path.join(self.sr.path, "%s.%s" % (dest, extension))
+            dst = os.path.join(self.sr.path, "%s%s" % (dest, extension))
             args.append(dest)
 
         if self.hidden:
@@ -841,7 +841,7 @@ class FileVDI(VDI.VDI):
         newuuid = util.gen_uuid()
         src = self.path
         newsrc = os.path.join(self.sr.path, "%s%s" % (newuuid, extension))
-        newsrcname = "%s.%s" % (newuuid, extension)
+        newsrcname = "%s%s" % (newuuid, extension)
 
         if not self._checkpath(src):
             raise xs_errors.XenError('VDIUnavailable', \
