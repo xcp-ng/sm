@@ -306,8 +306,8 @@ class FileSR(SR.SR):
 
             self.image_info.update(info)
 
-        for uuid in info.keys():
-            if info[uuid].error:
+        for uuid in self.image_info.keys():
+            if self.image_info[uuid].error:
                 raise xs_errors.XenError('SRScan', opterr='uuid=%s' % uuid)
 
             file_vdi = self.vdi(uuid)
@@ -315,7 +315,7 @@ class FileSR(SR.SR):
             self.vdis[uuid] = file_vdi
 
             # Get the key hash of any encrypted VDIs:
-            vdi_path = os.path.join(self.path, info[uuid].path)
+            vdi_path = os.path.join(self.path, self.image_info[uuid].path)
             key_hash = cowutil.getKeyHash(vdi_path)
             self.vdis[uuid].sm_config_override['key_hash'] = key_hash
 
