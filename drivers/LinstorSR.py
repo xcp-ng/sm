@@ -33,7 +33,7 @@ except ImportError:
 
     LINSTOR_AVAILABLE = False
 
-from lock import Lock, LOCK_TYPE_GC_RUNNING
+from lock import Lock
 import blktap2
 import cleanup
 import errno
@@ -1536,28 +1536,8 @@ class LinstorSR(SR.SR):
             raise xs_errors.XenError('SRNoSpace')
 
     def _kick_gc(self):
-        # Don't bother if an instance already running. This is just an
-        # optimization to reduce the overhead of forking a new process if we
-        # don't have to, but the process will check the lock anyways.
-        lock = Lock(LOCK_TYPE_GC_RUNNING, self.uuid)
-        if not lock.acquireNoblock():
-            if not cleanup.should_preempt(self.session, self.uuid):
-                util.SMlog('A GC instance already running, not kicking')
-                return
-
-            util.SMlog('Aborting currently-running coalesce of garbage VDI')
-            try:
-                if not cleanup.abort(self.uuid, soft=True):
-                    util.SMlog('The GC has already been scheduled to re-start')
-            except util.CommandException as e:
-                if e.code != errno.ETIMEDOUT:
-                    raise
-                util.SMlog('Failed to abort the GC')
-        else:
-            lock.release()
-
         util.SMlog('Kicking GC')
-        cleanup.gc(self.session, self.uuid, True)
+        cleanup.start_gc_service(self.uuid)
 
 # ==============================================================================
 # LinstorSr VDI
