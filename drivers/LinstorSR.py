@@ -2319,6 +2319,7 @@ class LinstorVDI(VDI.VDI):
         try:
             return self._snapshot(snap_type, cbtlog, consistency_state)
         finally:
+            self.disable_leaf_on_secondary(vdi_uuid, secondary=secondary)
             blktap2.VDI.tap_unpause(self.session, sr_uuid, vdi_uuid, secondary)
 
     def _snapshot(self, snap_type, cbtlog=None, cbt_consistency=None):
