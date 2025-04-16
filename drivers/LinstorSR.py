@@ -1602,13 +1602,13 @@ class LinstorVDI(VDI.VDI):
 
                 self._exists = False
                 vdi_sm_config = self.sr.srcmd.params.get('vdi_sm_config')
-                if vdi_sm_config is not None:
-                    type = vdi_sm_config.get('type')
-
-                    try:
-                        self._set_type(CREATE_PARAM_TYPES[type])
-                    except:
-                        raise xs_errors.XenError('VDICreate', opterr='bad type')
+                if vdi_sm_config:
+                    image_format = vdi_sm_config.get('image-format') or vdi_sm_config.get('type')
+                    if image_format:
+                        try:
+                            self._set_type(CREATE_PARAM_TYPES[image_format])
+                        except:
+                            raise xs_errors.XenError('VDICreate', opterr='bad image format')
 
                 if not self.vdi_type:
                     self._set_type(getVdiTypeFromImageFormat(self.sr.preferred_image_formats[0]))
