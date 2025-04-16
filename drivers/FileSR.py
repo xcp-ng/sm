@@ -489,16 +489,18 @@ class FileVDI(VDI.VDI):
 
         if self.sr.srcmd.cmd == "vdi_create":
             self.key_hash = None
-            if "vdi_sm_config" in self.sr.srcmd.params:
-                if "key_hash" in self.sr.srcmd.params["vdi_sm_config"]:
-                    self.key_hash = self.sr.srcmd.params["vdi_sm_config"]["key_hash"]
 
-                if "type" in self.sr.srcmd.params["vdi_sm_config"]:
-                    vdi_type = self.sr.srcmd.params["vdi_sm_config"]["type"]
-                    if not self.VDI_TYPE.get(vdi_type):
+            vdi_sm_config = self.sr.srcmd.params.get("vdi_sm_config")
+            if vdi_sm_config:
+                self.key_hash = vdi_sm_config.get("key_hash")
+
+                image_format = vdi_sm_config.get("image-format") or vdi_sm_config.get("type")
+                if image_format:
+                    vdi_type = self.VDI_TYPE.get(image_format)
+                    if not vdi_type:
                         raise xs_errors.XenError('VDIType',
                                 opterr='Invalid VDI type %s' % vdi_type)
-                    self.vdi_type = self.VDI_TYPE[vdi_type]
+                    self.vdi_type = vdi_type
 
             if not self.vdi_type:
                 self.vdi_type = getVdiTypeFromImageFormat(self.sr.preferred_image_formats[0])
