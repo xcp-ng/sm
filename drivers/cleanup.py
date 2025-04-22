@@ -1154,6 +1154,7 @@ class VDI(object):
 class FileVDI(VDI):
     """Object representing a VDI in a file-based SR (EXT or NFS)"""
 
+    @override
     @staticmethod
     def extractUuid(path):
         path = os.path.basename(path.strip())
@@ -1251,6 +1252,7 @@ class LVHDVDI(VDI):
         self.parentUuid = info.parentUuid
         self.path = os.path.join(self.sr.path, self.fileName)
 
+    @override
     @staticmethod
     def extractUuid(path):
         return lvhdutil.extractUuid(path)
@@ -4197,6 +4199,7 @@ def abort_optional_reenable(uuid):
 #
 def main():
     action = ""
+    maxAge = 0
     uuid = ""
     background = False
     force = False
