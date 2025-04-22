@@ -23,14 +23,14 @@ jobs:
           mypy .
 
   build:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-24.04
 
     steps:
       - uses: actions/checkout@v3
       - name: Set up Python 3
         uses: actions/setup-python@v4
         with:
-          python-version: '3.6'
+          python-version: '3.x'
 
       - name: Install dependencies
         run: |
