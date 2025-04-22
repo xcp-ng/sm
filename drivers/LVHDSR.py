@@ -222,6 +222,7 @@ class LVHDSR(SR.SR):
         for key in self.lvmCache.lvs.keys():
             # if the lvname has a uuid in it
             type = None
+            vdi = None
             if contains_uuid_regex.search(key) is not None:
                 if key.startswith(lvhdutil.LV_PREFIX[vhdutil.VDI_TYPE_VHD]):
                     type = vhdutil.VDI_TYPE_VHD
@@ -997,8 +998,8 @@ class LVHDSR(SR.SR):
             self.lvActivator.activate(baseUuid, base.name, False)
             origRefcountNormal = 1
             vhdInfo = vhdutil.getVHDInfo(basePath, lvhdutil.extractUuid, False)
-        if base.vdiType == vhdutil.VDI_TYPE_VHD and vhdInfo.hidden:
-            vhdutil.setHidden(basePath, False)
+            if vhdInfo.hidden:
+                vhdutil.setHidden(basePath, False)
         elif base.vdiType == vhdutil.VDI_TYPE_RAW and base.hidden:
             self.lvmCache.setHidden(base.name, False)
 
