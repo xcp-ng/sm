@@ -1205,8 +1205,7 @@ class LinstorSR(SR.SR):
             if USE_KEY_HASH and vdi.vdi_type == vhdutil.VDI_TYPE_VHD:
                 # TODO: Replace pylint comment with this feature when possible:
                 # https://github.com/PyCQA/pylint/pull/2926
-                vdi.sm_config_override['key_hash'] = \
-                    self._vhdutil.get_key_hash(vdi_uuid)  # pylint: disable = E1120
+                vdi.sm_config_override['key_hash'] = self._vhdutil.get_key_hash(vdi_uuid)  # pylint: disable = E1120
 
             # 4.c. Update CBT status of disks either just added
             # or already in XAPI.

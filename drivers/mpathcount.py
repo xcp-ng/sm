@@ -89,8 +89,8 @@ def match_pathup(s):
     match = re.match(r'.*\d+:\d+:\d+:\d+\s+\S+\s+\S+\s+\S+\s+(\S+)', s)
     if match:
         path_status = match.group(1)
-    if path_status in ['faulty', 'shaky', 'failed']:
-        return False
+        if path_status in ['faulty', 'shaky', 'failed']:
+            return False
     return True
 
 
