@@ -306,6 +306,9 @@ def getImageFormatFromVdiType(vdi_type: str) -> ImageFormat:
 
     assert False, f"Unsupported vdi type: {vdi_type}"
 
+def getImageStringFromVdiType(vdi_type: str) -> str:
+    return IMAGE_FORMAT_TO_STR[getImageFormatFromVdiType(vdi_type)]
+
 def getVdiTypeFromImageFormat(image_format: ImageFormat) -> str:
     if image_format == ImageFormat.RAW:
         return VdiType.RAW
