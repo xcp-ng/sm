@@ -4174,6 +4174,7 @@ def abort_optional_reenable(uuid):
 #
 def main():
     action = ""
+    maxAge = 0
     uuid = ""
     background = False
     force = False

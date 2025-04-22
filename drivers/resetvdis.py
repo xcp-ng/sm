@@ -21,6 +21,7 @@
 import cleanup
 import util
 import lock
+import sys
 import XenAPI # pylint: disable=import-error
 
 
@@ -141,7 +142,6 @@ def usage():
     sys.exit(1)
 
 if __name__ == '__main__':
-    import sys
     import atexit
 
     if len(sys.argv) not in [3, 4, 5]:
