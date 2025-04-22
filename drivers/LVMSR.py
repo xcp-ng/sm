@@ -40,7 +40,7 @@ from journaler import Journaler
 from refcounter import RefCounter
 from ipc import IPCFlag
 from constants import NS_PREFIX_LVM, VG_LOCATION, VG_PREFIX
-from cowutil import CowUtil, getCowUtil, getVdiTypeFromImageFormat
+from cowutil import CowUtil, getCowUtil, getImageStringFromVdiType, getVdiTypeFromImageFormat
 from lvmcowutil import LV_PREFIX, LvmCowUtil
 from lvmanager import LVActivator
 from vditype import VdiType
@@ -1432,6 +1432,7 @@ class LVMVDI(VDI.VDI):
 
         self.utilisation = lvSize
         self.sm_config["vdi_type"] = self.vdi_type
+        self.sm_config["image-format"] = getImageStringFromVdiType(self.vdi_type)
 
         if not self.sr.legacyMode:
             LVMMetadataHandler(self.sr.mdpath).ensureSpaceIsAvailableForVdis(1)

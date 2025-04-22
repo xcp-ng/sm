@@ -56,7 +56,7 @@ import xml.etree.ElementTree as xml_parser
 import xmlrpc.client
 import xs_errors
 
-from cowutil import CowUtil, getVdiTypeFromImageFormat
+from cowutil import CowUtil, getImageStringFromVdiType, getVdiTypeFromImageFormat
 from srmetadata import \
     NAME_LABEL_TAG, NAME_DESCRIPTION_TAG, IS_A_SNAPSHOT_TAG, SNAPSHOT_OF_TAG, \
     TYPE_TAG, VDI_TYPE_TAG, READ_ONLY_TAG, SNAPSHOT_TIME_TAG, \
@@ -1726,6 +1726,7 @@ class LinstorVDI(VDI.VDI):
 
         self.utilisation = volume_info.allocated_size
         self.sm_config['vdi_type'] = self.vdi_type
+        self.sm_config['image-format'] = getImageStringFromVdiType(self.vdi_type)
 
         self.ref = self._db_introduce()
         self.sr._update_stats(self.size)

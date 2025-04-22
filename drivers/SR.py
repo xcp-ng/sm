@@ -28,7 +28,8 @@ import copy
 import os
 import traceback
 
-from cowutil import ImageFormat, getCowUtilFromImageFormat, getVdiTypeFromImageFormat, parseImageFormats
+from cowutil import \
+    ImageFormat, getCowUtilFromImageFormat, getImageStringFromVdiType, getVdiTypeFromImageFormat, parseImageFormats
 from vditype import VdiType
 
 MOUNT_BASE = '/var/run/sr-mount'
@@ -555,6 +556,12 @@ class ScanRecord:
             except:
                 util.SMlog("missing config for vdi: %s" % vdi.location)
                 vdi.sm_config = {}
+
+            if "image-format" not in vdi.sm_config:
+                try:
+                    vdi.sm_config["image-format"] = getImageStringFromVdiType(vdi.vdi_type)
+                except:
+                    pass # No image format for this VDI type.
 
             vdi._override_sm_config(vdi.sm_config)
 

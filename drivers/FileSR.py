@@ -33,7 +33,8 @@ import blktap2
 import time
 import glob
 from uuid import uuid4
-from cowutil import CowImageInfo, CowUtil, ImageFormat, getCowUtil, getVdiTypeFromImageFormat
+from cowutil import \
+    CowImageInfo, CowUtil, ImageFormat, getCowUtil, getImageStringFromVdiType, getVdiTypeFromImageFormat
 from vditype import VdiType, VdiTypeExtension, VDI_COW_TYPES, VDI_TYPE_TO_EXTENSION
 import xmlrpc.client
 import XenAPI # pylint: disable=import-error
@@ -622,7 +623,11 @@ class FileVDI(VDI.VDI):
         st = util.ioretry(lambda: os.stat(self.path))
         self.utilisation = int(st.st_size)
         if self.vdi_type == VdiType.RAW:
+            # Legacy code.
             self.sm_config = {"type": self.PARAM_RAW}
+        if not hasattr(self, 'sm_config'):
+            self.sm_config = {}
+        self.sm_config = {"image-format": getImageStringFromVdiType(self.vdi_type)}
 
         self._db_introduce()
         self.sr._update(self.sr.uuid, self.size)
