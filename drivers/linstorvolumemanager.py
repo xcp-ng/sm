@@ -45,6 +45,7 @@ DRBD_BY_RES_PATH = '/dev/drbd/by-res/'
 
 CONTROLLER_CACHE_DIRECTORY = os.environ.get('TMPDIR', '/tmp') + '/linstor'
 CONTROLLER_CACHE_FILE = 'controller_uri'
+CONTROLLER_CACHE_PATH = "{}/{}".format(CONTROLLER_CACHE_DIRECTORY, CONTROLLER_CACHE_FILE)
 
 PLUGIN = 'linstor-manager'
 
@@ -202,7 +203,7 @@ def _get_controller_uri():
 
 def get_cached_controller_uri():
     try:
-        with open("{}/{}".format(CONTROLLER_CACHE_DIRECTORY, CONTROLLER_CACHE_FILE), "r") as f:
+        with open(CONTROLLER_CACHE_PATH, "r") as f:
             return f.read().strip()
     except Exception as e:
         util.SMlog('Unable to read controller uri cache file at {}/{} : {}'.format(
@@ -220,7 +221,7 @@ def write_controller_uri_cache(uri):
             os.chmod(CONTROLLER_CACHE_DIRECTORY, 0o700)
         if not os.path.isdir(CONTROLLER_CACHE_DIRECTORY):
             raise NotADirectoryError
-        with open("{}/{}".format(CONTROLLER_CACHE_DIRECTORY, CONTROLLER_CACHE_FILE), "w") as f:
+        with open(CONTROLLER_CACHE_PATH, "w") as f:
             f.write(uri)
     except Exception as e:
         util.SMlog('Unable to write controller uri cache file at {}/{} : {}'.format(
