@@ -466,6 +466,35 @@ class LinstorVolumeManager(object):
         self._volume_info_cache_dirty = True
         self._build_volumes(repair=repair)
 
+    @staticmethod
+    def create_from_cache(
+        group_name, repair=False, logger=default_logger.__func__,
+        attempt_count=30
+    ):
+        """
+        Attempt to create a LinstorVolumeManager from cached data.
+        If it fails, refresh the cache and retry once.
+
+        :param str group_name: The SR goup name to use.
+        :param bool repair: If true we try to remove bad volumes due to a crash
+        or unexpected behavior.
+        :param function logger: Function to log messages.
+        :param int attempt_count: Number of attempts to join the controller.
+        """
+        uri = get_cached_controller_uri()
+        if not uri:
+            logger("Cached controller URI not found, rebuilding cache...")
+            uri = build_controller_uri_cache()
+        if not uri:
+            raise LinstorVolumeManagerError(
+                "Unable to retrieve a valid controller URI from cache or after rebuild."
+            )
+
+        return LinstorVolumeManager(
+            uri, group_name, repair=repair,
+            logger=logger, attempt_count=attempt_count
+        )
+
     @property
     def group_name(self):
         """
