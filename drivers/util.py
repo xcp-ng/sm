@@ -777,6 +777,12 @@ def get_slaves_attached_on(session, vdi_uuids):
     master_ref = get_this_host_ref(session)
     return [x for x in host_refs if x != master_ref]
 
+def get_enabled_hosts(session):
+    """
+    Returns a list of host refs that are enabled in the pool.
+    """
+    enabled_hosts = list(session.xenapi.host.get_all_records_where('field "enabled" = "true"').keys())
+    return enabled_hosts
 
 def get_online_hosts(session):
     online_hosts = []
