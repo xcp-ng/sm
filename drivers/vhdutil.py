@@ -442,6 +442,18 @@ class VhdUtil(CowUtil):
         """
         self._ioretry([VHD_UTIL, "key", "-s", "-n", path, "-H", key_hash])
 
+    @override
+    def isCoalesceableOnRemote(self) -> bool:
+        return False
+
+    @override
+    def coalesceOnline(self, path: str) -> int:
+        raise NotImplementedError("Online coalesce not implemented for vhdutil")
+
+    @override
+    def cancelCoalesceOnline(self, path: str) -> None:
+        raise NotImplementedError("Online coalesce not implemented for vhdutil")
+
     @staticmethod
     def _convertAllocatedSizeToBytes(size: int):
         # Assume we have standard 2MB allocation blocks
