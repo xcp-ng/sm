@@ -18,6 +18,9 @@
 # A plugin for synchronizing slaves when something changes on the Master
 
 import sys
+import os
+import time
+import errno
 sys.path.append("/opt/xensource/sm/")
 import util
 import lock
@@ -148,7 +151,6 @@ def is_open(session, args):
         util.logException("is_open")
         raise
 
-
 def refresh_lun_size_by_SCSIid(session, args):
     """Refresh the size of LUNs backing the SCSIid on the local node."""
     util.SMlog("on-slave.refresh_lun_size_by_SCSIid(,%s)" % args)
@@ -160,10 +162,78 @@ def refresh_lun_size_by_SCSIid(session, args):
         util.SMlog("on-slave.refresh_lun_size_by_SCSIid with %s failed" % args)
         return "False"
 
+def commit_tapdisk(session, args):
+    path = args["path"]
+    vdi_type = args["vdi_type"]
+    #TODO: Miss activating/changing RW, naming should reflect that it does more than coalesceing
+    from cowutil import getCowUtil
+    cowutil = getCowUtil(vdi_type)
+    try:
+        return str(cowutil.coalesceOnline(path))
+    except:
+        return "0"
+
+def commit_cancel(session, args):
+    path = args["path"]
+    vdi_type = args["vdi_type"]
+    from cowutil import getCowUtil
+    cowutil = getCowUtil(vdi_type)
+    try:
+        cowutil.cancelCoalesceOnline(path)
+    except:
+        return "False"
+    return "True"
+
+def cancel_coalesce_master(session, args):
+    sr_uuid = args["sr_uuid"]
+    vdi_uuid = args["vdi_uuid"]
+
+    # from ipc import IPCFlag
+    # flag = IPCFlag(sr_uuid)
+
+    # runningStr = "gc_running_{}".format(vdi_uuid)
+    # abortStr = "abort_{}".format(vdi_uuid)
+
+    # if not flag.test(runningStr):
+    #     return "True"
+
+    # if not flag.test(abortStr):
+    #     flag.set(abortStr)
+
+    # while flag.test(abortStr) or flag.test(runningStr):
+    #     time.sleep(1)
+
+    # return "True"
+
+    path = "/run/nonpersistent/sm/{}/gc_running_{}".format(sr_uuid, vdi_uuid)
+
+    try:
+        with open(path, "r+") as f:
+            f.truncate(0)
+            f.flush()
+            os.fsync(f.fileno())
+    except IOError as e:
+        if e.errno == errno.ENOENT:
+            return "True"
+        raise
+
+    while os.path.exists(path):
+        time.sleep(1)
+
+    return "True"
+
+def is_openers(session, args):
+    path = args["path"]
+    openers_pid= util.get_openers_pid(path)
+    return str(bool(openers_pid))
 
 if __name__ == "__main__":
     import XenAPIPlugin
     XenAPIPlugin.dispatch({
         "multi": multi,
         "is_open": is_open,
-        "refresh_lun_size_by_SCSIid": refresh_lun_size_by_SCSIid})
+        "refresh_lun_size_by_SCSIid": refresh_lun_size_by_SCSIid,
+        "is_openers": is_openers,
+        "commit_tapdisk": commit_tapdisk,
+        "commit_cancel": commit_cancel,
+        })
