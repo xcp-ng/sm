@@ -757,7 +757,7 @@ class VDI(object):
 
         return maxChildHeight + 1
 
-    def getAllLeaves(self):
+    def getAllLeaves(self) -> List["VDI"]:
         "Get all leaf nodes in the subtree rooted at self"
         if len(self.children) == 0:
             return [self]
@@ -827,6 +827,57 @@ class VDI(object):
 
     def _clearRef(self):
         self._vdiRef = None
+
+    def _call_plug_cancel(self, hostRef):
+        args = {"path": self.path, "vdi_type": self.vdi_type}
+        self.sr.xapi.session.xenapi.host.call_plugin( \
+                    hostRef, XAPI.PLUGIN_ON_SLAVE, "commit_cancel", args)
+
+    def _call_plugin_coalesce(self, hostRef):
+        args = {"path": self.path, "vdi_type": self.vdi_type}
+        self.sr.xapi.session.xenapi.host.call_plugin( \
+                    hostRef, XAPI.PLUGIN_ON_SLAVE, "commit_tapdisk", args)
+
+    def _doCoalesceOnHost(self, hostRef):
+        self.validate()
+        self.parent.validate(True)
+        self.parent._increaseSizeVirt(self.sizeVirt)
+        self.sr._updateSlavesOnResize(self.parent)
+        #TODO: We might need to make the LV RW on the slave directly for coalesce?
+        # Children and parent need to be RW for QCOW2 coalesce, otherwise tapdisk(libqcow) will crash trying to access them
+
+        def abortTest():
+            file = self.sr._gc_running_file(self)
+            try:
+                with open(file, "r") as f:
+                    if not f.read():
+                        #TODO: Need to call commit cancel on the hostRef if we stop
+                        self._call_plug_cancel(hostRef)
+                        return True
+            except OSError as e:
+                if e.errno == errno.ENOENT:
+                    util.SMlog("File {} does not exist".format(file))
+                else:
+                    util.SMlog("IOError: {}".format(e))
+                return True
+            return False
+
+        Util.runAbortable(lambda: self._call_plugin_coalesce(hostRef),
+                          None, self.sr.uuid, abortTest, VDI.POLL_INTERVAL, 0)
+
+        self.parent.validate(True)
+        #self._verifyContents(0)
+        self.parent.updateBlockInfo()
+
+    def _isOpenOnHosts(self) -> Optional[str]:
+        for pbdRecord in self.sr.xapi.getAttachedPBDs():
+            hostRef = pbdRecord["host"]
+            args = {"path": self.path}
+            is_openers = util.strtobool(self.sr.xapi.session.xenapi.host.call_plugin( \
+                    hostRef, XAPI.PLUGIN_ON_SLAVE, "is_openers", args))
+            if is_openers:
+                return hostRef
+        return None
 
     def _doCoalesce(self) -> None:
         """Coalesce self onto parent. Only perform the actual coalescing of
@@ -914,7 +965,7 @@ class VDI(object):
         return self.cowutil.coalesce(self.path)
 
     @staticmethod
-    def _doCoalesceCowImage(vdi):
+    def _doCoalesceCowImage(vdi: "VDI"):
         try:
             startTime = time.time()
             allocated_size = vdi.getAllocatedSize()
@@ -943,7 +994,21 @@ class VDI(object):
 
     def _coalesceCowImage(self, timeOut):
         Util.log("  Running COW coalesce on %s" % self)
-        abortTest = lambda: IPCFlag(self.sr.uuid).test(FLAG_TYPE_ABORT)
+        def abortTest():
+            if self.cowutil.isCoalesceableOnRemote():
+                file = self.sr._gc_running_file(self)
+                try:
+                    with open(file, "r") as f:
+                        if not f.read():
+                            return True
+                except OSError as e:
+                    if e.errno == errno.ENOENT:
+                        util.SMlog("File {} does not exist".format(file))
+                    else:
+                        util.SMlog("IOError: {}".format(e))
+                    return True
+            return IPCFlag(self.sr.uuid).test(FLAG_TYPE_ABORT)
+
         try:
             util.fistpoint.activate_custom_fn(
                 "cleanup_coalesceVHD_inject_failure",
@@ -2385,7 +2450,24 @@ class SR(object):
     def cleanupCache(self, maxAge=-1) -> int:
         return 0
 
-    def _coalesce(self, vdi):
+    def _hasLeavesAttachedOn(self, vdi: VDI):
+        leaves = vdi.getAllLeaves()
+        leaves_vdi = [leaf.uuid for leaf in leaves]
+        return util.get_hosts_attached_on(self.xapi.session, leaves_vdi)
+
+    def _gc_running_file(self, vdi: VDI):
+        run_file = "gc_running_{}".format(vdi.uuid)
+        return os.path.join(NON_PERSISTENT_DIR, str(self.uuid), run_file)
+
+    def _create_running_file(self, vdi: VDI):
+        with open(self._gc_running_file(vdi), "w") as f:
+            f.write("1")
+
+    def _delete_running_file(self, vdi: VDI):
+        os.unlink(self._gc_running_file(vdi))
+
+    def _coalesce(self, vdi: VDI):
+        skipRelink = False
         if self.journaler.get(vdi.JRN_RELINK, vdi.uuid):
             # this means we had done the actual coalescing already and just
             # need to finish relinking and/or refreshing the children
@@ -2395,8 +2477,37 @@ class SR(object):
             # order to decide whether to abort the coalesce. We remove the
             # journal as soon as the COW coalesce step is done, because we
             # don't expect the rest of the process to take long
+
+            #TODO: Create `gc_running` in `/run/nonpersistent/sm/<sr uuid>/`
+            if os.path.exists(self._gc_running_file(vdi)):
+                util.SMlog("gc_running already exist for {}. Ignoring...".format(self.uuid))
+
+            self._create_running_file(vdi)
+
             self.journaler.create(vdi.JRN_COALESCE, vdi.uuid, "1")
-            vdi._doCoalesce()
+            host_refs = self._hasLeavesAttachedOn(vdi)
+            #TODO: this check of multiple host_refs should be done earlier in `is_coalesceable` to avoid stopping this late every time
+            if len(host_refs) > 1:
+                util.SMlog("Not coalesceable, chain activated more than once")
+                raise Exception("Not coalesceable, chain activated more than once") #TODO: Use correct error
+
+            try:
+                if host_refs and vdi.cowutil.isCoalesceableOnRemote:
+                    #Leaf opened on another host, we need to call online coalesce
+                    util.SMlog("DAMS: Remote coalesce for {}".format(vdi.path))
+                    vdi._doCoalesceOnHost(list(host_refs)[0])
+                    skipRelink = True
+                else:
+                    util.SMlog("DAMS: Offline coalesce for {}".format(vdi.path))
+                    vdi._doCoalesce()
+            except Exception as e:
+                util.SMlog("DAMS: EXCEPTION {}".format(e))
+                self._delete_running_file(vdi)
+                raise
+            """
+            vdi._doCoalesce will call vdi._coalesceCowImage (after doing other things).
+            It will then call VDI._doCoalesceCowImage in a runAbortable context
+            """
             self.journaler.remove(vdi.JRN_COALESCE, vdi.uuid)
 
             util.fistpoint.activate("LVHDRT_before_create_relink_journal", self.uuid)
@@ -2405,19 +2516,22 @@ class SR(object):
             # like SM.clone from manipulating the VDIs we'll be relinking and
             # rescan the SR first in case the children changed since the last
             # scan
-            self.journaler.create(vdi.JRN_RELINK, vdi.uuid, "1")
+            if not skipRelink:
+                self.journaler.create(vdi.JRN_RELINK, vdi.uuid, "1")
 
-        self.lock()
-        try:
-            vdi.parent._tagChildrenForRelink()
-            self.scan()
-            vdi._relinkSkip()
-        finally:
-            self.unlock()
-            # Reload the children to leave things consistent
-            vdi.parent._reloadChildren(vdi)
+        if not skipRelink:
+            self.lock()
+            try:
+                vdi.parent._tagChildrenForRelink()
+                self.scan()
+                vdi._relinkSkip()
+            finally:
+                self.unlock()
+                # Reload the children to leave things consistent
+                vdi.parent._reloadChildren(vdi)
+            self.journaler.remove(vdi.JRN_RELINK, vdi.uuid)
 
-        self.journaler.remove(vdi.JRN_RELINK, vdi.uuid)
+        self._delete_running_file(vdi)
         self.deleteVDI(vdi)
 
     class CoalesceTracker:
@@ -2657,6 +2771,7 @@ class SR(object):
             try:
                 try:
                     # "vdi" object will no longer be valid after this call
+                    self._create_running_file(vdi)
                     self._doCoalesceLeaf(vdi)
                 except:
                     Util.logException("_doCoalesceLeaf")
@@ -2666,6 +2781,7 @@ class SR(object):
                 vdi = self.getVDI(uuid)
                 if vdi:
                     vdi.ensureUnpaused()
+                self._delete_running_file(vdi)
                 vdiOld = self.getVDI(self.TMP_RENAME_PREFIX + uuid)
                 if vdiOld:
                     util.fistpoint.activate("LVHDRT_coaleaf_before_delete", self.uuid)
@@ -2677,7 +2793,7 @@ class SR(object):
             self.logFilter.logState()
         return True
 
-    def _doCoalesceLeaf(self, vdi):
+    def _doCoalesceLeaf(self, vdi: VDI):
         """Actual coalescing of a leaf VDI onto parent. Must be called in an
         offline/atomic context"""
         self.journaler.create(VDI.JRN_LEAF, vdi.uuid, vdi.parent.uuid)
@@ -3720,8 +3836,7 @@ def _gc_init_file(sr_uuid):
 
 def _create_init_file(sr_uuid):
     util.makedirs(os.path.join(NON_PERSISTENT_DIR, str(sr_uuid)))
-    with open(os.path.join(
-            NON_PERSISTENT_DIR, str(sr_uuid), 'gc_init'), 'w+') as f:
+    with open(os.path.join(_gc_init_file(sr_uuid)), 'w+') as f:
         f.write('1')
 
 
@@ -3750,7 +3865,7 @@ def _gcLoopPause(sr, dryRun=False, immediate=False):
         Util.log("GC active, quiet period ended")
 
 
-def _gcLoop(sr, dryRun=False, immediate=False):
+def _gcLoop(sr: SR, dryRun=False, immediate=False):
     if not lockGCActive.acquireNoblock():
         Util.log("Another GC instance already active, exiting")
         return

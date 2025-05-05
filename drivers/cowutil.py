@@ -266,6 +266,18 @@ class CowUtil(ABC):
     def setKey(self, path: str, key_hash: str) -> None:
         pass
 
+    @abstractmethod
+    def isCoalesceableOnRemote(self) -> bool:
+        pass
+
+    @abstractmethod
+    def coalesceOnline(self, path: str) -> int:
+        pass
+
+    @abstractmethod
+    def cancelCoalesceOnline(self, path: str) -> None:
+        pass
+
     def getParentChain(self, lvName: str, extractUuidFunction: Callable[[str], str], vgName: str) -> Dict[str, str]:
         """
         Get the chain of all parents of 'path'. Safe to call for raw VDI's as well.

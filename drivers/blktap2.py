@@ -64,6 +64,7 @@ except ImportError:
     LINSTOR_AVAILABLE = False
 
 PLUGIN_TAP_PAUSE = "tapdisk-pause"
+PLUGIN_ON_SLAVE = "on-slave"
 
 SOCKPATH = "/var/xapi/xcp-rrdd"
 
@@ -460,6 +461,13 @@ class TapCtl(object):
         coalesced = int(m.group(2))
         total_coalesce = int(m.group(3))
         return (status, coalesced, total_coalesce)
+
+    @classmethod
+    def cancel_commit(cls, pid, minor, wait=True):
+        args = ["cancel", "-p", pid, "-m", minor]
+        if wait:
+            args.append("-w")
+        cls._pread(args)
 
 class TapdiskExists(Exception):
     """Tapdisk already running."""
@@ -1658,6 +1666,8 @@ class VDI(object):
         if self.tap_wanted():
             if not self._add_tag(vdi_uuid, not options["rdonly"]):
                 return False
+                #TODO: Need to interrupt coalesce on master, the coalesce will check for host_OpaqueRef on the VDI before trying offline coalesce
+                #TODO: The coalesce could happen on another slave in onlinecoalesce, interrupt coalesce on another slave (online coalesce)?
             refresh = True
 
         try:

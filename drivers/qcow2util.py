@@ -718,35 +718,53 @@ class QCowUtil(CowUtil):
         return zlib.compress(self._create_bitmap())
 
     @override
-    def coalesce(self, path: str) -> int:
-        pid_openers = util.get_openers_pid(path)
+    def coalesceOnline(self, path: str) -> int:
+        pid_openers = util.get_openers_pid(path) # TODO: need to check other hosts and call tap-ctl on the host where it runs
         if pid_openers:
             if len(pid_openers) > 1:
-                util.SMlog("Multiple openers for {}".format(path)) #TODO: There might be multiple PID?
+                raise xs_errors.XenError("Multiple openers for {}".format(path)) # TODO: There might be multiple PID? Yes, we can have the chain enabled for multiple leaf (i.e. after a clone)
             pid = pid_openers[0]
             l = TapCtl.list(pid=pid)
             if len(l) > 1: #TODO: There might more than one minor for this blktap?
                 raise xs_errors.XenError("TapdiskAlreadyRunning", "There is multiple minor for this tapdisk process")
             minor = l[0]["minor"]
-            TapCtl.commit(pid, minor, QCOW2_TYPE, path) #TODO: Handle commit call failing
+            TapCtl.commit(pid, minor, QCOW2_TYPE, path) #TODO: Handle commit call failing, it's needed if the tapdisk hasn't started yet or crashed
             #We need to wait for query to return concluded
             #TODO: We are technically ininterruptible since being interrupted will only stop checking if the job is done
             # We should call `tap-ctl cancel` if we are interrupted
             try:
                 status, nb, _ = TapCtl.query(pid, minor)
                 if status == "undefined":
+                    util.SMlog("Tapdisk {} (m: {}) coalesce status undefined for {}".format(pid, minor, path))
                     return 0
                 while status !=  "concluded":
                     time.sleep(1)
                     status, nb, _ = TapCtl.query(pid, minor)
-                    util.SMlog("Got status {} for tapdisk {} minor: {}".format(status, pid, minor))
+                    util.SMlog("Got status {} for tapdisk {} (m: {})".format(status, pid, minor))
                 return nb
             except TapCtl.CommandFailure as e:
-                # util.SMlog("Query command failed on tapdisk instance {}. Retrying with offline coalesce...".format(pid))
-                # return self.coalesce(path)
                 util.SMlog("Query command failed on tapdisk instance {}. Raising...".format(pid))
                 raise
-        else:
+
+    @override
+    def cancelCoalesceOnline(self, path: str) -> None:
+        pid_openers = util.get_openers_pid(path) # TODO: need to check other hosts and call tap-ctl on the host where it runs
+        if pid_openers:
+            if len(pid_openers) > 1:
+                raise xs_errors.XenError("Multiple openers for {}".format(path)) # TODO: There might be multiple PID? Yes, we can have the chain enabled for multiple leaf (i.e. after a clone)
+            pid = pid_openers[0]
+            l = TapCtl.list(pid=pid)
+            if len(l) > 1: #TODO: There might more than one minor for this blktap?
+                raise xs_errors.XenError("TapdiskAlreadyRunning", "There is multiple minor for this tapdisk process")
+            minor = l[0]["minor"]
+            try:
+                TapCtl.cancel_commit(pid, minor)
+            except TapCtl.CommandFailure as e:
+                util.SMlog("Cancel command failed on tapdisk instance {}. Raising...".format(pid))
+                raise
+
+    @override
+    def coalesce(self, path: str) -> int:
             allocated_blocks = self.getAllocatedSize(path)
             # -d on commit make it not empty the original image since we don't intend to keep it
             cmd = [QEMU_IMG, "commit", "-f", QCOW2_TYPE, path, "-d"]
@@ -822,3 +840,7 @@ class QCowUtil(CowUtil):
     @override
     def setKey(self, path: str, key_hash: str) -> None:
         pass
+
+    @override
+    def isCoalesceableOnRemote(self) -> bool:
+        return True

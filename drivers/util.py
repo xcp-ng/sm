@@ -2115,7 +2115,7 @@ def make_profile(name, function):
         SMlog('* End profiling of {} ({}) *'.format(name, filename))
 
 
-def strtobool(str):
+def strtobool(str: str) -> bool:
     # Note: `distutils` package is deprecated and slated for removal in Python 3.12.
     # There is not alternative for strtobool.
     # See: https://peps.python.org/pep-0632/#migration-advice
