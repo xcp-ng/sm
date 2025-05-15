@@ -157,6 +157,9 @@ class TestLVHDoISCSISR(ISCSITestCase):
         lvlock_patcher = mock.patch('LVHDSR.lvutil.Fairlock')
         self.mock_lvlock = lvlock_patcher.start()
 
+        pv_check_patcher = mock.patch('LVHDoISCSISR.lvutil.checkPVScsiIds', autospec=True)
+        self.mock_pv_check = pv_check_patcher.start()
+
         self.addCleanup(mock.patch.stopall)
 
         super().setUp()
