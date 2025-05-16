@@ -213,6 +213,15 @@ def get_cached_controller_uri():
         ))
     return None
 
+def delete_controller_uri_cache():
+    try:
+        os.remove(CONTROLLER_CACHE_PATH)
+    except Exception as e:
+        util.SMlog('Unable to write controller uri cache file at {}/{} : {}'.format(
+            CONTROLLER_CACHE_DIRECTORY,
+            CONTROLLER_CACHE_FILE,
+            e
+        ))
 
 def write_controller_uri_cache(uri):
     try:
@@ -2664,7 +2673,7 @@ class LinstorVolumeManager(object):
 
     @classmethod
     def _create_linstor_instance(
-        cls, uri, keep_uri_unmodified=False, attempt_count=30
+        cls, uri, keep_uri_unmodified=False, keep_cache_on_error=False, attempt_count=30
     ):
         retry = False
 
@@ -2681,8 +2690,11 @@ class LinstorVolumeManager(object):
 
         try:
             return connect(uri)
-        except (linstor.errors.LinstorNetworkError, LinstorVolumeManagerError):
+        except LinstorVolumeManagerError:
             pass
+        except linstor.errors.LinstorNetworkError:
+            if not keep_cache_on_error:
+                build_controller_uri_cache()
 
         if not keep_uri_unmodified:
             uri = None

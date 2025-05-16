@@ -17,7 +17,8 @@
 
 
 from linstorvolumemanager import \
-  get_controller_uri, LinstorVolumeManager, LinstorVolumeManagerError
+    get_controller_uri, LinstorVolumeManager, LinstorVolumeManagerError, build_controller_uri_cache, \
+    delete_controller_uri_cache
 import linstor
 import re
 import util
@@ -160,8 +161,10 @@ class LinstorJournaler:
 
         try:
             return connect(uri)
-        except (linstor.errors.LinstorNetworkError, LinstorVolumeManagerError):
+        except LinstorVolumeManagerError:
             pass
+        except linstor.errors.LinstorNetworkError:
+            delete_controller_uri_cache()
 
         return util.retry(
             lambda: connect(None),
