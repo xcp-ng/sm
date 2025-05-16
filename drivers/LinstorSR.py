@@ -13,7 +13,7 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
-
+from drivers.linstorvolumemanager import write_controller_uri_cache
 from sm_typing import Optional, override
 
 from constants import CBTLOG_TAG
@@ -420,6 +420,7 @@ class LinstorSR(SR.SR):
                                 try:
                                     util.SMlog('Connecting from config to LINSTOR controller using: {}'.format(ip))
                                     create_linstor(controller_uri, attempt_count=0)
+                                    write_controller_uri_cache(controller_uri)
                                     return controller_uri
                                 except:
                                     pass
