@@ -13,7 +13,7 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
-from drivers.linstorvolumemanager import write_controller_uri_cache
+from linstorvolumemanager import write_controller_uri_cache
 from sm_typing import Optional, override
 
 from constants import CBTLOG_TAG
