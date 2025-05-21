@@ -583,15 +583,14 @@ class QCowUtil(CowUtil):
     @override
     def setParent(self, path: str, parentPath: str, parentRaw: bool) -> None:
         pid_openers = util.get_openers_pid(path)
-        if not pid_openers:
-            parentType = QCOW2_TYPE
-            if parentRaw:
-                parentType = RAW_TYPE
-            cmd = [QEMU_IMG, "rebase", "-u", "-f", QCOW2_TYPE, "-F", parentType, "-b", parentPath, path]
-            self._ioretry(cmd)
-        else:
-            util.SMlog("Could not rebase because openers {}".format(pid_openers))
-            # Maybe check the parent is already the correct one thanks to tapdisk coalesce
+        if pid_openers:
+            util.SMlog("Rebasing while process {} has the VDI opened".format(pid_openers))
+
+        parentType = QCOW2_TYPE
+        if parentRaw:
+            parentType = RAW_TYPE
+        cmd = [QEMU_IMG, "rebase", "-u", "-f", QCOW2_TYPE, "-F", parentType, "-b", parentPath, path]
+        self._ioretry(cmd)
 
     @override
     def getHidden(self, path: str) -> bool:
