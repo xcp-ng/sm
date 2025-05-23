@@ -206,9 +206,8 @@ def get_cached_controller_uri():
         with open(CONTROLLER_CACHE_PATH, "r") as f:
             return f.read().strip()
     except Exception as e:
-        util.SMlog('Unable to read controller uri cache file at {}/{} : {}'.format(
-            CONTROLLER_CACHE_DIRECTORY,
-            CONTROLLER_CACHE_FILE,
+        util.SMlog('Unable to read controller uri cache file at {} : {}'.format(
+            CONTROLLER_CACHE_PATH,
             e
         ))
     return None
@@ -217,9 +216,8 @@ def delete_controller_uri_cache():
     try:
         os.remove(CONTROLLER_CACHE_PATH)
     except Exception as e:
-        util.SMlog('Unable to write controller uri cache file at {}/{} : {}'.format(
-            CONTROLLER_CACHE_DIRECTORY,
-            CONTROLLER_CACHE_FILE,
+        util.SMlog('Unable to write controller uri cache file at {} : {}'.format(
+            CONTROLLER_CACHE_PATH,
             e
         ))
 
@@ -233,9 +231,8 @@ def write_controller_uri_cache(uri):
         with open(CONTROLLER_CACHE_PATH, "w") as f:
             f.write(uri)
     except Exception as e:
-        util.SMlog('Unable to write controller uri cache file at {}/{} : {}'.format(
-            CONTROLLER_CACHE_DIRECTORY,
-            CONTROLLER_CACHE_FILE,
+        util.SMlog('Unable to write controller uri cache file at {} : {}'.format(
+            CONTROLLER_CACHE_PATH,
             e
         ))
 
@@ -492,7 +489,6 @@ class LinstorVolumeManager(object):
         """
         uri = get_cached_controller_uri()
         if not uri:
-            logger("Cached controller URI not found, rebuilding cache...")
             uri = build_controller_uri_cache()
         if not uri:
             raise LinstorVolumeManagerError(
