@@ -163,15 +163,29 @@ def refresh_lun_size_by_SCSIid(session, args):
         return "False"
 
 def commit_tapdisk(session, args):
-    path = args["path"]
+    path: str = args["path"]
     vdi_type = args["vdi_type"]
-    #TODO: Miss activating/changing RW, naming should reflect that it does more than coalesceing
+    #TODO: naming should reflect that it does more than coalesceing, like setting volume RW
+
+    def set_RW(path):
+        try:
+            util.pread2(["lvchange", "-p", "rw", path])
+        except:
+            pass
+    #TODO: need to make children RW. Or we let the relink happen with a refresh on master and hope it doesn't corrupt the disk
+    if path.startswith("/dev/"):
+        set_RW(path)
+
     from cowutil import getCowUtil
     cowutil = getCowUtil(vdi_type)
     try:
+        parent = cowutil.getParentNoCheck(path)
+        if parent.startswith("/dev/"):
+            set_RW(parent)
         return str(cowutil.coalesceOnline(path))
     except:
-        return "0"
+        util.logException("Couldn't coalesce online")
+        raise
 
 def commit_cancel(session, args):
     path = args["path"]
@@ -205,6 +219,7 @@ def cancel_coalesce_master(session, args):
 
     # return "True"
 
+    util.SMlog("Running cancel_coalesce_master plugin: {}".format(vdi_uuid))
     path = "/run/nonpersistent/sm/{}/gc_running_{}".format(sr_uuid, vdi_uuid)
 
     try:
@@ -236,4 +251,5 @@ if __name__ == "__main__":
         "is_openers": is_openers,
         "commit_tapdisk": commit_tapdisk,
         "commit_cancel": commit_cancel,
+        "cancel_coalesce_master": cancel_coalesce_master,
         })

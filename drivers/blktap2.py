@@ -18,7 +18,7 @@
 # blktap2: blktap/tapdisk management layer
 #
 
-from sm_typing import Any, Callable, ClassVar, Dict, override
+from sm_typing import Any, Callable, ClassVar, Dict, override, List
 
 from abc import abstractmethod
 
@@ -1657,6 +1657,89 @@ class VDI(object):
             time.sleep(1)
         raise util.SMException("VDI %s locked" % vdi_uuid)
 
+    def _get_host_ref(self) -> str:
+        """
+        Give the host ref of the one responsible for Garbage Collection for a SR.
+        Meaning this host for a local SR, the master for a shared SR.
+        """
+        sr = self.target.vdi.sr
+        if sr.is_shared():
+            host_ref = util.get_master_ref(self._session)
+        else:
+            host_ref = sr.host_ref
+        return host_ref
+
+    def _get_chain(self, cowutil, extractUuid) -> List[str]:
+        vdi_chain = []
+        path = self.target.get_vdi_path()
+
+        #TODO: Need to add handling of error for getParentNoCheck, e.g. corrupted VDI where we can't read parent
+        vdi_chain.append(extractUuid(path))
+        parent = cowutil.getParentNoCheck(path)
+        while parent:
+            vdi_chain.append(extractUuid(parent))
+            parent = cowutil.getParentNoCheck(parent)
+        vdi_chain.reverse()
+        return vdi_chain
+
+    def _check_journal_coalesce_chain(self, sr_uuid: str, vdi_uuid: str) -> bool:
+        vdi_type = self.target.get_vdi_type()
+        cowutil = getCowUtil(vdi_type)
+        if not cowutil.isCoalesceableOnRemote(): #We only need to stop the coalesce in case of QCOW2
+            return True
+
+        level = 0
+        path = self.target.get_vdi_path()
+
+        # Different extractUUID & journaler function for LVMSR and FileSR
+        journaler = None
+        extractUuid = None
+        if path.startswith("/dev/"): #TODO: How to identify SR type easily, we could ask XAPI since we have the sruuid (and even ref)
+            from lvmcowutil import LvmCowUtil
+            import lvmcache
+            import journaler
+            vgName = "VG_XenStorage-{}".format(sr_uuid)
+            lvmCache = lvmcache.LVMCache(vgName)
+            journaler = journaler.Journaler(lvmCache)
+
+            extractUuid = LvmCowUtil.extractUuid
+        else:
+            from FileSR import FileVDI
+            import fjournaler
+            journaler = fjournaler.Journaler(os.getcwd())
+            extractUuid = FileVDI.extractUuid
+
+        # Get the VDI chain
+        vdi_chain = self._get_chain(cowutil, extractUuid)
+
+        if len(vdi_chain) == 1:
+            #We only have a leaf, do nothing
+            util.SMlog("VDI {} is only a leaf, continuing...".format(vdi_uuid))
+            return True
+
+        # Log the chain of active VDI
+        util.SMlog("VDI chain:")
+        for vdi in vdi_chain:
+            prefix = "    " * level
+            level += 1
+            util.SMlog("{}{}".format(prefix, vdi))
+
+        vdi_to_cancel = []
+        for entry in journaler.getAll("coalesce").keys():
+            if entry in vdi_chain:
+                vdi_to_cancel.append(entry)
+                util.SMlog("Coalescing VDI {} in chain".format(entry))
+
+        # Get the host_ref from the host doing the GC work
+        host_ref = self._get_host_ref()
+        for vdi in vdi_to_cancel:
+            args = {"sr_uuid": sr_uuid, "vdi_uuid": vdi}
+            util.SMlog("Calling cancel_coalesce_master with args: {}".format(args))
+            self._session.xenapi.host.call_plugin(\
+                host_ref, PLUGIN_ON_SLAVE, "cancel_coalesce_master", args)
+
+        return True
+
     @locking("VDIUnavailable")
     def _activate_locked(self, sr_uuid, vdi_uuid, options):
         """Wraps target.activate and adds a tapdisk"""
@@ -1666,8 +1749,6 @@ class VDI(object):
         if self.tap_wanted():
             if not self._add_tag(vdi_uuid, not options["rdonly"]):
                 return False
-                #TODO: Need to interrupt coalesce on master, the coalesce will check for host_OpaqueRef on the VDI before trying offline coalesce
-                #TODO: The coalesce could happen on another slave in onlinecoalesce, interrupt coalesce on another slave (online coalesce)?
             refresh = True
 
         try:
@@ -1691,6 +1772,9 @@ class VDI(object):
                 self._attach(sr_uuid, vdi_uuid)
 
             vdi_type = self.target.get_vdi_type()
+
+            self._check_journal_coalesce_chain(sr_uuid, vdi_uuid)
+            #TODO: handling error here
 
             # Take lvchange-p Lock before running
             # tap-ctl open

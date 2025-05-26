@@ -835,8 +835,10 @@ class VDI(object):
 
     def _call_plugin_coalesce(self, hostRef):
         args = {"path": self.path, "vdi_type": self.vdi_type}
-        self.sr.xapi.session.xenapi.host.call_plugin( \
+        util.SMlog("DAMS: Calling remote coalesce with: {}".format(args))
+        ret = self.sr.xapi.session.xenapi.host.call_plugin( \
                     hostRef, XAPI.PLUGIN_ON_SLAVE, "commit_tapdisk", args)
+        util.SMlog("DAMS: Remote coalesce returned {}".format(ret))
 
     def _doCoalesceOnHost(self, hostRef):
         self.validate()
@@ -852,6 +854,7 @@ class VDI(object):
                 with open(file, "r") as f:
                     if not f.read():
                         #TODO: Need to call commit cancel on the hostRef if we stop
+                        util.SMlog("DAMS: Cancelling")
                         self._call_plug_cancel(hostRef)
                         return True
             except OSError as e:
@@ -862,6 +865,7 @@ class VDI(object):
                 return True
             return False
 
+        #TODO: Add exception handling here like when callinng in a runAbortable situation_doCoalesceCOWImage
         Util.runAbortable(lambda: self._call_plugin_coalesce(hostRef),
                           None, self.sr.uuid, abortTest, VDI.POLL_INTERVAL, 0)
 
@@ -2478,7 +2482,6 @@ class SR(object):
             # journal as soon as the COW coalesce step is done, because we
             # don't expect the rest of the process to take long
 
-            #TODO: Create `gc_running` in `/run/nonpersistent/sm/<sr uuid>/`
             if os.path.exists(self._gc_running_file(vdi)):
                 util.SMlog("gc_running already exist for {}. Ignoring...".format(self.uuid))
 
@@ -2494,14 +2497,14 @@ class SR(object):
             try:
                 if host_refs and vdi.cowutil.isCoalesceableOnRemote:
                     #Leaf opened on another host, we need to call online coalesce
-                    util.SMlog("DAMS: Remote coalesce for {}".format(vdi.path))
+                    util.SMlog("Remote coalesce for {}".format(vdi.path))
                     vdi._doCoalesceOnHost(list(host_refs)[0])
                     skipRelink = True
                 else:
-                    util.SMlog("DAMS: Offline coalesce for {}".format(vdi.path))
+                    util.SMlog("Offline coalesce for {}".format(vdi.path))
                     vdi._doCoalesce()
             except Exception as e:
-                util.SMlog("DAMS: EXCEPTION {}".format(e))
+                util.SMlog("EXCEPTION while coalescing: {}".format(e))
                 self._delete_running_file(vdi)
                 raise
             """
@@ -2519,7 +2522,7 @@ class SR(object):
             if not skipRelink:
                 self.journaler.create(vdi.JRN_RELINK, vdi.uuid, "1")
 
-        if not skipRelink:
+        if not skipRelink: #TODO: we might want to let relink happen for VDI not currently in use
             self.lock()
             try:
                 vdi.parent._tagChildrenForRelink()
@@ -2754,7 +2757,7 @@ class SR(object):
             return False
         return True
 
-    def _liveLeafCoalesce(self, vdi) -> bool:
+    def _liveLeafCoalesce(self, vdi: VDI) -> bool:
         util.fistpoint.activate("LVHDRT_coaleaf_delay_3", self.uuid)
         self.lock()
         try:
