@@ -152,6 +152,7 @@ class SR(object):
         self.direct = False
         self.ops_exclusive = []
         self.driver_config = {}
+        self._is_shared = None
 
         self.load(sr_uuid)
 
@@ -232,6 +233,11 @@ class SR(object):
             self.session.xenapi.SR.add_to_sm_config(self.sr_ref, LUNPERVDI, "true")
         except:
             pass
+
+    def is_shared(self):
+        if not self._is_shared:
+            self._is_shared = self.session.xenapi.SR.get_shared(self.sr_ref)
+        return self._is_shared
 
     def create(self, uuid, size) -> None:
         """Create this repository.
