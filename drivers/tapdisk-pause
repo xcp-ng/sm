@@ -29,7 +29,7 @@ import lvmcache
 
 from constants import NS_PREFIX_LVM, VG_PREFIX
 from cowutil import getCowUtil
-from lvmcowutil import LV_PREFIX, LV_PREFIX_TO_VDI_TYPE
+from lvmcowutil import LV_PREFIX, LV_PREFIX_TO_VDI_TYPE, LvmCowUtil
 from vditype import VdiType
 
 try:
