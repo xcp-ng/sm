@@ -84,7 +84,7 @@ class Test_on_slave_is_open(unittest.TestCase):
                                        'vdiUuid': vdi_uuid,
                                        'srRef': 'opaqueref:sr_mine'
                                    })
-        self.mock_sr.driver.assert_called_once_with('lvhd')
+        self.mock_sr.driver.assert_called_once_with('lvm')
         self.assertEqual('True', is_open)
 
     def test_is_open_false(self):
