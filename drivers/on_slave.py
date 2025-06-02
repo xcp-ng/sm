@@ -83,7 +83,6 @@ def _is_open(session, args):
     import EXTSR
     import LargeBlockSR
     import GlusterFSSR
-    import LinstorSR
     import LVMSR
     import MooseFSSR
     import NFSSR
