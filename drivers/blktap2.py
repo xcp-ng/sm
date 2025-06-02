@@ -1773,8 +1773,6 @@ class VDI(object):
 
             vdi_type = self.target.get_vdi_type()
 
-            self._check_journal_coalesce_chain(sr_uuid, vdi_uuid)
-            #TODO: handling error here
 
             # Take lvchange-p Lock before running
             # tap-ctl open
@@ -1786,6 +1784,9 @@ class VDI(object):
                VdiType.isCowImage(vdi_type):
                 lock = Lock("lvchange-p", NS_PREFIX_LVM + sr_uuid)
                 lock.acquire()
+
+            self._check_journal_coalesce_chain(sr_uuid, vdi_uuid)
+            #TODO: handling error here
 
             # When we attach a static VDI for HA, we cannot communicate with
             # xapi, because has not started yet. These VDIs are raw.
