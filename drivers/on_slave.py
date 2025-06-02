@@ -100,7 +100,7 @@ def _is_open(session, args):
     # FIXME: ugly hacks to create a VDI object without a real SRCommand to
     # avoid having to refactor the core files
     if srType.startswith("lvm"):
-        srType = "lvhd"
+        srType = "lvm"
     cmd = SRCommand.SRCommand(None)
     cmd.driver_info = {"capabilities": None}
     cmd.dconf = {
