@@ -561,7 +561,7 @@ class VDI(object):
         self.sizeVirt = -1
         self._sizeVHD = -1
         self._sizeAllocated = -1
-        self.hidden = False
+        self._hidden = False
         self.parent = None
         self.children = []
         self._vdiRef = None
@@ -664,7 +664,7 @@ class VDI(object):
         return not self.scanError and \
                 self.parent and \
                 len(self.parent.children) == 1 and \
-                self.hidden and \
+                self.isHidden() and \
                 len(self.children) > 0
 
     def isLeafCoalesceable(self):
@@ -672,7 +672,7 @@ class VDI(object):
         return not self.scanError and \
                 self.parent and \
                 len(self.parent.children) == 1 and \
-                not self.hidden and \
+                not self.isHidden() and \
                 len(self.children) == 0
 
     def canLiveCoalesce(self, speed):
@@ -700,7 +700,7 @@ class VDI(object):
             # some tapdisks could still be using the file.
             if self.sr.journaler.get(self.JRN_RELINK, self.uuid):
                 return []
-            if not self.scanError and self.hidden:
+            if not self.scanError and self.isHidden():
                 return [self]
             return []
 
@@ -724,7 +724,7 @@ class VDI(object):
         # Normally we are not in this function when the delete action is
         # executed but in `_liveLeafCoalesce`.
 
-        if not self.scanError and not self.hidden and thisPrunable:
+        if not self.scanError and not self.isHidden() and thisPrunable:
             vdiList.append(self)
         return vdiList
 
@@ -795,7 +795,7 @@ class VDI(object):
     @override
     def __str__(self) -> str:
         strHidden = ""
-        if self.hidden:
+        if self.isHidden():
             strHidden = "*"
         strSizeVirt = "?"
         if self.sizeVirt > 0:
@@ -1055,13 +1055,19 @@ class VDI(object):
             Util.log("Failed to update %s with vhd-parent field %s" % \
                      (self.uuid, self.parentUuid))
 
+    def isHidden(self) -> bool:
+        if self._hidden is None:
+            self._loadInfoHidden()
+        return self._hidden
+
     def _loadInfoHidden(self) -> None:
         hidden = vhdutil.getHidden(self.path)
-        self.hidden = (hidden != 0)
+        self._hidden = (hidden != 0)
 
     def _setHidden(self, hidden=True) -> None:
+        self._hidden = None
         vhdutil.setHidden(self.path, hidden)
-        self.hidden = hidden
+        self._hidden = hidden
 
     def _increaseSizeVirt(self, size, atomic=True) -> None:
         """ensure the virtual size of 'self' is at least 'size'. Note that
@@ -1186,7 +1192,7 @@ class FileVDI(VDI):
         self.sizeVirt = info.sizeVirt
         self._sizeVHD = info.sizePhys
         self._sizeAllocated = info.sizeAllocated
-        self.hidden = info.hidden
+        self._hidden = info.hidden
         self.scanError = False
         self.path = os.path.join(self.sr.path, "%s%s" % \
                 (self.uuid, vhdutil.FILE_EXTN_VHD))
@@ -1245,7 +1251,7 @@ class LVHDVDI(VDI):
         self.lvActive = info.lvActive
         self.lvOpen = info.lvOpen
         self.lvReadonly = info.lvReadonly
-        self.hidden = info.hidden
+        self._hidden = info.hidden
         self.parentUuid = info.parentUuid
         self.path = os.path.join(self.sr.path, self.fileName)
 
@@ -1379,15 +1385,16 @@ class LVHDVDI(VDI):
     @override
     def _loadInfoHidden(self) -> None:
         if self.raw:
-            self.hidden = self.sr.lvmCache.getHidden(self.fileName)
+            self._hidden = self.sr.lvmCache.getHidden(self.fileName)
         else:
             VDI._loadInfoHidden(self)
 
     @override
     def _setHidden(self, hidden=True) -> None:
         if self.raw:
+            self._hidden = None
             self.sr.lvmCache.setHidden(self.fileName, hidden)
-            self.hidden = hidden
+            self._hidden = hidden
         else:
             VDI._setHidden(self, hidden)
 
@@ -1397,7 +1404,7 @@ class LVHDVDI(VDI):
         if self.raw:
             strType = "RAW"
         strHidden = ""
-        if self.hidden:
+        if self.isHidden():
             strHidden = "*"
         strSizeVHD = ""
         if self._sizeVHD > 0:
@@ -1575,7 +1582,7 @@ class LinstorVDI(VDI):
         self._sizeVHD = -1
         self._sizeAllocated = -1
         self.drbd_size = -1
-        self.hidden = info.hidden
+        self._hidden = info.hidden
         self.scanError = False
         self.vdi_type = vhdutil.VDI_TYPE_VHD
 
@@ -1749,10 +1756,11 @@ class LinstorVDI(VDI):
         HIDDEN_TAG = 'hidden'
 
         if self.raw:
+            self._hidden = None
             self.sr._linstor.update_volume_metadata(self.uuid, {
                 HIDDEN_TAG: hidden
             })
-            self.hidden = hidden
+            self._hidden = hidden
         else:
             VDI._setHidden(self, hidden)
 
@@ -3013,9 +3021,9 @@ class FileSR(SR):
             child.setConfig(VDI.DB_VDI_TYPE, vhdutil.VDI_TYPE_VHD)
             util.fistpoint.activate("LVHDRT_coaleaf_undo_after_rename2", self.uuid)
 
-        if child.hidden:
+        if child.isHidden():
             child._setHidden(False)
-        if not parent.hidden:
+        if not parent.isHidden():
             parent._setHidden(True)
         self._updateSlavesOnUndoLeafCoalesce(parent, child)
         util.fistpoint.activate("LVHDRT_coaleaf_undo_end", self.uuid)
@@ -3247,9 +3255,9 @@ class LVHDSR(SR):
         parent.deflate()
         child.inflateFully()
         util.fistpoint.activate("LVHDRT_coaleaf_undo_after_deflate", self.uuid)
-        if child.hidden:
+        if child.isHidden():
             child._setHidden(False)
-        if not parent.hidden:
+        if not parent.isHidden():
             parent._setHidden(True)
         if not parent.lvReadonly:
             self.lvmCache.setReadonly(parent.fileName, True)
@@ -3603,9 +3611,9 @@ class LinstorSR(SR):
 
         # TODO: Maybe deflate here.
 
-        if child.hidden:
+        if child.isHidden():
             child._setHidden(False)
-        if not parent.hidden:
+        if not parent.isHidden():
             parent._setHidden(True)
         self._updateSlavesOnUndoLeafCoalesce(parent, child)
         Util.log('*** leaf-coalesce undo successful')
