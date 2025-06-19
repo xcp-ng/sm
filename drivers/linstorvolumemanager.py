@@ -206,44 +206,43 @@ def get_cached_controller_uri():
         with open(CONTROLLER_CACHE_PATH, "r") as f:
             return f.read().strip()
     except Exception as e:
-        util.SMlog('Unable to read controller uri cache file at {} : {}'.format(
+        util.SMlog('Unable to read controller uri cache file at `{}` : {}'.format(
             CONTROLLER_CACHE_PATH,
             e
-        ))
+        ), priority=util.LOG_DEBUG)
     return None
 
 def delete_controller_uri_cache():
     try:
         os.remove(CONTROLLER_CACHE_PATH)
     except Exception as e:
-        util.SMlog('Unable to write controller uri cache file at {} : {}'.format(
+        util.SMlog('Unable to write controller uri cache file at `{}` : {}'.format(
             CONTROLLER_CACHE_PATH,
             e
-        ))
+        ), priority=util.LOG_DEBUG)
 
 def write_controller_uri_cache(uri):
     try:
         if not os.path.exists(CONTROLLER_CACHE_DIRECTORY):
             os.makedirs(CONTROLLER_CACHE_DIRECTORY)
             os.chmod(CONTROLLER_CACHE_DIRECTORY, 0o700)
-        if not os.path.isdir(CONTROLLER_CACHE_DIRECTORY):
-            raise NotADirectoryError
         with open(CONTROLLER_CACHE_PATH, "w") as f:
             f.write(uri)
     except Exception as e:
-        util.SMlog('Unable to write controller uri cache file at {} : {}'.format(
+        util.SMlog('Unable to write controller uri cache file at `{}` : {}'.format(
             CONTROLLER_CACHE_PATH,
             e
-        ))
+        ), priority=util.LOG_DEBUG)
 
 
 def build_controller_uri_cache():
-    for _ in range(10):
+    for retries in range(10):
         uri = _get_controller_uri()
         if uri:
             write_controller_uri_cache(uri)
             return uri
-        time.sleep(1)
+        if retries < 9:
+            time.sleep(1)
     return None
 
 def get_controller_uri():
@@ -2669,7 +2668,7 @@ class LinstorVolumeManager(object):
 
     @classmethod
     def _create_linstor_instance(
-        cls, uri, keep_uri_unmodified=False, keep_cache_on_error=False, attempt_count=30
+        cls, uri, keep_uri_unmodified=False, attempt_count=30
     ):
         retry = False
 
@@ -2689,8 +2688,7 @@ class LinstorVolumeManager(object):
         except LinstorVolumeManagerError:
             pass
         except linstor.errors.LinstorNetworkError:
-            if not keep_cache_on_error:
-                build_controller_uri_cache()
+            build_controller_uri_cache()
 
         if not keep_uri_unmodified:
             uri = None

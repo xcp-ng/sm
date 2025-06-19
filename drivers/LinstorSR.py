@@ -13,7 +13,6 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
-from linstorvolumemanager import write_controller_uri_cache
 from sm_typing import Optional, override
 
 from constants import CBTLOG_TAG
@@ -26,6 +25,7 @@ try:
     from linstorvolumemanager import LinstorVolumeManager
     from linstorvolumemanager import LinstorVolumeManagerError
     from linstorvolumemanager import PERSISTENT_PREFIX
+    from linstorvolumemanager import write_controller_uri_cache
 
     LINSTOR_AVAILABLE = True
 except ImportError:

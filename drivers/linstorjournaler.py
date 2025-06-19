@@ -16,9 +16,9 @@
 #
 
 
-from linstorvolumemanager import \
-    get_controller_uri, LinstorVolumeManager, LinstorVolumeManagerError, build_controller_uri_cache, \
-    delete_controller_uri_cache
+from linstorvolumemanager import delete_controller_uri_cache, get_controller_uri
+from linstorvolumemanager import LinstorVolumeManager, LinstorVolumeManagerError
+
 import linstor
 import re
 import util
