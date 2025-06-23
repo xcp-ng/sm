@@ -781,8 +781,7 @@ def get_enabled_hosts(session):
     """
     Returns a list of host refs that are enabled in the pool.
     """
-    enabled_hosts = list(session.xenapi.host.get_all_records_where('field "enabled" = "true"').keys())
-    return enabled_hosts
+    return list(session.xenapi.host.get_all_records_where('field "enabled" = "true"').keys())
 
 def get_online_hosts(session):
     online_hosts = []
