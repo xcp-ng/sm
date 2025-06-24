@@ -205,21 +205,25 @@ def get_cached_controller_uri():
     try:
         with open(CONTROLLER_CACHE_PATH, "r") as f:
             return f.read().strip()
+    except (PermissionError, IsADirectoryError, FileNotFoundError) as e:
+        util.SMlog("Unable to read controller uri cache file at `{}`: {}".format(CONTROLLER_CACHE_PATH, e),
+                   priority=util.LOG_DEBUG)
+    except OSError as e:
+        util.SMlog("OS error reading controller uri cache file at `{}`: {}".format(CONTROLLER_CACHE_PATH, e))
     except Exception as e:
-        util.SMlog('Unable to read controller uri cache file at `{}` : {}'.format(
-            CONTROLLER_CACHE_PATH,
-            e
-        ), priority=util.LOG_DEBUG)
+        util.SMlog('Unable to read controller uri cache file at `{}` : {}'.format(CONTROLLER_CACHE_PATH,e))
     return None
 
 def delete_controller_uri_cache():
     try:
         os.remove(CONTROLLER_CACHE_PATH)
+    except (PermissionError, IsADirectoryError, FileNotFoundError) as e:
+        util.SMlog("Unable to delete controller uri cache file at `{}`: {}".format(CONTROLLER_CACHE_PATH, e),
+                   priority=util.LOG_DEBUG)
+    except OSError as e:
+        util.SMlog("OS error deleting controller uri cache file at `{}`: {}".format(CONTROLLER_CACHE_PATH, e))
     except Exception as e:
-        util.SMlog('Unable to write controller uri cache file at `{}` : {}'.format(
-            CONTROLLER_CACHE_PATH,
-            e
-        ), priority=util.LOG_DEBUG)
+        util.SMlog('Unable to delete uri cache file at `{}` : {}'.format(CONTROLLER_CACHE_PATH, e))
 
 def write_controller_uri_cache(uri):
     try:
@@ -228,11 +232,13 @@ def write_controller_uri_cache(uri):
             os.chmod(CONTROLLER_CACHE_DIRECTORY, 0o700)
         with open(CONTROLLER_CACHE_PATH, "w") as f:
             f.write(uri)
+    except (PermissionError, IsADirectoryError, FileNotFoundError) as e:
+        util.SMlog("Unable to write controller uri cache file at `{}`: {}".format(CONTROLLER_CACHE_PATH, e),
+                   priority=util.LOG_DEBUG)
+    except OSError as e:
+        util.SMlog("OS error writing controller uri cache file at `{}`: {}".format(CONTROLLER_CACHE_PATH, e))
     except Exception as e:
-        util.SMlog('Unable to write controller uri cache file at `{}` : {}'.format(
-            CONTROLLER_CACHE_PATH,
-            e
-        ), priority=util.LOG_DEBUG)
+        util.SMlog('Unable to write uri cache file at `{}` : {}'.format(CONTROLLER_CACHE_PATH, e))
 
 
 def build_controller_uri_cache():
