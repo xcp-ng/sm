@@ -236,14 +236,17 @@ def write_controller_uri_cache(uri):
 
 
 def build_controller_uri_cache():
-    for retries in range(10):
-        uri = _get_controller_uri()
-        if uri:
-            write_controller_uri_cache(uri)
-            return uri
-        if retries < 9:
+    uri = _get_controller_uri()
+    if not uri:
+        for retries in range(9):
             time.sleep(1)
-    return None
+            uri = _get_controller_uri()
+            if uri:
+                break
+
+    if uri:
+        write_controller_uri_cache(uri)
+    return uri
 
 def get_controller_uri():
     uri = get_cached_controller_uri()
