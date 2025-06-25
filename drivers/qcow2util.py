@@ -24,6 +24,7 @@ MIN_QCOW_SIZE: Final = QCOW_CLUSTER_SIZE
 MAX_QCOW_SIZE: Final = 16 * 1024 * 1024 * 1024 * 1024
 
 QEMU_IMG: Final = "/usr/bin/qemu-img"
+QCOW2_HELPER = "/opt/xensource/libexec/qcow2_helper"
 
 QCOW2_TYPE: Final = "qcow2"
 RAW_TYPE: Final = "raw"
@@ -51,26 +52,27 @@ class QCowUtil(CowUtil):
     def __init__(self):
         self.qcow_read = False
 
-    def _read_qcow2(self, path: str):
+    def _read_qcow2(self, path: str, read_clusters: bool = False):
         phys_disk_size = self.getSizePhys(path)
         with open(path, "rb") as qcow2_file:
             self.filename = path  # Keep the filename if clean is called
             self.header = self._read_qcow2_header(qcow2_file)
-            self.l1 = self._get_l1_entries(qcow2_file)
-            # The l1_to_l2 allows to get L2 entries for a given L1. If L1 entry
-            # is not allocated we store an empty list.
-            self.l1_to_l2: Dict[int, List[int]] = {}
+            if read_clusters:
+                self.l1 = self._get_l1_entries(qcow2_file)
+                # The l1_to_l2 allows to get L2 entries for a given L1. If L1 entry
+                # is not allocated we store an empty list.
+                self.l1_to_l2: Dict[int, List[int]] = {}
 
-            for l1_entry in self.l1:
-                l2_offset = l1_entry & self.L2_OFFSET_MASK
-                if l2_offset == 0:
-                    self.l1_to_l2[l1_entry] = []
-                elif l2_offset > phys_disk_size:
-                    raise xs_errors.XenError("VDISize", "L2 Offset is bigger than physical disk {}".format(path))
-                else:
-                    self.l1_to_l2[l1_entry] = self._get_l2_entries(
-                        qcow2_file, l2_offset
-                    )
+                for l1_entry in self.l1:
+                    l2_offset = l1_entry & self.L2_OFFSET_MASK
+                    if l2_offset == 0:
+                        self.l1_to_l2[l1_entry] = []
+                    elif l2_offset > phys_disk_size: #TODO: This sometime happen for a correct VDI (while coalescing online?)
+                        raise xs_errors.XenError("VDISize", "L2 Offset is bigger than physical disk {}".format(path))
+                    else:
+                        self.l1_to_l2[l1_entry] = self._get_l2_entries(
+                            qcow2_file, l2_offset
+                        )
         self.qcow_read = True
 
     def _get_l1_entries(self, file: BinaryIO) -> List[int]:
@@ -466,7 +468,7 @@ class QCowUtil(CowUtil):
         cowinfo.sizeVirt = self.header["virtual_disk_size"]
         cowinfo.sizePhys = self.getSizePhys(path)
         cowinfo.hidden = self.getHidden(path)
-        cowinfo.sizeAllocated = self._get_cluster_to_byte(self._get_number_of_allocated_clusters(), self.header["cluster_bits"])
+        cowinfo.sizeAllocated = self.getAllocatedSize(path)
         if includeParent:
             parent_path = self.header["parent"]
             if parent_path != "":
@@ -671,10 +673,8 @@ class QCowUtil(CowUtil):
 
     @override
     def getAllocatedSize(self, path: str) -> int:
-        self._read_qcow2(path)
-        clusters = self._get_number_of_allocated_clusters()
-        cluster_bits =  self.header["cluster_bits"]
-        return self._get_cluster_to_byte(clusters, cluster_bits)
+        cmd = [QCOW2_HELPER, path]
+        return int(self._ioretry(cmd))
 
     @override
     def getResizeJournalSize(self) -> int:
@@ -713,7 +713,7 @@ class QCowUtil(CowUtil):
 
     @override
     def getBlockBitmap(self, path: str) -> bytes:
-        self._read_qcow2(path)
+        self._read_qcow2(path, read_clusters=True) #TODO: Add read L2 info here, we want to use an external application to do this eventually
         return zlib.compress(self._create_bitmap())
 
     def _getTapdisk(self, path: str) -> Tuple[int, int]:
