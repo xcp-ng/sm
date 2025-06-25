@@ -586,7 +586,7 @@ class LinstorSR(SR.SR):
                 opterr='LINSTOR SR must be unique in a pool'
             )
 
-        online_hosts = util.get_online_hosts(self.session)
+        online_hosts = util.get_enabled_hosts(self.session)
         if len(online_hosts) < len(host_adresses):
             raise xs_errors.XenError(
                 'LinstorSRCreate',
