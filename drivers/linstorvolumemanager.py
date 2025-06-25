@@ -17,7 +17,9 @@
 
 from sm_typing import override
 
+import contextlib
 import errno
+import flock
 import json
 import linstor
 import os.path
@@ -201,9 +203,31 @@ def _get_controller_uri():
         pass
 
 
-def get_cached_controller_uri():
+@contextlib.contextmanager
+def shared_reader(path):
+    with open(path, 'r') as f:
+        lock = flock.ReadLock(f.fileno())
+        lock.lock()
+        try:
+            yield f
+        finally:
+            lock.unlock()
+
+
+@contextlib.contextmanager
+def excl_writer(path):
+    with open(path, 'r+') as f:
+        lock = flock.WriteLock(f.fileno())
+        lock.lock()
+        try:
+            yield f
+        finally:
+            lock.unlock()
+
+
+def get_cached_controller_uri(ctx=None):
     try:
-        with open(CONTROLLER_CACHE_PATH, "r") as f:
+        with ctx if ctx is not None else shared_reader(CONTROLLER_CACHE_PATH) as f:
             return f.read().strip()
     except FileNotFoundError:
         pass
@@ -211,45 +235,56 @@ def get_cached_controller_uri():
         util.SMlog('Unable to read controller URI cache file at `{}` : {}'.format(CONTROLLER_CACHE_PATH,e))
 
 
-def delete_controller_uri_cache():
+def delete_controller_uri_cache(ctx=None):
     try:
-        open(CONTROLLER_CACHE_PATH, 'w').close()
+        with ctx if ctx is not None else excl_writer(CONTROLLER_CACHE_PATH) as f:
+            f.seek(0)
+            f.truncate()
     except FileNotFoundError:
         pass
     except Exception as e:
         util.SMlog('Unable to delete uri cache file at `{}` : {}'.format(CONTROLLER_CACHE_PATH, e))
 
-def write_controller_uri_cache(uri):
+
+def write_controller_uri_cache(uri, ctx=None):
     try:
         if not os.path.exists(CONTROLLER_CACHE_DIRECTORY):
             os.makedirs(CONTROLLER_CACHE_DIRECTORY)
             os.chmod(CONTROLLER_CACHE_DIRECTORY, 0o700)
-        with open(CONTROLLER_CACHE_PATH, "w") as f:
+        with ctx if ctx is not None else excl_writer(CONTROLLER_CACHE_PATH) as f:
+            f.seek(0)
             f.write(uri)
-    except FileExistsError as e:
+            f.truncate()
+    except FileNotFoundError:
         pass
     except Exception as e:
         util.SMlog('Unable to write URI cache file at `{}` : {}'.format(CONTROLLER_CACHE_PATH, e))
 
 
 def build_controller_uri_cache():
-    uri = _get_controller_uri()
-    if not uri:
-        for retries in range(9):
-            time.sleep(1)
-            uri = _get_controller_uri()
-            if uri:
-                break
+    with excl_writer(CONTROLLER_CACHE_PATH) as f:
+        uri = get_cached_controller_uri(contextlib.nullcontext(f))
+        if uri:
+            return uri
+        uri = _get_controller_uri()
+        if not uri:
+            for retries in range(9):
+                time.sleep(1)
+                uri = _get_controller_uri()
+                if uri:
+                    break
 
-    if uri:
-        write_controller_uri_cache(uri)
-    return uri
+        if uri:
+            write_controller_uri_cache(uri, contextlib.nullcontext(f))
+        return uri
+
 
 def get_controller_uri():
     uri = get_cached_controller_uri()
     if not uri:
         uri = build_controller_uri_cache()
     return uri
+
 
 def get_controller_node_name():
     PLUGIN_CMD = 'hasControllerRunning'
@@ -2688,7 +2723,7 @@ class LinstorVolumeManager(object):
         except LinstorVolumeManagerError:
             pass
         except linstor.errors.LinstorNetworkError:
-            build_controller_uri_cache()
+            delete_controller_uri_cache()
 
         if not keep_uri_unmodified:
             uri = None
