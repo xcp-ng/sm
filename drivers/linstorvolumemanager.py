@@ -213,7 +213,7 @@ def get_cached_controller_uri():
 
 def delete_controller_uri_cache():
     try:
-        os.remove(CONTROLLER_CACHE_PATH)
+        open(CONTROLLER_CACHE_PATH, 'w').close()
     except FileNotFoundError:
         pass
     except Exception as e:
