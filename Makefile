@@ -108,6 +108,7 @@ SM_PY_FILES = $(foreach LIB, $(SM_LIBS), drivers/$(LIB).py) $(foreach DRIVER, $(
 build:
 	make -C dcopy
 	make -C linstor
+	make -C qcow2
 
 .PHONY: precommit
 precommit: build
@@ -235,6 +236,7 @@ install: build
 	mkdir -p $(SM_STAGING)/etc/xapi.d/xapi-pre-shutdown/
 	install -m 755 scripts/stop_all_gc $(SM_STAGING)/etc/xapi.d/xapi-pre-shutdown/
 	$(MAKE) -C dcopy install DESTDIR=$(SM_STAGING)
+	$(MAKE) -C qcow2 install DESTDIR=$(SM_STAGING)
 	$(MAKE) -C linstor install DESTDIR=$(SM_STAGING)
 	$(MAKE) -C sm_typing install DESTDIR=$(SM_STAGING)
 	ln -sf $(SM_DEST)blktap2.py $(SM_STAGING)$(BIN_DEST)/blktap2
