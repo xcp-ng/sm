@@ -489,10 +489,10 @@ class LinstorVolumeManager(object):
         uri = get_cached_controller_uri()
         if not uri:
             uri = build_controller_uri_cache()
-        if not uri:
-            raise LinstorVolumeManagerError(
-                "Unable to retrieve a valid controller URI from cache or after rebuild."
-            )
+            if not uri:
+                raise LinstorVolumeManagerError(
+                    "Unable to retrieve a valid controller URI from cache or after rebuild."
+                )
 
         return LinstorVolumeManager(
             uri, group_name, repair=repair,
