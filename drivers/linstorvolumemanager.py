@@ -227,7 +227,7 @@ def excl_writer(path):
 
 def get_cached_controller_uri(ctx=None):
     try:
-        with ctx if ctx is not None else shared_reader(CONTROLLER_CACHE_PATH) as f:
+        with ctx if ctx else shared_reader(CONTROLLER_CACHE_PATH) as f:
             return f.read().strip()
     except FileNotFoundError:
         pass
@@ -237,7 +237,7 @@ def get_cached_controller_uri(ctx=None):
 
 def delete_controller_uri_cache(ctx=None):
     try:
-        with ctx if ctx is not None else excl_writer(CONTROLLER_CACHE_PATH) as f:
+        with ctx if ctx else excl_writer(CONTROLLER_CACHE_PATH) as f:
             f.seek(0)
             f.truncate()
     except FileNotFoundError:
@@ -251,7 +251,7 @@ def write_controller_uri_cache(uri, ctx=None):
         if not os.path.exists(CONTROLLER_CACHE_DIRECTORY):
             os.makedirs(CONTROLLER_CACHE_DIRECTORY)
             os.chmod(CONTROLLER_CACHE_DIRECTORY, 0o700)
-        with ctx if ctx is not None else excl_writer(CONTROLLER_CACHE_PATH) as f:
+        with ctx if ctx else excl_writer(CONTROLLER_CACHE_PATH) as f:
             f.seek(0)
             f.write(uri)
             f.truncate()
