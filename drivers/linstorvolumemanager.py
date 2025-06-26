@@ -235,8 +235,10 @@ def get_cached_controller_uri(ctx=None):
         util.SMlog('Unable to read controller URI cache file at `{}` : {}'.format(CONTROLLER_CACHE_PATH,e))
 
 
-def delete_controller_uri_cache(ctx=None):
+def delete_controller_uri_cache(uri, ctx=None):
     try:
+        if uri != get_cached_controller_uri(ctx):
+            return
         with ctx if ctx else excl_writer(CONTROLLER_CACHE_PATH) as f:
             f.seek(0)
             f.truncate()
@@ -2723,7 +2725,7 @@ class LinstorVolumeManager(object):
         except LinstorVolumeManagerError:
             pass
         except linstor.errors.LinstorNetworkError:
-            delete_controller_uri_cache()
+            delete_controller_uri_cache(uri)
 
         if not keep_uri_unmodified:
             uri = None

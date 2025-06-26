@@ -168,7 +168,7 @@ class LinstorJournaler:
         except LinstorVolumeManagerError:
             pass
         except linstor.errors.LinstorNetworkError:
-            delete_controller_uri_cache()
+            delete_controller_uri_cache(uri)
 
         return util.retry(
             lambda: connect(None),
