@@ -225,47 +225,70 @@ def excl_writer(path):
             lock.unlock()
 
 
-def get_cached_controller_uri(ctx=None):
+def _read_controller_uri_from_file(f):
     try:
-        with ctx if ctx else shared_reader(CONTROLLER_CACHE_PATH) as f:
-            return f.read().strip()
-    except FileNotFoundError:
-        pass
+        return f.read().strip()
     except Exception as e:
-        util.SMlog('Unable to read controller URI cache file at `{}` : {}'.format(CONTROLLER_CACHE_PATH,e))
+        util.SMlog('Unable to read controller URI cache file at `{}`: {}'.format(CONTROLLER_CACHE_PATH, e))
 
 
-def delete_controller_uri_cache(uri, ctx=None):
+def _write_controller_uri_to_file(uri, f):
     try:
-        if uri != get_cached_controller_uri(ctx):
-            return
-        with ctx if ctx else excl_writer(CONTROLLER_CACHE_PATH) as f:
-            f.seek(0)
-            f.truncate()
-    except FileNotFoundError:
-        pass
-    except Exception as e:
-        util.SMlog('Unable to delete uri cache file at `{}` : {}'.format(CONTROLLER_CACHE_PATH, e))
-
-
-def write_controller_uri_cache(uri, ctx=None):
-    try:
-        if not os.path.exists(CONTROLLER_CACHE_DIRECTORY):
-            os.makedirs(CONTROLLER_CACHE_DIRECTORY)
-            os.chmod(CONTROLLER_CACHE_DIRECTORY, 0o700)
-        with ctx if ctx else excl_writer(CONTROLLER_CACHE_PATH) as f:
-            f.seek(0)
-            f.write(uri)
-            f.truncate()
-    except FileNotFoundError:
-        pass
+        f.seek(0)
+        f.write(uri)
+        f.truncate()
     except Exception as e:
         util.SMlog('Unable to write URI cache file at `{}` : {}'.format(CONTROLLER_CACHE_PATH, e))
 
 
+def _delete_controller_uri_from_file(f):
+    try:
+        f.seek(0)
+        f.truncate()
+    except Exception as e:
+        util.SMlog('Unable to delete URI cache file at `{}` : {}'.format(CONTROLLER_CACHE_PATH, e))
+
+
+def read_controller_uri_cache():
+    try:
+        with shared_reader(CONTROLLER_CACHE_PATH) as f:
+            return _read_controller_uri_from_file(f)
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        util.SMlog('Unable to read controller URI cache file at `{}`: {}'.format(CONTROLLER_CACHE_PATH, e))
+
+
+def write_controller_uri_cache(uri):
+    try:
+        with excl_writer(CONTROLLER_CACHE_PATH) as f:
+            _write_controller_uri_to_file(uri, f)
+    except FileNotFoundError:
+        if os.path.exists(CONTROLLER_CACHE_DIRECTORY):
+                raise
+        os.makedirs(CONTROLLER_CACHE_DIRECTORY)
+        os.chmod(CONTROLLER_CACHE_DIRECTORY, 0o700)
+        return write_controller_uri_cache(uri)
+    except Exception as e:
+        util.SMlog('Unable to write URI cache file at `{}` : {}'.format(CONTROLLER_CACHE_PATH, e))
+
+
+def delete_controller_uri_cache(uri):
+    try:
+        with excl_writer(CONTROLLER_CACHE_PATH) as f:
+            if uri != _read_controller_uri_from_file(f):
+                return
+            f.seek(0)
+            f.truncate()
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        util.SMlog('Unable to delete URI cache file at `{}` : {}'.format(CONTROLLER_CACHE_PATH, e))
+
+
 def build_controller_uri_cache():
     with excl_writer(CONTROLLER_CACHE_PATH) as f:
-        uri = get_cached_controller_uri(contextlib.nullcontext(f))
+        uri = _read_controller_uri_from_file(f)
         if uri:
             return uri
         uri = _get_controller_uri()
@@ -277,12 +300,12 @@ def build_controller_uri_cache():
                     break
 
         if uri:
-            write_controller_uri_cache(uri, contextlib.nullcontext(f))
+            _write_controller_uri_to_file(uri, f)
         return uri
 
 
 def get_controller_uri():
-    uri = get_cached_controller_uri()
+    uri = read_controller_uri_cache()
     if not uri:
         uri = build_controller_uri_cache()
     return uri
@@ -523,7 +546,7 @@ class LinstorVolumeManager(object):
         :param function logger: Function to log messages.
         :param int attempt_count: Number of attempts to join the controller.
         """
-        uri = get_cached_controller_uri()
+        uri = read_controller_uri_cache()
         if not uri:
             uri = build_controller_uri_cache()
             if not uri:
