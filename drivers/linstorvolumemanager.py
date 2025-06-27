@@ -273,10 +273,10 @@ def write_controller_uri_cache(uri):
         util.SMlog('Unable to write URI cache file at `{}` : {}'.format(CONTROLLER_CACHE_PATH, e))
 
 
-def delete_controller_uri_cache(uri):
+def delete_controller_uri_cache(uri=None):
     try:
         with excl_writer(CONTROLLER_CACHE_PATH) as f:
-            if uri != _read_controller_uri_from_file(f):
+            if uri and uri != _read_controller_uri_from_file(f):
                 return
             f.seek(0)
             f.truncate()
@@ -1912,6 +1912,7 @@ class LinstorVolumeManager(object):
                 DATABASE_PATH,
                 mount=False
             )
+        delete_controller_uri_cache()
         return sr
 
     @classmethod
