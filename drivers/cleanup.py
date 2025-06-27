@@ -2495,7 +2495,7 @@ class SR(object):
                 raise Exception("Not coalesceable, chain activated more than once") #TODO: Use correct error
 
             try:
-                if host_refs and vdi.cowutil.isCoalesceableOnRemote:
+                if host_refs and vdi.cowutil.isCoalesceableOnRemote():
                     #Leaf opened on another host, we need to call online coalesce
                     util.SMlog("Remote coalesce for {}".format(vdi.path))
                     vdi._doCoalesceOnHost(list(host_refs)[0])
