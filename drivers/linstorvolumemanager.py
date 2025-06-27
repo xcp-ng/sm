@@ -287,21 +287,31 @@ def delete_controller_uri_cache(uri):
 
 
 def build_controller_uri_cache():
-    with excl_writer(CONTROLLER_CACHE_PATH) as f:
-        uri = _read_controller_uri_from_file(f)
-        if uri:
-            return uri
-        uri = _get_controller_uri()
-        if not uri:
-            for retries in range(9):
-                time.sleep(1)
-                uri = _get_controller_uri()
-                if uri:
-                    break
+    uri = ''
+    try:
+        with excl_writer(CONTROLLER_CACHE_PATH) as f:
+            uri = _read_controller_uri_from_file(f)
+            if uri:
+                return uri
+            uri = _get_controller_uri()
+            if not uri:
+                for retries in range(9):
+                    time.sleep(1)
+                    uri = _get_controller_uri()
+                    if uri:
+                        break
+            if uri:
+                _write_controller_uri_to_file(uri, f)
+    except FileNotFoundError:
+        if os.path.exists(CONTROLLER_CACHE_DIRECTORY):
+            raise
+        os.makedirs(CONTROLLER_CACHE_DIRECTORY)
+        os.chmod(CONTROLLER_CACHE_DIRECTORY, 0o700)
+        return build_controller_uri_cache()
+    except Exception as e:
+        util.SMlog('Unable to write URI cache file at `{}` : {}'.format(CONTROLLER_CACHE_PATH, e))
 
-        if uri:
-            _write_controller_uri_to_file(uri, f)
-        return uri
+    return uri
 
 
 def get_controller_uri():
