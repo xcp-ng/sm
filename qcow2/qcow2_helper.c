@@ -1,72 +1,24 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <stdint.h>
-#include <string.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <errno.h>
+#include "qcow_helper.h"
 
-#define QCOW2_HEADER_SIZE 104
-#define QCOW2_MAGIC 0x514649FB
-
-#define L2_OFFSET_MASK 0x00FFFFFFFFFFFF00
-#define STANDARD_CLUSTER_OFFSET_MASK 0x00FFFFFFFFFFFF00 /* Bits 9-55 are offset of standard cluster */
-#define CLUSTER_TYPE_BIT (1UL << 62) /* 0 for standard, 1 for compressed cluster */
-#define ALLOCATED_ENTRY_BIT (1UL << 63) /* Bit 63 is the allocated bit for standard cluster */
-
-
-struct qcow2_header {
-    uint32_t magic;
-    uint32_t version;
-    uint64_t backing_file_offset;
-    uint32_t backing_file_size;
-    uint32_t cluster_bits;
-    uint64_t size; /* in bytes */
-    uint32_t crypt_method;
-    uint32_t l1_size; /* XXX: save number of clusters instead ? */
-    uint64_t l1_table_offset;
-    uint64_t refcount_table_offset;
-    uint32_t refcount_table_clusters;
-    uint32_t nb_snapshots;
-    uint64_t snapshots_offset;
-
-    /* The following fields are only valid for version >= 3 */
-    uint64_t incompatible_features;
-    uint64_t compatible_features;
-    uint64_t autoclear_features;
-
-    uint32_t refcount_order;
-    uint32_t header_length;
-
-    /* Additional fields */
-    uint8_t compression_type;
-
-    /* header must be a multiple of 8 */
-    uint8_t padding[7];
-} __attribute__((packed));
-
-#define SWAP_BE_LE(size, x) \
-    header->x = __builtin_bswap ##size(header->x)
-
-void transform_header_be_to_le(struct qcow2_header* header){
-    SWAP_BE_LE(32, magic);
-    SWAP_BE_LE(32, version);
-    SWAP_BE_LE(64, backing_file_offset);
-    SWAP_BE_LE(32, backing_file_size);
-    SWAP_BE_LE(32, cluster_bits);
-    SWAP_BE_LE(64, size);
-    SWAP_BE_LE(32, crypt_method);
-    SWAP_BE_LE(32, l1_size);
-    SWAP_BE_LE(64, l1_table_offset);
-    SWAP_BE_LE(64, refcount_table_offset);
-    SWAP_BE_LE(32, refcount_table_clusters);
-    SWAP_BE_LE(32, nb_snapshots);
-    SWAP_BE_LE(64, snapshots_offset);
-    SWAP_BE_LE(64, incompatible_features);
-    SWAP_BE_LE(64, compatible_features);
-    SWAP_BE_LE(64, autoclear_features);
-    SWAP_BE_LE(32, refcount_order);
-    SWAP_BE_LE(32, header_length);
+static void transform_header_be_to_le(struct qcow2_header* header){
+    SWAP_BE_TO_LE(32, magic);
+    SWAP_BE_TO_LE(32, version);
+    SWAP_BE_TO_LE(64, backing_file_offset);
+    SWAP_BE_TO_LE(32, backing_file_size);
+    SWAP_BE_TO_LE(32, cluster_bits);
+    SWAP_BE_TO_LE(64, size);
+    SWAP_BE_TO_LE(32, crypt_method);
+    SWAP_BE_TO_LE(32, l1_size);
+    SWAP_BE_TO_LE(64, l1_table_offset);
+    SWAP_BE_TO_LE(64, refcount_table_offset);
+    SWAP_BE_TO_LE(32, refcount_table_clusters);
+    SWAP_BE_TO_LE(32, nb_snapshots);
+    SWAP_BE_TO_LE(64, snapshots_offset);
+    SWAP_BE_TO_LE(64, incompatible_features);
+    SWAP_BE_TO_LE(64, compatible_features);
+    SWAP_BE_TO_LE(64, autoclear_features);
+    SWAP_BE_TO_LE(32, refcount_order);
+    SWAP_BE_TO_LE(32, header_length);
 }
 
 char* qcow2_get_backing_file(struct qcow2_header* header, int fd){
@@ -127,7 +79,7 @@ uint64_t* get_l2_table(struct qcow2_header* header, int fd, uint64_t offset){
 
     raw_l2 = malloc(cluster_size);
     if(raw_l2 == NULL){
-        fprintf(stderr, "Couldn't allocate %d byte for L1 table\n", cluster_size);
+        fprintf(stderr, "Couldn't allocate %lu byte for L1 table\n", cluster_size);
         return NULL;
     }
 
@@ -173,7 +125,7 @@ int main(int argc, char* argv[]){
     strcpy(filename, argv[1]);
     fd = open(filename, O_RDONLY);
     if(fd < 0){
-        fprintf(stderr, "Opening file failed with error %s (%d)\n", filename, strerror(errno), errno);
+        fprintf(stderr, "Opening file %s failed with error %s (%d)\n", filename, strerror(errno), errno);
         ret = EXIT_FAILURE;
         goto exit_filename;
     }
