@@ -1024,10 +1024,10 @@ class FileVDI(VDI.VDI):
     def _is_hidden(self, path):
         return self.cowutil.getHidden(path) == 1
 
-    def extractUuid(path):
+    @staticmethod
+    def extractUuid(path: str) -> str:
         fileName = os.path.basename(path)
         return os.path.splitext(fileName)[0]
-    extractUuid = staticmethod(extractUuid)
 
     @override
     def generate_config(self, sr_uuid, vdi_uuid) -> str:

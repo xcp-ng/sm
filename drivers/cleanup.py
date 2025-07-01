@@ -3868,7 +3868,7 @@ def _gcLoopPause(sr, dryRun=False, immediate=False):
         Util.log("GC active, quiet period ended")
 
 
-def _gcLoop(sr: SR, dryRun=False, immediate=False):
+def _gcLoop(sr, dryRun=False, immediate=False):
     if not lockGCActive.acquireNoblock():
         Util.log("Another GC instance already active, exiting")
         return

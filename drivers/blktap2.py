@@ -18,7 +18,7 @@
 # blktap2: blktap/tapdisk management layer
 #
 
-from sm_typing import Any, Callable, ClassVar, Dict, override, List
+from sm_typing import Any, Callable, ClassVar, Dict, override, List, Union
 
 from abc import abstractmethod
 
@@ -56,6 +56,12 @@ from cowutil import getCowUtil
 # For RRDD Plugin Registration
 from xmlrpc.client import ServerProxy, Transport
 from socket import socket, AF_UNIX, SOCK_STREAM
+
+import fjournaler
+import journaler
+from lvmcowutil import LvmCowUtil
+from FileSR import FileVDI
+import lvmcache
 
 try:
     from linstorvolumemanager import log_drbd_openers
@@ -1691,22 +1697,16 @@ class VDI(object):
         level = 0
         path = self.target.get_vdi_path()
 
+        journal: Union[journaler.Journaler, fjournaler.Journaler]
         # Different extractUUID & journaler function for LVMSR and FileSR
-        journaler = None
-        extractUuid = None
         if path.startswith("/dev/"): #TODO: How to identify SR type easily, we could ask XAPI since we have the sruuid (and even ref)
-            from lvmcowutil import LvmCowUtil
-            import lvmcache
-            import journaler
             vgName = "VG_XenStorage-{}".format(sr_uuid)
             lvmCache = lvmcache.LVMCache(vgName)
-            journaler = journaler.Journaler(lvmCache)
+            journal = journaler.Journaler(lvmCache)
 
             extractUuid = LvmCowUtil.extractUuid
         else:
-            from FileSR import FileVDI
-            import fjournaler
-            journaler = fjournaler.Journaler(os.getcwd())
+            journal = fjournaler.Journaler(os.getcwd())
             extractUuid = FileVDI.extractUuid
 
         # Get the VDI chain
@@ -1725,7 +1725,7 @@ class VDI(object):
             util.SMlog("{}{}".format(prefix, vdi))
 
         vdi_to_cancel = []
-        for entry in journaler.getAll("coalesce").keys():
+        for entry in journal.getAll("coalesce").keys():
             if entry in vdi_chain:
                 vdi_to_cancel.append(entry)
                 util.SMlog("Coalescing VDI {} in chain".format(entry))
