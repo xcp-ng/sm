@@ -24,7 +24,7 @@ import mpath_cli
 import json
 import subprocess
 
-supported = ['iscsi', 'lvmoiscsi', 'rawhba', 'lvmohba', 'ocfsohba', 'ocfsoiscsi', 'netapp', 'lvmofcoe', 'gfs2']
+supported = ['iscsi', 'lvmoiscsi', 'lvmohba', 'lvmofcoe', 'gfs2']
 
 LOCK_TYPE_HOST = "host"
 LOCK_NS1 = "mpathcount1"
