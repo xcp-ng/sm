@@ -266,6 +266,8 @@ class CowUtil(ABC):
     def setKey(self, path: str, key_hash: str) -> None:
         pass
 
+    # The availability of coalesceOnline and cancelCoalesceOnline are dependent on isCoalesceableOnRemote() returning True
+    # If not, both function should raise NotImplementedError
     @abstractmethod
     def isCoalesceableOnRemote(self) -> bool:
         pass
