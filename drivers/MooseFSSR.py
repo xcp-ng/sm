@@ -228,11 +228,11 @@ class MooseFSSR(FileSR.FileSR):
             raise xs_errors.SROSError(111, "MooseFS mount error [opterr=%s]" % exc.errstr)
 
         try:
-            self.subdir = self.sm_config.get('subdir')
-            if self.subdir is None:
+            subdir = self.sm_config.get('subdir')
+            if subdir is None:
                 self.subdir = True
             else:
-                self.subdir = util.strtobool(self.subdir)
+                self.subdir = util.strtobool(subdir)
 
             self.sm_config['subdir'] = str(self.subdir)
             self.session.xenapi.SR.set_sm_config(self.sr_ref, self.sm_config)
