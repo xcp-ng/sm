@@ -789,7 +789,7 @@ class QCowUtil(CowUtil):
         parent: str,
         parentRaw: bool,
         msize: int = 0,
-        checkEmpty: Optional[bool] = True
+        checkEmpty: bool = True
     ) -> None:
         parent_type = QCOW2_TYPE
         if parentRaw:
@@ -807,8 +807,8 @@ class QCowUtil(CowUtil):
     def check(
         self,
         path: str,
-        ignoreMissingFooter: Optional[bool] = False,
-        fast: Optional[bool] = False
+        ignoreMissingFooter: bool = False,
+        fast: bool = False
     ) -> CowUtil.CheckResult:
         cmd = [QEMU_IMG, "check", path]
         try:
