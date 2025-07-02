@@ -735,6 +735,7 @@ class QCowUtil(CowUtil):
     @override
     def coalesceOnline(self, path: str) -> int:
         pid, minor = self._getTapdisk(path)
+        logger = util.LoggerCounter(10)
 
         try:
             TapCtl.commit(pid, minor, QCOW2_TYPE, path)
@@ -749,8 +750,8 @@ class QCowUtil(CowUtil):
 
             while status !=  "concluded":
                 time.sleep(1)
-                status, nb, _ = TapCtl.query(pid, minor)
-                util.SMlog("Got status {} for tapdisk {} (m: {})".format(status, pid, minor))#TODO: this log and the one from the call to query are spamming SMlog
+                status, nb, _ = TapCtl.query(pid, minor, quiet=True)
+                logger.log("Got status {} for tapdisk {} (m: {})".format(status, pid, minor))
             return nb
         except TapCtl.CommandFailure:
             util.SMlog("Query command failed on tapdisk instance {}. Raising...".format(pid))
