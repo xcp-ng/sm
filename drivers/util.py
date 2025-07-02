@@ -148,6 +148,19 @@ def SMlog(message, ident="SM", priority=LOG_INFO):
             _logToSyslog(ident, _SM_SYSLOG_FACILITY, priority, message_line)
 
 
+class LoggerCounter:
+    def __init__(self, max_repeats):
+        self.previous_message = None
+        self.max_repeats = max_repeats
+        self.repeat_counter = 0
+
+    def log(self, message):
+        self.repeat_counter += 1
+        if self.previous_message != message or self.repeat_counter == self.max_repeats:
+            SMlog(message)
+            self.previous_message = message
+            self.repeat_counter = 0
+
 def _getDateString():
     d = datetime.datetime.now()
     t = d.timetuple()

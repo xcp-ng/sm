@@ -459,9 +459,9 @@ class TapCtl(object):
         cls._pread(args)
 
     @classmethod
-    def query(cls, pid, minor):
+    def query(cls, pid, minor, quiet=False):
         args = ["query", "-p", pid, "-m", minor]
-        output = cls._pread(args)
+        output = cls._pread(args, quiet=quiet)
         m = re.match(r"Commit status '(.+)' \((\d+)\/(\d+)\)", output)
         status = m.group(1)
         coalesced = int(m.group(2))
