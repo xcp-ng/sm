@@ -356,7 +356,7 @@ class VhdUtil(CowUtil):
         parent: str,
         parentRaw: bool,
         msize: int = 0,
-        checkEmpty: Optional[bool] = True
+        checkEmpty: bool = True
     ) -> None:
         cmd = [VHD_UTIL, "snapshot", OPT_LOG_ERR, "-n", path, "-p", parent]
         if parentRaw:
@@ -376,8 +376,8 @@ class VhdUtil(CowUtil):
     def check(
         self,
         path: str,
-        ignoreMissingFooter: Optional[bool] = False,
-        fast: Optional[bool] = False
+        ignoreMissingFooter: bool = False,
+        fast: bool = False
     ) -> CowUtil.CheckResult:
         cmd = [VHD_UTIL, "check", OPT_LOG_ERR, "-n", path]
         if ignoreMissingFooter:
