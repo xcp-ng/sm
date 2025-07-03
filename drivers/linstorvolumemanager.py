@@ -524,11 +524,7 @@ class LinstorVolumeManager(object):
                 if current_size < 0:
                     try:
                         self._repair_diskless_resource(resource)
-                        return util.retry(
-                            lambda: self.allocated_volume_size,
-                            maxretry=1,
-                            period=1
-                        )
+                        return self.allocated_volume_size
                     except LinstorVolumeManagerError as e:
                         raise e
                     except Exception as e:
@@ -2141,11 +2137,7 @@ class LinstorVolumeManager(object):
                     if volume.allocated_size < 0:
                         try:
                             self._repair_diskless_resource(resource)
-                            return util.retry(
-                                lambda: self._get_volumes_info(volume_name),
-                                maxretry=1,
-                                period=1
-                            )
+                            return self._get_volumes_info(volume_name)
                         except LinstorVolumeManagerError as e:
                             raise e
                         except Exception as e:
