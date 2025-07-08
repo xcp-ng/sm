@@ -18,7 +18,7 @@ def safe_umount(path):
             return 0
 
         proc = subprocess.Popen(['umount', path], stderr=subprocess.PIPE)
-        (stdout, stderr) = proc.communicate()
+        (_stdout, stderr) = proc.communicate()
         if not proc.returncode:
             return 0
 
@@ -29,7 +29,22 @@ def safe_umount(path):
         retry_count -= 1
         last_code = proc.returncode
         time.sleep(0.500)
-    return last_code
+
+    # Lazy attempt.
+    # Unmounting can fail for example due to a network outage of a DRBD volume mounted
+    # as `xcp-persistent-database` and which would be blocked in the kernel because of
+    # ext4 commands that cannot complete.
+    # In this kind of situation, it's necessary to force a umount call with lazy arg to
+    # ensure that the mountpoint does not remain present.
+    print(f'Failed to unmount `{path}`, trying with lazy option...', file=sys.stderr)
+    proc = subprocess.Popen(['umount', '-l', path], stderr=subprocess.PIPE)
+    (_stdout, stderr) = proc.communicate()
+    if proc.returncode:
+        print(f'Failed to unmount `{path}` with lazy option: `{stderr.strip()}`.', file=sys.stderr)
+    else:
+        print(f'Successfully unmounted `{path}`.', file=sys.stderr)
+
+    return proc.returncode
 
 
 if __name__ == '__main__':
