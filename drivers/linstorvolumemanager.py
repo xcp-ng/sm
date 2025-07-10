@@ -523,7 +523,7 @@ class LinstorVolumeManager(object):
                 current_size = volume.allocated_size
                 if current_size < 0:
                     try:
-                        self._repair_diskless_resource(resource)
+                        self._repair_diskless_resource(resource, volume)
                         return self.allocated_volume_size
                     except LinstorVolumeManagerError as e:
                         raise e
@@ -2067,7 +2067,7 @@ class LinstorVolumeManager(object):
         self._resource_cache_dirty = True
         self._volume_info_cache_dirty = True
 
-    def _repair_diskless_resource(self, resource):
+    def _repair_diskless_resource(self, resource, volume):
         if linstor.consts.FLAG_DISKLESS not in resource.flags:
             return
 
@@ -2075,10 +2075,21 @@ class LinstorVolumeManager(object):
             node_name=resource.node_name,
             rsc_name=resource.name
         )
-        self._linstor.resource_auto_place(
-            rsc_name=resource.name,
-            place_count=1,
-            diskless_type=linstor.consts.FLAG_DRBD_DISKLESS
+
+        self._linstor.resource_create(
+            rscs=[
+                linstor.linstorapi.ResourceData(
+                    #node_id=?,
+                    #layer_list=?,
+                    node_name=resource.node_name,
+                    rsc_name=resource.name,
+                    storage_pool=volume.storage_pool_name,
+                    diskless=linstor.consts.FLAG_DISKLESS in resource.flags,
+                    drbd_diskless=linstor.consts.FLAG_DRBD_DISKLESS in resource.flags,
+                    nvme_initiator=linstor.consts.FLAG_NVME_INITIATOR in resource.flags,
+                    ebs_initiator=linstor.consts.FLAG_EBS_INITIATOR in resource.flags
+                )
+            ]
         )
         self._mark_resource_cache_as_dirty()
 
@@ -2136,7 +2147,7 @@ class LinstorVolumeManager(object):
                 if volume.storage_pool_name == self._group_name:
                     if volume.allocated_size < 0:
                         try:
-                            self._repair_diskless_resource(resource)
+                            self._repair_diskless_resource(resource, volume)
                             return self._get_volumes_info(volume_name)
                         except LinstorVolumeManagerError as e:
                             raise e
