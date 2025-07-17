@@ -229,7 +229,8 @@ class LvmCowUtil(object):
         if uuid.startswith(VG_PREFIX):
             # we are dealing with realpath
             uuid = uuid.replace("--", "-")
-            uuid.replace(VG_PREFIX, "")
+            uuid = uuid.replace(VG_PREFIX, "")
+            return uuid
         for prefix in LV_PREFIX.values():
             if uuid.find(prefix) != -1:
                 uuid = uuid.split(prefix)[-1]
