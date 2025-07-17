@@ -509,6 +509,8 @@ class LinstorVolumeManager(object):
         # Paths: /res_name/vol_number/size
         sizes = {}
 
+        self._scan_for_broken_diskless_resources()
+
         for resource in self._get_resource_cache().resources:
             if resource.name not in sizes:
                 current = sizes[resource.name] = {}
@@ -522,16 +524,10 @@ class LinstorVolumeManager(object):
 
                 current_size = volume.allocated_size
                 if current_size < 0:
-                    try:
-                        self._repair_diskless_resource(resource, volume)
-                        return self.allocated_volume_size
-                    except LinstorVolumeManagerError as e:
-                        raise e
-                    except Exception as e:
-                        raise LinstorVolumeManagerError(
-                            'Failed to get allocated size of `{}` on `{}`: {}'
-                            .format(resource.name, volume.storage_pool_name, e)
-                        )
+                    raise LinstorVolumeManagerError(
+                        'Failed to get allocated size of `{}` on `{}`'
+                        .format(resource.name, volume.storage_pool_name)
+                    )
                 current[volume.number] = max(current_size, current.get(volume.number) or 0)
 
         total_size = 0
@@ -2091,7 +2087,22 @@ class LinstorVolumeManager(object):
                 )
             ]
         )
+
+    def _scan_for_broken_diskless_resources(self):
+        for resource in self._get_resource_cache().resources:
+            for volume in resource.volumes:
+                if (
+                    volume.storage_pool_name != self._group_name
+                    or volume.allocated_size >= 0
+                ):
+                    return
+                try: self._repair_diskless_resource(resource, volume)
+                except Exception as e:
+                    util.SMlog('Failed to repair diskless resource `{}` on `{}`: {}'.format(
+                        resource.name, volume.storage_pool_name, e
+                    ))
         self._mark_resource_cache_as_dirty()
+
 
     # --------------------------------------------------------------------------
 
@@ -2131,6 +2142,8 @@ class LinstorVolumeManager(object):
         if not self._volume_info_cache_dirty:
             return self._volume_info_cache
 
+        self._scan_for_broken_diskless_resources()
+
         for resource in self._get_resource_cache().resources:
             if resource.name not in all_volume_info:
                 current = all_volume_info[resource.name] = self.VolumeInfo(
@@ -2146,16 +2159,10 @@ class LinstorVolumeManager(object):
                 # We ignore diskless pools of the form "DfltDisklessStorPool".
                 if volume.storage_pool_name == self._group_name:
                     if volume.allocated_size < 0:
-                        try:
-                            self._repair_diskless_resource(resource, volume)
-                            return self._get_volumes_info(volume_name)
-                        except LinstorVolumeManagerError as e:
-                            raise e
-                        except Exception as e:
-                            raise LinstorVolumeManagerError(
-                                'Failed to get allocated size of `{}` on `{}`: {}'
-                                .format(resource.name, volume.storage_pool_name, e)
-                            )
+                        raise LinstorVolumeManagerError(
+                            'Failed to get allocated size of `{}` on `{}`'
+                            .format(resource.name, volume.storage_pool_name)
+                        )
                     allocated_size = volume.allocated_size
 
                     current.allocated_size = current.allocated_size and \
