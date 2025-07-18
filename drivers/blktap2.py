@@ -56,11 +56,6 @@ from cowutil import getCowUtil
 from xmlrpc.client import ServerProxy, Transport
 from socket import socket, AF_UNIX, SOCK_STREAM
 
-import fjournaler
-import journaler
-from lvmcowutil import LvmCowUtil
-from FileSR import FileVDI
-import lvmcache
 
 try:
     from linstorvolumemanager import log_drbd_openers
@@ -1660,7 +1655,7 @@ class VDI(object):
             time.sleep(1)
         raise util.SMException("VDI %s locked" % vdi_uuid)
 
-    def _get_host_ref(self) -> str:
+    def _get_sr_master_host_ref(self) -> str:
         """
         Give the host ref of the one responsible for Garbage Collection for a SR.
         Meaning this host for a local SR, the master for a shared SR.
@@ -1672,7 +1667,7 @@ class VDI(object):
             host_ref = sr.host_ref
         return host_ref
 
-    def _get_chain(self, cowutil, extractUuid) -> List[str]:
+    def _get_vdi_chain(self, cowutil, extractUuid) -> List[str]:
         vdi_chain = []
         path = self.target.get_vdi_path()
 
@@ -1691,8 +1686,13 @@ class VDI(object):
         if not cowutil.isCoalesceableOnRemote(): #We only need to stop the coalesce in case of QCOW2
             return True
 
-        level = 0
         path = self.target.get_vdi_path()
+
+        import fjournaler
+        import journaler
+        from lvmcowutil import LvmCowUtil
+        from FileSR import FileVDI
+        import lvmcache
 
         journal: Union[journaler.Journaler, fjournaler.Journaler]
         # Different extractUUID & journaler function for LVMSR and FileSR
@@ -1707,14 +1707,15 @@ class VDI(object):
             extractUuid = FileVDI.extractUuid
 
         # Get the VDI chain
-        vdi_chain = self._get_chain(cowutil, extractUuid)
+        vdi_chain = self._get_vdi_chain(cowutil, extractUuid)
 
         if len(vdi_chain) == 1:
-            #We only have a leaf, do nothing
+            # We only have a leaf, do nothing
             util.SMlog("VDI {} is only a leaf, continuing...".format(vdi_uuid))
             return True
 
         # Log the chain of active VDI
+        level = 0
         util.SMlog("VDI chain:")
         for vdi in vdi_chain:
             prefix = "    " * level
@@ -1728,7 +1729,7 @@ class VDI(object):
                 util.SMlog("Coalescing VDI {} in chain".format(entry))
 
         # Get the host_ref from the host doing the GC work
-        host_ref = self._get_host_ref()
+        host_ref = self._get_sr_master_host_ref()
         for vdi in vdi_to_cancel:
             args = {"sr_uuid": sr_uuid, "vdi_uuid": vdi}
             util.SMlog("Calling cancel_coalesce_master with args: {}".format(args))
@@ -1782,8 +1783,10 @@ class VDI(object):
                 lock = Lock("lvchange-p", NS_PREFIX_LVM + sr_uuid)
                 lock.acquire()
 
-            self._check_journal_coalesce_chain(sr_uuid, vdi_uuid)
-            #TODO: handling error here
+            if not self._check_journal_coalesce_chain(sr_uuid, vdi_uuid):
+                return False
+            # we could return false from here if we need to retry after relink
+            # #TODO: handling error here
 
             # When we attach a static VDI for HA, we cannot communicate with
             # xapi, because has not started yet. These VDIs are raw.
