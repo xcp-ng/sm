@@ -14,6 +14,7 @@ import xs_errors
 from blktap2 import TapCtl
 from cowutil import CowUtil, CowImageInfo
 from lvmcache import LVMCache
+from LVMSR import NS_PREFIX_LVM
 
 MAX_QCOW_CHAIN_LENGTH: Final = 30
 
@@ -482,37 +483,24 @@ class QCowUtil(CowUtil):
         self, lvName: str, extractUuidFunction: Callable[[str], str], vgName: str
     ) -> Optional[CowImageInfo]:
         lvcache = LVMCache(vgName)
-        lvcache.refresh()
-        if lvName not in lvcache.lvs:
-            return None
-        if not lvcache.is_active(lvName):
-                        lvcache.activateNoRefcount(lvName)
-                        was_activated = True
-        path = "/dev/{}/{}".format(vgName, lvName)
-        cowinfo = self.getInfo(path, extractUuidFunction)
-        if was_activated:
-            try:
-                lvcache.deactivateNoRefcount(lvName)
-            except Exception as e:
-                raise e
-        return cowinfo
+        return self._getInfoLV(lvcache, extractUuidFunction, vgName, lvName)
 
-    def _getInfoLV(self, lvcache: LVMCache, extractUuidFunction: Callable[[str], str], lvPath: str) -> Optional[CowImageInfo]:
-        was_activated = False
-        lvName = lvPath.split("/")[-1]
+    def _getInfoLV(
+        self, lvcache: LVMCache, extractUuidFunction: Callable[[str], str], vgName: str, lvName: str
+    ) -> Optional[CowImageInfo]:
+        lvPath = "/dev/{}/{}".format(vgName, lvName)
         lvcache.refresh()
         if lvName not in lvcache.lvs:
             util.SMlog("{} does not exist anymore".format(lvName))
             return None
-        if not lvcache.is_active(lvName):
-            lvcache.activateNoRefcount(lvName)
-            was_activated = True
-        cowinfo = self.getInfo(lvPath, extractUuidFunction)
-        if was_activated:
-            try:
-                lvcache.deactivateNoRefcount(lvName)
-            except Exception as e:
-                raise e
+
+        vdiUuid = extractUuidFunction(lvPath)
+        srUuid = extractUuidFunction(vgName)
+        lvcache.activate(NS_PREFIX_LVM + srUuid, vdiUuid, lvName, False)
+        try:
+            cowinfo = self.getInfo(lvPath, extractUuidFunction)
+        finally:
+            lvcache.deactivate(NS_PREFIX_LVM + srUuid, vdiUuid, lvName, False)
         return cowinfo
 
     @override
@@ -536,8 +524,7 @@ class QCowUtil(CowUtil):
             for lvName in lvList:
                 # lvinfo = lvcache.lvs[lvName]
                 if reg.match(lvName):
-                    lvPath = "/dev/{}/{}".format(vgName, lvName)
-                    cowinfo = self._getInfoLV(lvcache, extractUuidFunction, lvPath)
+                    cowinfo = self._getInfoLV(lvcache, extractUuidFunction, vgName, lvName)
                     if cowinfo is None: #We get None if the LV stopped existing in the meanwhile
                         continue
                     result[cowinfo.uuid] = cowinfo
@@ -545,7 +532,8 @@ class QCowUtil(CowUtil):
                         parentUuid = cowinfo.parentUuid
                         parentPath = cowinfo.parentPath
                         while parentUuid != "":
-                            parent_cowinfo = self._getInfoLV(lvcache, extractUuidFunction, parentPath)
+                            parentLvName = parentPath.split("/")[-1]
+                            parent_cowinfo = self._getInfoLV(lvcache, extractUuidFunction, vgName, parentLvName)
                             if parent_cowinfo is None: #Parent disappeared while scanning
                                 raise util.SMException("Parent of {} wasn't found during scan".format(lvName))
                             result[parent_cowinfo.uuid] = parent_cowinfo
