@@ -206,6 +206,7 @@ class NFSSR(FileSR.SharedFileSR):
             raise xs_errors.XenError('NFSUnMount', opterr=exc.errstr)
 
         self.attached = False
+        cleanup.stop_gc_service(sr_uuid)
 
     @override
     def create(self, sr_uuid, size) -> None:

@@ -668,6 +668,7 @@ class LVHDSR(SR.SR):
         # However, we should still delete lock files on slaves as it is the
         # only place to do so.
         self._cleanup(self.isMaster)
+        cleanup.stop_gc_service(uuid)
 
     @override
     def forget_vdi(self, uuid) -> None:

@@ -4052,6 +4052,18 @@ def start_gc_service(sr_uuid, wait=False):
     subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, close_fds=True)
 
 
+def stop_gc_service(sr_uuid):
+    """
+    Stops the templated systemd service which runs GC on the given SR UUID.
+    """
+    sr_uuid_esc = sr_uuid.replace("-", "\\x2d")
+    util.SMlog(f"Stopping SMGC@{sr_uuid}...")
+    cmd = ["/usr/bin/systemctl", "--quiet", "stop", f"SMGC@{sr_uuid_esc}"]
+    try:
+        subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, close_fds=True, check=True)
+    except subprocess.CalledProcessError as e:
+        util.SMlog(f"Failed to stop gc service `SMGC@{sr_uuid_esc}`: `{e.stderr.decode().strip()}`")
+
 def gc_force(session, srUuid, force=False, dryRun=False, lockSR=False):
     """Garbage collect all deleted VDIs in SR "srUuid". The caller must ensure
     the SR lock is held.

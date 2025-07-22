@@ -746,6 +746,7 @@ class LinstorSR(SR.SR):
     def detach(self, uuid) -> None:
         util.SMlog('LinstorSR.detach for {}'.format(self.uuid))
         cleanup.abort(self.uuid)
+        cleanup.stop_gc_service(uuid)
 
     @override
     @_locked_load
