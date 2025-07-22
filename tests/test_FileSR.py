@@ -49,6 +49,8 @@ class TestFileVDI(unittest.TestCase):
         endlog_patcher = mock.patch('FileSR.util.end_log_entry',
                                       autospec=True)
         self.mock_endlog = endlog_patcher.start()
+        pathlib_path_patcher = mock.patch("pathlib.Path", autospec=True)
+        self.mock_pathlib_path = pathlib_path_patcher.start()
         os_link_patcher = mock.patch('FileSR.os.link', autospec=True)
         self.mock_os_link = os_link_patcher.start()
         os_stat_patcher = mock.patch('FileSR.os.stat')
@@ -385,7 +387,10 @@ hidden: 0
         srcmd.cmd = "vdi_create"
         srcmd.dconf = {}
         srcmd.params = {
-            'command': 'vdi_create'
+            'command': 'vdi_create',
+            'vdi_sm_config': {
+                'image-format': 'vhd'
+            },
         }
         sr = FakeSharedFileSR(srcmd, sr_uuid)
         vdi = FileSR.FileVDI(sr, vdi_uuid)

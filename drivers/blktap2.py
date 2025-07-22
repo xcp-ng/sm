@@ -1686,6 +1686,7 @@ class VDI(object):
     def _check_journal_coalesce_chain(self, sr_uuid: str, vdi_uuid: str) -> bool:
         vdi_type = self.target.get_vdi_type()
         cowutil = getCowUtil(vdi_type)
+
         if not cowutil.isCoalesceableOnRemote(): #We only need to stop the coalesce in case of QCOW2
             return True
 

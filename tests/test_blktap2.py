@@ -197,7 +197,8 @@ class TestVDI(unittest.TestCase):
     @mock.patch('blktap2.VDI.BackendLink', autospec=True)
     @mock.patch('blktap2.VDI.NBDLink', autospec=True)
     @mock.patch('blktap2.Tapdisk')
-    def test_activate(self, mock_tapdisk, mock_nbd_link, mock_backend,
+    @mock.patch('blktap2.VDI._check_journal_coalesce_chain', autospec=True)
+    def test_activate(self, mock_checkjournalcoalesce, mock_tapdisk, mock_nbd_link, mock_backend,
                       mock_phy, mock_attach,
                       mock_this_host, mock_sleep):
         """
