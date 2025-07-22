@@ -19,6 +19,7 @@ from sm_typing import Final
 # TODO: Use StrEnum in python 3.11.
 class VdiType(object):
     RAW = "aio"
+    PHY = "phy"
     VHD = "vhd"
     QCOW2 = "qcow2"
     ISO = "iso"

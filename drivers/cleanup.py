@@ -1508,6 +1508,7 @@ class LVMVDI(VDI):
     @override
     def _doCoalesce(self) -> None:
         """LVMVDI parents must first be activated, inflated, and made writable"""
+        was_ro = []
         try:
             self._activateChain()
             self.sr.lvmCache.setReadonly(self.parent.fileName, False)
