@@ -315,7 +315,7 @@ class CowUtil(ABC):
 # ------------------------------------------------------------------------------
 
 def getImageFormatFromVdiType(vdi_type: str) -> ImageFormat:
-    if vdi_type == VdiType.RAW:
+    if vdi_type == VdiType.RAW or vdi_type == VdiType.PHY:
         return ImageFormat.RAW
     if vdi_type == VdiType.VHD:
         return ImageFormat.VHD
