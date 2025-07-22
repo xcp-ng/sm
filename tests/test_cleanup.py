@@ -1491,8 +1491,9 @@ class TestSR(unittest.TestCase):
     @mock.patch('vhdutil.VhdUtil')
     @mock.patch('cleanup.journaler.Journaler', autospec=True)
     @mock.patch('cleanup.Util.runAbortable')
+    @mock.patch('cleanup.SR._create_running_file', autospec=True)
     def test_coalesce_success(
-            self, mock_abortable, mock_journaler, mock_vhdutil, mock_util,
+            self, mock_create_running_file, mock_abortable, mock_journaler, mock_vhdutil, mock_util,
             mock_unlink):
         """
         Non-leaf coalesce
@@ -1501,6 +1502,7 @@ class TestSR(unittest.TestCase):
 
         mock_abortable.side_effect = self.runAbortable
         mock_vhdutil.return_value.check.return_value = cowutil.CowUtil.CheckResult.Success
+        mock_vhdutil.return_value.isCoalesceableOnRemote.return_value = False
 
         sr_uuid = uuid4()
         sr = create_cleanup_sr(self.xapi_mock, uuid=str(sr_uuid))
@@ -1541,8 +1543,9 @@ class TestSR(unittest.TestCase):
     @mock.patch('vhdutil.VhdUtil')
     @mock.patch('cleanup.journaler.Journaler', autospec=True)
     @mock.patch('cleanup.Util.runAbortable')
+    @mock.patch('cleanup.SR._create_running_file', autospec=True)
     def test_coalesce_error(
-            self, mock_abortable, mock_journaler, mock_vhdutil, mock_util,
+            self, mock_running_file, mock_abortable, mock_journaler, mock_vhdutil, mock_util,
             mock_unlink):
         """
         Handle errors in coalesce
@@ -1551,6 +1554,7 @@ class TestSR(unittest.TestCase):
         mock_vhdutil.return_value.check.return_value = cowutil.CowUtil.CheckResult.Success
 
         self.xapi_mock.getConfigVDI.return_value = {}
+
 
         def run_abortable(func, ret, ns, abortTest, pollInterval, timeOut):
             raise util.SMException("Timed out")
@@ -1569,6 +1573,7 @@ class TestSR(unittest.TestCase):
         mock_journaler.get.return_value = None
 
         mock_vhdutil.return_value.getParent.return_value = vdis['parent'].path
+        mock_vhdutil.return_value.isCoalesceableOnRemote.return_value = False
 
         sr.coalesce(vdis['vdi'], False)
 
@@ -1580,8 +1585,9 @@ class TestSR(unittest.TestCase):
     @mock.patch('vhdutil.VhdUtil')
     @mock.patch('cleanup.journaler.Journaler', autospec=True)
     @mock.patch('cleanup.Util.runAbortable')
+    @mock.patch('cleanup.SR._create_running_file', autospec=True)
     def test_coalesce_error_raw_parent(
-            self, mock_abortable, mock_journaler, mock_vhdutil, mock_util,
+            self, mock_create_running_file, mock_abortable, mock_journaler, mock_vhdutil, mock_util,
             mock_unlink):
         """
         Handle errors in coalesce with raw parent
@@ -1609,6 +1615,7 @@ class TestSR(unittest.TestCase):
         mock_journaler.get.return_value = None
 
         mock_vhdutil.return_value.getParent.return_value = vdis['parent'].path
+        mock_vhdutil.return_value.isCoalesceableOnRemote.return_value = False
 
         sr.coalesce(vdis['vdi'], False)
 
