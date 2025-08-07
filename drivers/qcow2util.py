@@ -14,7 +14,7 @@ import xs_errors
 from blktap2 import TapCtl
 from cowutil import CowUtil, CowImageInfo
 from lvmcache import LVMCache
-from LVMSR import NS_PREFIX_LVM
+from constants import NS_PREFIX_LVM, VG_PREFIX
 
 MAX_QCOW_CHAIN_LENGTH: Final = 30
 
@@ -495,12 +495,14 @@ class QCowUtil(CowUtil):
             return None
 
         vdiUuid = extractUuidFunction(lvPath)
-        srUuid = extractUuidFunction(vgName)
-        lvcache.activate(NS_PREFIX_LVM + srUuid, vdiUuid, lvName, False)
+        srUuid = vgName.replace(VG_PREFIX, "")
+
+        ns = NS_PREFIX_LVM + srUuid
+        lvcache.activate(ns, vdiUuid, lvName, False)
         try:
             cowinfo = self.getInfo(lvPath, extractUuidFunction)
         finally:
-            lvcache.deactivate(NS_PREFIX_LVM + srUuid, vdiUuid, lvName, False)
+            lvcache.deactivate(ns, vdiUuid, lvName, False)
         return cowinfo
 
     @override
