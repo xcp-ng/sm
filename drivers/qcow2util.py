@@ -825,6 +825,12 @@ class QCowUtil(CowUtil):
 
     @override
     def validateAndRoundImageSize(self, size: int) -> int:
+        if size < 0 or size > MAX_QCOW_SIZE:
+            raise xs_errors.XenError(
+                "VDISize",
+                opterr="VDI size must be between {} MB and {} MB".format(MIN_QCOW_SIZE // (1024*1024), MAX_QCOW_SIZE // (1024 * 1024))
+            )
+
         return util.roundup(QCOW_CLUSTER_SIZE, size)
 
     @override
