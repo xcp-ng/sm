@@ -56,8 +56,7 @@ uint64_t* get_l1_offset(struct qcow2_header* header, int fd){
         return NULL;
     }
 
-    lseek(fd, l1_offset, SEEK_SET);
-    err = read(fd, raw_l1, l1_table_size);
+    err = pread(fd, raw_l1, l1_table_size, l1_offset);
     if(err < 0){
         fprintf(stderr, "Couldn't read L1 table\n");
         free(raw_l1);
@@ -83,8 +82,7 @@ uint64_t* get_l2_table(struct qcow2_header* header, int fd, uint64_t offset){
         return NULL;
     }
 
-    lseek(fd, offset, SEEK_SET);
-    read(fd, raw_l2, cluster_size);
+    pread(fd, raw_l2, cluster_size, offset);
 
     for(i = 0; i < nb_l2_entries; i++){
         raw_l2[i] = __builtin_bswap64(raw_l2[i]);
@@ -108,28 +106,21 @@ uint64_t get_cluster_to_byte(uint64_t allocated_clusters, uint64_t cluster_size)
 int main(int argc, char* argv[]){
     struct qcow2_header* header = NULL;
     char * filename = NULL, * backing_file_name = NULL;
-    int fd, filename_len = 0, nb_l2_entries = 0, err = 0, i = 0, j = 0, ret = EXIT_SUCCESS;
-    uint64_t *l1_table = NULL, *l2_table = NULL, cluster_size = 0, allocated_clusters = 0, allocated = 0;
+    int fd, nb_l2_entries = 0, err = 0, i = 0, ret = EXIT_SUCCESS;
+    uint64_t *l1_table = NULL, cluster_size = 0, allocated_clusters = 0, allocated = 0;
 
     if(argc < 2){
         fprintf(stderr, "Need an argument\n");
         exit(EXIT_FAILURE);
     }
 
-    filename_len = strlen(argv[1]);
-    filename = malloc(filename_len);
-    if(filename == NULL){
-        fprintf(stderr, "Failed allocating filename\n");
-        exit(EXIT_FAILURE);
-    }
-    strcpy(filename, argv[1]);
+    filename = argv[1];
     fd = open(filename, O_RDONLY);
     if(fd < 0){
         fprintf(stderr, "Opening file %s failed with error %s (%d)\n", filename, strerror(errno), errno);
         ret = EXIT_FAILURE;
         goto exit_filename;
     }
-    lseek(fd, 0, SEEK_SET);
 
     // printf("Reading header from %s\n", filename);
 
@@ -140,7 +131,7 @@ int main(int argc, char* argv[]){
         goto close_and_exit;
     }
 
-    err = read(fd, header, QCOW2_HEADER_SIZE);
+    err = pread(fd, header, QCOW2_HEADER_SIZE, 0);
     if(err < 0){
         fprintf(stderr, "Failed reading file\n");
         ret = EXIT_FAILURE;
@@ -169,9 +160,16 @@ int main(int argc, char* argv[]){
 
     nb_l2_entries = cluster_size / (sizeof(uint64_t));
 
+    #pragma omp parallel for num_threads(4) reduction (+:allocated_clusters)
     for(i = 0; i < header->l1_size; i++){
-        if(l1_table[i] != 0){;
-            l2_table = get_l2_table(header, fd, l1_table[i]);
+        int j;
+        uint64_t *l2_table = NULL;
+        uint64_t l1_entry = l1_table[i];
+        if(l1_entry != 0){
+            l2_table = get_l2_table(header, fd, l1_entry);
+            if(l2_table == NULL){
+                fprintf(stderr, "Couldn't get L2 Table");
+            }
             for(j = 0; j < nb_l2_entries; j++){
                 if(is_l2_allocated(l2_table[j])){
                     allocated_clusters += 1;
@@ -197,6 +195,5 @@ close:
 close_and_exit:
     close(fd);
 exit_filename:
-    free(filename);
     exit(ret);
 }

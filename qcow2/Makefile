@@ -1,9 +1,9 @@
 PREFIX ?= /opt/xensource/libexec
-DESTDIR ?= 
+DESTDIR ?=
 DEBUGDIR ?= /opt/xensource/debug
 
 
-OPTS := -D _GNU_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGEFILE64_SOURCE -g -Wall
+OPTS := -D _GNU_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGEFILE64_SOURCE -Wall -fopenmp -Ofast
 
 SRC := qcow2_helper.c
 
