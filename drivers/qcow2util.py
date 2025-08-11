@@ -680,7 +680,7 @@ class QCowUtil(CowUtil):
         Returns:
             nothing.
         """
-        self._read_qcow2(path)
+        self._read_qcow2(path, read_clusters=True)
         # We need to reset L1 entries and then just truncate the file right
         # after L1 entries
         with open(self.filename, "r+b") as file:
