@@ -1058,7 +1058,7 @@ class LinstorVolumeManager(object):
 
             # 5. Ok!
             volume_properties[self.PROP_NOT_EXISTS] = self.STATE_EXISTS
-        except Exception as e:
+        except Exception as err:
             try:
                 # Clear the new volume properties in case of failure.
                 assert volume_properties.namespace == \
@@ -1070,7 +1070,7 @@ class LinstorVolumeManager(object):
                     .format(e)
                 )
             raise LinstorVolumeManagerError(
-                'Failed to copy volume properties: {}'.format(e)
+                'Failed to copy volume properties: {}'.format(err)
             )
 
         try:
@@ -1438,24 +1438,6 @@ class LinstorVolumeManager(object):
                 in_use_by = resource_state.node_name
 
         return (node_names, in_use_by)
-
-    def get_primary(self, volume_uuid):
-        """
-        Find the node that opened a volume, i.e. the primary.
-        :rtype: str
-        """
-        volume_name = self.get_volume_name(volume_uuid)
-
-        resource_states = filter(
-            lambda resource_state: resource_state.name == volume_name,
-            self._get_resource_cache().resource_states
-        )
-
-        for resource_state in resource_states:
-            if resource_state.in_use:
-                return resource_state.node_name
-
-        return None
 
     def invalidate_resource_cache(self):
         """

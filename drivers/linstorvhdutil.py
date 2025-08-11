@@ -31,21 +31,18 @@ MANAGER_PLUGIN = 'linstor-manager'
 
 
 def call_remote_method(session, host_ref, method, device_path, args):
-    host_rec = session.xenapi.host.get_record(host_ref)
-    host_uuid = host_rec['uuid']
-
     try:
         response = session.xenapi.host.call_plugin(
             host_ref, MANAGER_PLUGIN, method, args
         )
     except Exception as e:
         util.SMlog('call-plugin on {} ({} with {}) exception: {}'.format(
-            host_uuid, method, args, e
+            host_ref, method, args, e
         ))
         raise util.SMException(str(e))
 
     util.SMlog('call-plugin on {} ({} with {}) returned: {}'.format(
-        host_uuid, method, args, response
+        host_ref, method, args, response
     ))
 
     return response
@@ -85,7 +82,14 @@ def log_successful_call(target_host, device_path, vdi_uuid, remote_method, respo
 
 def log_failed_call(target_host, next_target, device_path, vdi_uuid, remote_method, e):
     util.SMlog(
-        'Failed to call method on {} for device {} ({}): {}. Trying accessing on {}... (cause: {})'.format(target_host, device_path, vdi_uuid, remote_method, next_target, e),
+        'Failed to call method on {} for device {} ({}): {}. Trying accessing on {}... (cause: {})'.format(
+            target_host,
+            device_path,
+            vdi_uuid,
+            remote_method,
+            next_target,
+            e
+        ),
         priority=util.LOG_DEBUG
     )
 
@@ -107,7 +111,7 @@ def linstorhostcall(local_method, remote_method):
             remote_args = {str(key): str(value) for key, value in remote_args.items()}
 
             try:
-                host_ref_attached = util.get_hosts_attached_on(self._session, [vdi_uuid])[0]
+                host_ref_attached = next(iter(util.get_hosts_attached_on(self._session, [vdi_uuid])))
                 if host_ref_attached:
                     response = call_remote_method(
                         self._session, host_ref_attached, remote_method, device_path, remote_args
@@ -118,7 +122,7 @@ def linstorhostcall(local_method, remote_method):
                 log_failed_call('attached node', 'master', device_path, vdi_uuid, remote_method, e)
 
             try:
-                master_ref = self._session.xenapi.pool.get_all_records().values()[0]['master']
+                master_ref = util.get_master_ref(self._session)
                 response = call_remote_method(self._session, master_ref, remote_method, device_path, remote_args)
                 log_successful_call('master', device_path, vdi_uuid, remote_method, response)
                 return response_parser(self, vdi_uuid, response)
@@ -136,7 +140,14 @@ def linstorhostcall(local_method, remote_method):
                 except Exception as remote_e:
                     self._raise_openers_exception(device_path, remote_e)
             else:
-                log_failed_call('primary', 'another node', device_path, vdi_uuid, remote_method, e)
+                log_failed_call(
+                    'primary',
+                    'another node',
+                    device_path,
+                    vdi_uuid,
+                    remote_method,
+                    'no primary'
+                )
 
                 try:
                     host = self._get_readonly_host(vdi_uuid, device_path, nodes)
