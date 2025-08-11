@@ -2472,7 +2472,6 @@ class SR(object):
         os.unlink(self._gc_running_file(vdi))
 
     def _coalesce(self, vdi: VDI):
-        skipRelink = False
         if self.journaler.get(vdi.JRN_RELINK, vdi.uuid):
             # this means we had done the actual coalescing already and just
             # need to finish relinking and/or refreshing the children
@@ -2500,7 +2499,6 @@ class SR(object):
                     #Leaf opened on another host, we need to call online coalesce
                     util.SMlog("Remote coalesce for {}".format(vdi.path))
                     vdi._doCoalesceOnHost(list(host_refs)[0])
-                    skipRelink = True
                 else:
                     util.SMlog("Offline coalesce for {}".format(vdi.path))
                     vdi._doCoalesce()
@@ -2508,11 +2506,9 @@ class SR(object):
                 util.SMlog("EXCEPTION while coalescing: {}".format(e))
                 self._delete_running_file(vdi)
                 raise
-            """
-            vdi._doCoalesce will call vdi._coalesceCowImage (after doing other things).
-            It will then call VDI._doCoalesceCowImage in a runAbortable context
-            """
+
             self.journaler.remove(vdi.JRN_COALESCE, vdi.uuid)
+            self._delete_running_file(vdi)
 
             util.fistpoint.activate("LVHDRT_before_create_relink_journal", self.uuid)
 
@@ -2520,22 +2516,19 @@ class SR(object):
             # like SM.clone from manipulating the VDIs we'll be relinking and
             # rescan the SR first in case the children changed since the last
             # scan
-            if not skipRelink:
-                self.journaler.create(vdi.JRN_RELINK, vdi.uuid, "1")
+            self.journaler.create(vdi.JRN_RELINK, vdi.uuid, "1")
 
-        if not skipRelink: #TODO: we might want to let relink happen for VDI not currently in use
-            self.lock()
-            try:
-                vdi.parent._tagChildrenForRelink()
-                self.scan()
-                vdi._relinkSkip()
-            finally:
-                self.unlock()
-                # Reload the children to leave things consistent
-                vdi.parent._reloadChildren(vdi)
-            self.journaler.remove(vdi.JRN_RELINK, vdi.uuid)
+        self.lock()
+        try:
+            vdi.parent._tagChildrenForRelink()
+            self.scan()
+            vdi._relinkSkip() #TODO: We could check if the parent is already the right one before doing the relink, or we could do the relink a second time, it doesn't seem to cause issues
+        finally:
+            self.unlock()
+            # Reload the children to leave things consistent
+            vdi.parent._reloadChildren(vdi)
+        self.journaler.remove(vdi.JRN_RELINK, vdi.uuid)
 
-        self._delete_running_file(vdi)
         self.deleteVDI(vdi)
 
     class CoalesceTracker:
