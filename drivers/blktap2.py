@@ -1741,8 +1741,6 @@ class VDI(object):
             pass  # nothing to do
 
     def _deactivate(self, sr_uuid, vdi_uuid, caching_params):
-        import VDI as sm
-
         # Shutdown tapdisk
         back_link = self.BackendLink.from_uuid(sr_uuid, vdi_uuid)
 
@@ -1763,7 +1761,7 @@ class VDI(object):
         else:
             if major == Tapdisk.major():
                 self._tap_deactivate(minor)
-                self.remove_cache(sr_uuid, vdi_uuid, caching_params)
+                self.remove_cache(caching_params)
 
         # Remove the backend link
         back_link.unlink()
@@ -1975,7 +1973,7 @@ class VDI(object):
         self.tap = leaf_tapdisk
         return leaf_tapdisk.get_devpath()
 
-    def remove_cache(self, sr_uuid, vdi_uuid, params):
+    def remove_cache(self, params):
         if not self.target.has_cap("SR_CACHING"):
             return
 
