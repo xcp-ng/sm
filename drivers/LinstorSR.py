@@ -25,6 +25,7 @@ try:
     from linstorvolumemanager import get_controller_node_name
     from linstorvolumemanager import LinstorVolumeManager
     from linstorvolumemanager import LinstorVolumeManagerError
+    from linstorvolumemanager import DATABASE_VOLUME_NAME
     from linstorvolumemanager import PERSISTENT_PREFIX
 
     LINSTOR_AVAILABLE = True
@@ -618,7 +619,6 @@ class LinstorSR(SR.SR):
                 ips,
                 self._redundancy,
                 thin_provisioning=self._provisioning == 'thin',
-                auto_quorum=self._monitor_db_quorum,
                 logger=util.SMlog
             )
             self._vhdutil = LinstorVhdUtil(self.session, self._linstor)
@@ -677,6 +677,8 @@ class LinstorSR(SR.SR):
             )
 
         try:
+            if self._monitor_db_quorum:
+                self._linstor.set_drbd_ha_properties(DATABASE_VOLUME_NAME, enabled=False)
             self._update_drbd_reactor_on_all_hosts(
                 controller_node_name=node_name, enabled=False
             )
@@ -692,6 +694,8 @@ class LinstorSR(SR.SR):
                 self._update_drbd_reactor_on_all_hosts(
                     controller_node_name=node_name, enabled=True
                 )
+                if self._monitor_db_quorum:
+                    self._linstor.set_drbd_ha_properties(DATABASE_VOLUME_NAME, enabled=True)
             except Exception as e2:
                 util.SMlog(
                     'Failed to restart drbd-reactor after destroy fail: {}'
@@ -740,6 +744,9 @@ class LinstorSR(SR.SR):
                 'SRUnavailable',
                 opterr='no such group: {}'.format(self._group_name)
             )
+
+        if self._monitor_db_quorum and self.is_master():
+            self._linstor.set_drbd_ha_properties(DATABASE_VOLUME_NAME)
 
     @override
     @_locked_load
