@@ -2099,7 +2099,7 @@ class LinstorVolumeManager(object):
         if not self._volume_info_cache_dirty:
             return self._volume_info_cache
 
-        for resource in self._get_resource_cache().resources:
+        def process_resource(resource):
             if resource.name not in all_volume_info:
                 current = all_volume_info[resource.name] = self.VolumeInfo(
                     resource.name
@@ -2131,15 +2131,21 @@ class LinstorVolumeManager(object):
                     ):
                         current.virtual_size = usable_size
 
-        if current.virtual_size <= 0:
-            raise LinstorVolumeManagerError(
-               'Failed to get usable size of `{}` on `{}`'
-               .format(resource.name, volume.storage_pool_name)
-            )
+        try:
+            for resource in self._get_resource_cache().resources:
+                process_resource(resource)
+            for volume in all_volume_info.values():
+                if volume.virtual_size <= 0:
+                    raise LinstorVolumeManagerError(
+                        'Failed to get usable size of `{}`'
+                        .format(volume.name)
+                    )
 
-        for current in all_volume_info.values():
-            current.allocated_size *= 1024
-            current.virtual_size *= 1024
+                volume.allocated_size *= 1024
+                volume.virtual_size *= 1024
+        except LinstorVolumeManagerError:
+            self._mark_resource_cache_as_dirty()
+            raise
 
         self._volume_info_cache_dirty = False
         self._volume_info_cache = all_volume_info
@@ -2158,16 +2164,14 @@ class LinstorVolumeManager(object):
                     node_names.add(resource.node_name)
 
                     current_size = volume.usable_size
-                    if current_size < 0:
-                        raise LinstorVolumeManagerError(
-                           'Failed to get usable size of `{}` on `{}`'
-                           .format(resource.name, volume.storage_pool_name)
-                        )
-
-                    if size < 0:
+                    if current_size > 0 and (current_size < size or size < 0):
                         size = current_size
-                    else:
-                        size = min(size, current_size)
+
+        if size < 0:
+            raise LinstorVolumeManagerError(
+                'Failed to get usable size of `{}` on `{}`'
+                .format(resource.name, volume.storage_pool_name)
+            )
 
         return (node_names, size * 1024)
 
