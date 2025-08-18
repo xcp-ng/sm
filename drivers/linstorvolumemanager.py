@@ -520,13 +520,10 @@ class LinstorVolumeManager(object):
                 if volume.storage_pool_name != self._group_name:
                     continue
 
-                current_size = volume.allocated_size
-                if current_size < 0:
-                    raise LinstorVolumeManagerError(
-                       'Failed to get allocated size of `{}` on `{}`'
-                       .format(resource.name, volume.storage_pool_name)
-                    )
-                current[volume.number] = max(current_size, current.get(volume.number) or 0)
+                allocated_size = max(volume.allocated_size, 0)
+                current_allocated_size = current.get(volume.number) or -1
+                if allocated_size > current_allocated_size:
+                    current[volume.number] = allocated_size
 
         total_size = 0
         for volumes in sizes.values():
@@ -2111,7 +2108,7 @@ class LinstorVolumeManager(object):
         if not self._volume_info_cache_dirty:
             return self._volume_info_cache
 
-        for resource in self._get_resource_cache().resources:
+        def process_resource(resource):
             if resource.name not in all_volume_info:
                 current = all_volume_info[resource.name] = self.VolumeInfo(
                     resource.name
@@ -2124,34 +2121,38 @@ class LinstorVolumeManager(object):
 
             for volume in resource.volumes:
                 # We ignore diskless pools of the form "DfltDisklessStorPool".
-                if volume.storage_pool_name == self._group_name:
-                    if volume.allocated_size < 0:
-                        raise LinstorVolumeManagerError(
-                           'Failed to get allocated size of `{}` on `{}`'
-                           .format(resource.name, volume.storage_pool_name)
-                        )
-                    allocated_size = volume.allocated_size
+                if volume.storage_pool_name != self._group_name:
+                    continue
+                # Only fetch first volume.
+                if volume.number != 0:
+                    continue
 
-                    current.allocated_size = current.allocated_size and \
-                        max(current.allocated_size, allocated_size) or \
-                        allocated_size
+                allocated_size = volume.allocated_size
+                if allocated_size > current.allocated_size:
+                    current.allocated_size = allocated_size
 
-                    usable_size = volume.usable_size
-                    if usable_size > 0 and (
-                        usable_size < current.virtual_size or
-                        not current.virtual_size
-                    ):
-                        current.virtual_size = usable_size
+                usable_size = volume.usable_size
+                if usable_size > 0 and (
+                    usable_size < current.virtual_size or
+                    not current.virtual_size
+                ):
+                    current.virtual_size = usable_size
 
-        if current.virtual_size <= 0:
-            raise LinstorVolumeManagerError(
-               'Failed to get usable size of `{}` on `{}`'
-               .format(resource.name, volume.storage_pool_name)
-            )
+        try:
+            for resource in self._get_resource_cache().resources:
+                process_resource(resource)
+            for volume in all_volume_info.values():
+                if volume.allocated_size <= 0:
+                    raise LinstorVolumeManagerError('Failed to get allocated size of `{}`'.format(resource.name))
 
-        for current in all_volume_info.values():
-            current.allocated_size *= 1024
-            current.virtual_size *= 1024
+                if volume.virtual_size <= 0:
+                    raise LinstorVolumeManagerError('Failed to get usable size of `{}`'.format(volume.name))
+
+                volume.allocated_size *= 1024
+                volume.virtual_size *= 1024
+        except LinstorVolumeManagerError:
+            self._mark_resource_cache_as_dirty()
+            raise
 
         self._volume_info_cache_dirty = False
         self._volume_info_cache = all_volume_info
@@ -2166,20 +2167,22 @@ class LinstorVolumeManager(object):
         ).resources:
             for volume in resource.volumes:
                 # We ignore diskless pools of the form "DfltDisklessStorPool".
-                if volume.storage_pool_name == self._group_name:
-                    node_names.add(resource.node_name)
+                if volume.storage_pool_name != self._group_name:
+                    continue
 
-                    current_size = volume.usable_size
-                    if current_size < 0:
-                        raise LinstorVolumeManagerError(
-                           'Failed to get usable size of `{}` on `{}`'
-                           .format(resource.name, volume.storage_pool_name)
-                        )
+                node_names.add(resource.node_name)
 
-                    if size < 0:
-                        size = current_size
-                    else:
-                        size = min(size, current_size)
+                usable_size = volume.usable_size
+                if usable_size <= 0:
+                    continue
+
+                if size < 0:
+                    size = usable_size
+                else:
+                    size = min(size, usable_size)
+
+        if size <= 0:
+            raise LinstorVolumeManagerError('Failed to get usable size of `{}`'.format(resource.name))
 
         return (node_names, size * 1024)
 
