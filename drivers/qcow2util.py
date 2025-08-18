@@ -663,7 +663,7 @@ class QCowUtil(CowUtil):
 
     @override
     def getAllocatedSize(self, path: str) -> int:
-        cmd = [QCOW2_HELPER, path]
+        cmd = [QCOW2_HELPER, "allocated", path]
         return int(self._ioretry(cmd))
 
     @override
@@ -703,8 +703,9 @@ class QCowUtil(CowUtil):
 
     @override
     def getBlockBitmap(self, path: str) -> bytes:
-        self._read_qcow2(path, read_clusters=True) #TODO: Add read L2 info here, we want to use an external application to do this eventually
-        return zlib.compress(self._create_bitmap())
+        cmd = [QCOW2_HELPER, "bitmap", path]
+        text = cast(bytes, self._ioretry(cmd, text=False))
+        return zlib.compress(text)
 
     def _getTapdisk(self, path: str) -> Tuple[int, int]:
         """
