@@ -927,6 +927,34 @@ class LinstorVolumeManager(object):
                 .format(volume_uuid, error_str)
             )
 
+    def set_drbd_ha_properties(self, volume_name, enabled=True):
+        """
+        Set or not HA DRBD properties required by drbd-reactor and
+        by specific volumes.
+        :param str volume_name: The volume to modify.
+        :param bool enabled: Enable or disable HA properties.
+        """
+
+        properties = {
+            'DrbdOptions/auto-quorum': 'disabled',
+            'DrbdOptions/Resource/auto-promote': 'no',
+            'DrbdOptions/Resource/on-no-data-accessible': 'io-error',
+            'DrbdOptions/Resource/on-no-quorum': 'io-error',
+            'DrbdOptions/Resource/on-suspended-primary-outdated': 'force-secondary',
+            'DrbdOptions/Resource/quorum': 'majority'
+        }
+        if enabled:
+            result = self._linstor.resource_dfn_modify(volume_name, properties)
+        else:
+            result = self._linstor.resource_dfn_modify(volume_name, {}, delete_props=list(properties.keys()))
+
+        error_str = self._get_error_str(result)
+        if error_str:
+            raise LinstorVolumeManagerError(
+                'Could not modify HA DRBD properties on volume `{}`: {}'
+                .format(volume_name, error_str)
+            )
+
     def get_volume_info(self, volume_uuid):
         """
         Get the volume info of a particular volume.
@@ -1735,18 +1763,13 @@ class LinstorVolumeManager(object):
         return [cls._build_group_name(base_name), cls._build_ha_group_name(base_name)]
 
     @classmethod
-    def create_sr(
-        cls, group_name, ips, redundancy,
-        thin_provisioning, auto_quorum,
-        logger=default_logger.__func__
-    ):
+    def create_sr(cls, group_name, ips, redundancy, thin_provisioning, logger=default_logger.__func__):
         """
         Create a new SR on the given nodes.
         :param str group_name: The SR group_name to use.
         :param set(str) ips: Node ips.
         :param int redundancy: How many copy of volumes should we store?
         :param bool thin_provisioning: Use thin or thick provisioning.
-        :param bool auto_quorum: DB quorum is monitored by LINSTOR.
         :param function logger: Function to log messages.
         :return: A new LinstorSr instance.
         :rtype: LinstorSr
@@ -1754,14 +1777,7 @@ class LinstorVolumeManager(object):
 
         try:
             cls._start_controller(start=True)
-            sr = cls._create_sr(
-                group_name,
-                ips,
-                redundancy,
-                thin_provisioning,
-                auto_quorum,
-                logger
-            )
+            sr = cls._create_sr(group_name, ips, redundancy, thin_provisioning, logger)
         finally:
             # Controller must be stopped and volume unmounted because
             # it is the role of the drbd-reactor daemon to do the right
@@ -1775,11 +1791,7 @@ class LinstorVolumeManager(object):
         return sr
 
     @classmethod
-    def _create_sr(
-        cls, group_name, ips, redundancy,
-        thin_provisioning, auto_quorum,
-        logger=default_logger.__func__
-    ):
+    def _create_sr(cls, group_name, ips, redundancy, thin_provisioning, logger=default_logger.__func__):
         # 1. Check if SR already exists.
         uri = 'linstor://localhost'
 
@@ -1921,7 +1933,7 @@ class LinstorVolumeManager(object):
             try:
                 logger('Creating database volume...')
                 volume_path = cls._create_database_volume(
-                    lin, ha_group_name, storage_pool_name, node_names, redundancy, auto_quorum
+                    lin, ha_group_name, storage_pool_name, node_names, redundancy
                 )
             except LinstorVolumeManagerError as e:
                 if e.code != LinstorVolumeManagerError.ERR_VOLUME_EXISTS:
@@ -2695,7 +2707,7 @@ class LinstorVolumeManager(object):
 
     @classmethod
     def _create_database_volume(
-        cls, lin, group_name, storage_pool_name, node_names, redundancy, auto_quorum
+        cls, lin, group_name, storage_pool_name, node_names, redundancy
     ):
         try:
             dfns = lin.resource_dfn_list_raise().resource_definitions
@@ -2778,20 +2790,6 @@ class LinstorVolumeManager(object):
                     group_name, error_str
                 )
             )
-
-        # We must modify the quorum. Otherwise we can't use correctly the
-        # drbd-reactor daemon.
-        if auto_quorum:
-            result = lin.resource_dfn_modify(DATABASE_VOLUME_NAME, {
-                'DrbdOptions/auto-quorum': 'disabled',
-                'DrbdOptions/Resource/quorum': 'majority'
-            })
-            error_str = cls._get_error_str(result)
-            if error_str:
-                raise LinstorVolumeManagerError(
-                    'Could not activate quorum on database volume: {}'
-                    .format(error_str)
-                )
 
         # Create database and ensure path exists locally and
         # on replicated devices.
