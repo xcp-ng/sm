@@ -219,7 +219,7 @@ class CowUtil(ABC):
         pass
 
     @abstractmethod
-    def create(self, path: str, size: int, static: bool, msize: int = 0) -> None:
+    def create(self, path: str, size: int, static: bool, msize: int = 0, block_size: Optional[int] = None) -> None:
         pass
 
     @abstractmethod
