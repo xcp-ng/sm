@@ -340,7 +340,7 @@ class VhdUtil(CowUtil):
         return 0
 
     @override
-    def create(self, path: str, size: int, static: bool, msize: int = 0) -> None:
+    def create(self, path: str, size: int, static: bool, msize: int = 0, block_size: Optional[int] = None) -> None:
         cmd = [VHD_UTIL, "create", OPT_LOG_ERR, "-n", path, "-s", str(size // (1024 * 1024))]
         if static:
             cmd.append("-r")
