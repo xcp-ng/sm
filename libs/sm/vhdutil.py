@@ -96,6 +96,12 @@ def ioretry(cmd, text=True):
 def getBlockSize(path):
     cmd = [VHD_UTIL, "read", "-pn", path]
     ret = ioretry(cmd)
+    if isinstance(ret, bytes):
+        import locale
+        ret = ret.decode(
+            encoding = locale.getpreferredencoding(False),
+            errors="replace"
+        )
     fields = ret.strip().split('\n')
     for field in fields:
         field = field.strip()
