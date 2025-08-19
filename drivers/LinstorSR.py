@@ -2514,7 +2514,7 @@ class LinstorVDI(VDI.VDI):
             self.session.xenapi.VDI.set_sm_config(
                 vdi_ref, active_vdi.sm_config
             )
-        except Exception:
+        except Exception as e:
             util.logException('Failed to snapshot!')
             try:
                 self.sr._handle_interrupted_clone(
