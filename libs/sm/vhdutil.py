@@ -95,7 +95,11 @@ def ioretry(cmd, text=True):
 
 def getBlockSize(path):
     cmd = [VHD_UTIL, "read", "-pn", path]
-    ret = ioretry(cmd)
+    try:
+        ret = ioretry(cmd)
+    except util.CommandException as e:
+        util.SMlog("WARN: unable to fetch block size: {}".format(e))
+        return VHD_BLOCK_SIZE
     if isinstance(ret, bytes):
         import locale
         ret = ret.decode(
