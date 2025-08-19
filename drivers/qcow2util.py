@@ -18,9 +18,9 @@ from constants import NS_PREFIX_LVM, VG_PREFIX
 
 MAX_QCOW_CHAIN_LENGTH: Final = 30
 
-QCOW_CLUSTER_SIZE: Final = 64 * 1024 # 64 KiB
+QCOW2_DEFAULT_CLUSTER_SIZE: Final = 64 * 1024 # 64 KiB
 
-MIN_QCOW_SIZE: Final = QCOW_CLUSTER_SIZE
+MIN_QCOW_SIZE: Final = QCOW2_DEFAULT_CLUSTER_SIZE
 
 MAX_QCOW_SIZE: Final = 16 * 1024 * 1024 * 1024 * 1024
 
@@ -37,7 +37,7 @@ class QCowUtil(CowUtil):
 
     QCOW2_MAGIC = 0x514649FB  # b"QFI\xfb": Magic number for QCOW2 files
     QCOW2_HEADER_SIZE = 104  # In fact the last information we need is at offset 40-47
-    QCOW2_L2_SIZE = QCOW_CLUSTER_SIZE
+    QCOW2_L2_SIZE = QCOW2_DEFAULT_CLUSTER_SIZE
     QCOW2_BACKING_FILE_OFFSET = 8
 
     ALLOCATED_ENTRY_BIT = (
@@ -174,9 +174,6 @@ class QCowUtil(CowUtil):
 
         if magic != QCowUtil.QCOW2_MAGIC:
             raise ValueError("Not a valid QCOW2 file")
-
-        if cluster_bits != 16:
-            raise ValueError("Only default cluster size of 64K is supported")
 
         parent_name = QCowUtil._read_qcow2_backingfile(file, backing_file_offset, backing_file_size)
 
@@ -378,7 +375,7 @@ class QCowUtil(CowUtil):
 
     def _set_l1_zero(self):
         zero = int(0).to_bytes(1, "little")
-        nb_of_entries_per_cluster  = QCOW_CLUSTER_SIZE/8
+        nb_of_entries_per_cluster  = QCOW2_DEFAULT_CLUSTER_SIZE/8
         return list(zero * int(nb_of_entries_per_cluster/8))
 
     def _set_l2_zero(self, b, i):
@@ -423,7 +420,8 @@ class QCowUtil(CowUtil):
 
     @override
     def getBlockSize(self, path: str) -> int:
-        return QCOW_CLUSTER_SIZE
+        self._read_qcow2(path)
+        return 1 << self.header["cluster_bits"]
 
     @override
     def getFooterSize(self) -> int:
@@ -439,13 +437,13 @@ class QCowUtil(CowUtil):
 
     @override
     def calcOverheadEmpty(self, virtual_size: int) -> int:
-        size_l1 = QCOW_CLUSTER_SIZE
-        size_header = QCOW_CLUSTER_SIZE
-        size_l2 = (virtual_size * 8) / QCOW_CLUSTER_SIZE #It is only an estimation
+        size_l1 = QCOW2_DEFAULT_CLUSTER_SIZE
+        size_header = QCOW2_DEFAULT_CLUSTER_SIZE
+        size_l2 = (virtual_size * 8) / QCOW2_DEFAULT_CLUSTER_SIZE #It is only an estimation
 
         size = size_l1 + size_l2 + size_header
 
-        return util.roundup(QCOW_CLUSTER_SIZE, size)
+        return util.roundup(QCOW2_DEFAULT_CLUSTER_SIZE, size)
 
     @override
     def calcOverheadBitmap(self, virtual_size: int) -> int:
@@ -767,10 +765,12 @@ class QCowUtil(CowUtil):
             return allocated_blocks
 
     @override
-    def create(self, path: str, size: int, static: bool, msize: int = 0) -> None:
+    def create(self, path: str, size: int, static: bool, msize: int = 0, block_size: Optional[int] = None) -> None:
         cmd = [QEMU_IMG, "create", "-f", QCOW2_TYPE, path, str(size)]
         if static:
             cmd.extend(["-o", "preallocation=full"])
+        if block_size:
+            cmd.extend(["-o", f"cluster_size={str(block_size)}"])
         self._ioretry(cmd)
         self.setHidden(path, False) #We add hidden header at creation
 
@@ -783,11 +783,14 @@ class QCowUtil(CowUtil):
         msize: int = 0,
         checkEmpty: bool = True
     ) -> None:
-        parent_type = QCOW2_TYPE
         if parentRaw:
             parent_type = RAW_TYPE
-        # TODO: checkEmpty? If it is False, then the parent could be empty and should still be used for snapshot
-        cmd = [QEMU_IMG, "create", "-f", QCOW2_TYPE, "-b", parent, "-F", parent_type, path]
+            parent_cluster_size = QCOW2_DEFAULT_CLUSTER_SIZE
+        else:
+            parent_type = QCOW2_TYPE
+            parent_cluster_size = self.getBlockSize(parent)
+
+        cmd = [QEMU_IMG, "create", "-f", QCOW2_TYPE, "-b", parent, "-F", parent_type, "-o", f"cluster_size={parent_cluster_size}", path]
         self._ioretry(cmd)
         self.setHidden(path, False) #We add hidden header at creation
 
@@ -832,7 +835,7 @@ class QCowUtil(CowUtil):
                 opterr="VDI size must be between {} MB and {} MB".format(MIN_QCOW_SIZE // (1024*1024), MAX_QCOW_SIZE // (1024 * 1024))
             )
 
-        return util.roundup(QCOW_CLUSTER_SIZE, size)
+        return util.roundup(QCOW2_DEFAULT_CLUSTER_SIZE, size)
 
     @override
     def getKeyHash(self, path: str) -> Optional[str]:
