@@ -82,9 +82,9 @@ def calcOverheadEmpty(virtual_size):
     return overhead
 
 
-def calcOverheadBitmap(virtual_size):
-    num_blocks = virtual_size // VHD_BLOCK_SIZE
-    if virtual_size % VHD_BLOCK_SIZE:
+def calcOverheadBitmap(virtual_size, block_size):
+    num_blocks = virtual_size // block_size
+    if virtual_size % block_size:
         num_blocks += 1
     return num_blocks * 4096
 
@@ -93,10 +93,19 @@ def ioretry(cmd, text=True):
     return util.ioretry(lambda: util.pread2(cmd, text=text),
                         errlist=[errno.EIO, errno.EAGAIN])
 
+def getBlockSize(path):
+    cmd = [VHD_UTIL, "read", "-pn", path]
+    ret = ioretry(cmd)
+    fields = ret.strip().split('\n')
+    for field in fields:
+        field = field.strip()
+        if not field.startswith("Block size"): continue
+        return int(field.split(':')[1].strip().split(' ')[0])
+    return VHD_BLOCK_SIZE
 
-def convertAllocatedSizeToBytes(size):
-    # Assume we have standard 2MB allocation blocks
-    return size * 2 * 1024 * 1024
+
+def convertAllocatedSizeToBytes(size, block_size):
+    return size * block_size
 
 
 def getVHDInfo(path, extractUuidFunction, includeParent=True):
@@ -120,7 +129,10 @@ def getVHDInfo(path, extractUuidFunction, includeParent=True):
             vhdInfo.parentUuid = extractUuidFunction(fields[nextIndex])
         nextIndex += 1
     vhdInfo.hidden = int(fields[nextIndex].replace("hidden: ", ""))
-    vhdInfo.sizeAllocated = convertAllocatedSizeToBytes(int(fields[nextIndex+1]))
+    vhdInfo.sizeAllocated = convertAllocatedSizeToBytes(
+        int(fields[nextIndex+1]),
+        getBlockSize(path)
+    )
     vhdInfo.path = path
     return vhdInfo
 
@@ -279,7 +291,7 @@ def setSizePhys(path, size, debug=True):
 def getAllocatedSize(path):
     cmd = [VHD_UTIL, "query", OPT_LOG_ERR, '-a', '-n', path]
     ret = ioretry(cmd)
-    return convertAllocatedSizeToBytes(int(ret))
+    return convertAllocatedSizeToBytes(int(ret), getBlockSize(path))
 
 def killData(path):
     "zero out the disk (kill all data inside the VHD file)"
@@ -406,7 +418,7 @@ def repair(path):
     ioretry([VHD_UTIL, 'repair', '-n', path])
 
 
-def validate_and_round_vhd_size(size):
+def validate_and_round_vhd_size(size, block_size):
     """ Take the supplied vhd size, in bytes, and check it is positive and less
     that the maximum supported size, rounding up to the next block boundary
     """
@@ -419,7 +431,7 @@ def validate_and_round_vhd_size(size):
     if size < MIN_VHD_SIZE:
         size = MIN_VHD_SIZE
 
-    size = util.roundup(VHD_BLOCK_SIZE, size)
+    size = util.roundup(block_size, size)
 
     return size
 
