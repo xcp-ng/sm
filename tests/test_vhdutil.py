@@ -413,7 +413,12 @@ class TestVhdUtil(unittest.TestCase):
         context.add_executable(VHD_UTIL, test_function)
 
         # Act
-        result = vhdutil.getAllocatedSize(TEST_VHD_NAME)
+        result = 0
+        with unittest.mock.patch(
+                "sm.vhdutil.getBlockSize",
+                return_value=vhdutil.VHD_BLOCK_SIZE
+        ):
+            result = vhdutil.getAllocatedSize(TEST_VHD_NAME)
 
         # Assert
         self.assertEqual(18856*2*1024*1024, result)
