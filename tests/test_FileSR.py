@@ -327,6 +327,7 @@ class TestFileVDI(unittest.TestCase):
         vdi = FakeFileVDI(sr, vdi_uuid)
         vdi.vdi_type = vhdutil.VDI_TYPE_VHD
         mock_vhdutil.validate_and_round_vhd_size.side_effect = vhdutil.validate_and_round_vhd_size
+        mock_vhdutil.VHD_BLOCK_SIZE = 2 * 1024 * 1024
 
         # Act
         vdi.create(sr_uuid, vdi_uuid, 20 * 1024 * 1024)
