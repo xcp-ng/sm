@@ -1351,7 +1351,7 @@ class LVHDVDI(VDI.VDI):
 
         size = vhdutil.validate_and_round_vhd_size(
             int(size),
-            vhdutil.VHD_BLOCK_SIZE
+            vhdutil.DEFAULT_VHD_BLOCK_SIZE
         )
 
         util.SMlog("LVHDVDI.create: type = %s, %s (size=%s)" % \
@@ -1367,7 +1367,7 @@ class LVHDVDI(VDI.VDI):
             elif self.sr.provision == "thick":
                 lvSize = lvhdutil.calcSizeVHDLV(
                     int(size),
-                    vhdutil.VHD_BLOCK_SIZE
+                    vhdutil.DEFAULT_VHD_BLOCK_SIZE
                 )
 
         self.sr._ensureSpaceAvailable(lvSize)

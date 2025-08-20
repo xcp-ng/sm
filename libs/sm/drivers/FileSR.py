@@ -563,7 +563,7 @@ class FileVDI(VDI.VDI):
             try:
                 size = vhdutil.validate_and_round_vhd_size(
                     int(size),
-                    vhdutil.VHD_BLOCK_SIZE
+                    vhdutil.DEFAULT_VHD_BLOCK_SIZE
                 )
                 mb = 1024 * 1024
                 size_mb = size // mb

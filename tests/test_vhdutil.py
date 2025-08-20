@@ -22,7 +22,7 @@ class TestVhdUtil(unittest.TestCase):
     def test_validate_and_round_min_size(self):
         size = vhdutil.validate_and_round_vhd_size(
             2 * 1024 * 1024,
-            vhdutil.VHD_BLOCK_SIZE
+            vhdutil.DEFAULT_VHD_BLOCK_SIZE
         )
 
         self.assertTrue(size == 2 * 1024 * 1024)
@@ -30,7 +30,7 @@ class TestVhdUtil(unittest.TestCase):
     def test_validate_and_round_max_size(self):
         size = vhdutil.validate_and_round_vhd_size(
             vhdutil.MAX_VHD_SIZE,
-            vhdutil.VHD_BLOCK_SIZE
+            vhdutil.DEFAULT_VHD_BLOCK_SIZE
         )
 
         self.assertTrue(size == vhdutil.MAX_VHD_SIZE)
@@ -38,19 +38,19 @@ class TestVhdUtil(unittest.TestCase):
     def test_validate_and_round_odd_size_up_to_next_boundary(self):
         size = vhdutil.validate_and_round_vhd_size(
             vhdutil.MAX_VHD_SIZE - 1,
-            vhdutil.VHD_BLOCK_SIZE)
+            vhdutil.DEFAULT_VHD_BLOCK_SIZE)
 
         self.assertTrue(size == vhdutil.MAX_VHD_SIZE)
 
     def test_validate_and_round_negative(self):
         with self.assertRaises(xs_errors.SROSError):
-            vhdutil.validate_and_round_vhd_size(-1, vhdutil.VHD_BLOCK_SIZE)
+            vhdutil.validate_and_round_vhd_size(-1, vhdutil.DEFAULT_VHD_BLOCK_SIZE)
 
     def test_validate_and_round_too_large(self):
         with self.assertRaises(xs_errors.SROSError):
             vhdutil.validate_and_round_vhd_size(
                 vhdutil.MAX_VHD_SIZE + 1,
-                vhdutil.VHD_BLOCK_SIZE
+                vhdutil.DEFAULT_VHD_BLOCK_SIZE
             )
 
     @testlib.with_context
@@ -78,7 +78,7 @@ class TestVhdUtil(unittest.TestCase):
 
         result = vhdutil.calcOverheadBitmap(
             virtual_size,
-            vhdutil.VHD_BLOCK_SIZE
+            vhdutil.DEFAULT_VHD_BLOCK_SIZE
         )
 
         self.assertEqual(49152, result)
@@ -88,7 +88,7 @@ class TestVhdUtil(unittest.TestCase):
 
         result = vhdutil.calcOverheadBitmap(
             virtual_size,
-            vhdutil.VHD_BLOCK_SIZE
+            vhdutil.DEFAULT_VHD_BLOCK_SIZE
         )
 
         self.assertEqual(53248, result)
@@ -416,7 +416,7 @@ class TestVhdUtil(unittest.TestCase):
         result = 0
         with unittest.mock.patch(
                 "sm.vhdutil.getBlockSize",
-                return_value=vhdutil.VHD_BLOCK_SIZE
+                return_value=vhdutil.DEFAULT_VHD_BLOCK_SIZE
         ):
             result = vhdutil.getAllocatedSize(TEST_VHD_NAME)
 

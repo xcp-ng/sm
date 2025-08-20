@@ -30,7 +30,7 @@ MAX_VHD_JOURNAL_SIZE = 6 * 1024 * 1024  # 2MB VHD block size, max 2TB VHD size
 MAX_CHAIN_SIZE = 30  # max VHD parent chain size
 VHD_UTIL = "/usr/bin/vhd-util"
 OPT_LOG_ERR = "--debug"
-VHD_BLOCK_SIZE = 2 * 1024 * 1024
+DEFAULT_VHD_BLOCK_SIZE = 2 * 1024 * 1024
 VHD_FOOTER_SIZE = 512
 
 # lock to lock the entire SR for short ops
@@ -99,7 +99,7 @@ def getBlockSize(path):
         ret = ioretry(cmd)
     except util.CommandException as e:
         util.SMlog("WARN: unable to fetch block size: {}".format(e))
-        return VHD_BLOCK_SIZE
+        return DEFAULT_VHD_BLOCK_SIZE
     if isinstance(ret, bytes):
         import locale
         ret = ret.decode(
@@ -111,7 +111,7 @@ def getBlockSize(path):
         field = field.strip()
         if not field.startswith("Block size"): continue
         return int(field.split(':')[1].strip().split(' ')[0])
-    return VHD_BLOCK_SIZE
+    return DEFAULT_VHD_BLOCK_SIZE
 
 
 def convertAllocatedSizeToBytes(size, block_size):
