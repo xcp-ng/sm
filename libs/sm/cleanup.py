@@ -2787,8 +2787,7 @@ class LVHDSR(SR):
             parent.deflate()
 
     def _calcExtraSpaceNeeded(self, child, parent):
-        return lvhdutil.calcSizeVHDLV(parent.sizeVirt, parent.block_size) - \
-            parent.sizeLV
+        return lvhdutil.calcSizeVHDLV(parent.sizeVirt, parent.block_size) - parent.sizeLV
 
     def _handleInterruptedCoalesceLeaf(self):
         entries = self.journaler.getAll(VDI.JRN_LEAF)
