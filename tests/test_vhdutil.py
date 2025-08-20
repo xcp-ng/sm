@@ -393,10 +393,14 @@ class TestVhdUtil(unittest.TestCase):
 
         context.add_executable(VHD_UTIL, test_function)
         from sm.drivers import FileSR
-        vhdinfo = vhdutil.getVHDInfo(TEST_VHD_PATH, FileSR.FileVDI.extractUuid)
+        with unittest.mock.patch(
+                "sm.vhdutil.getBlockSize",
+                return_value=vhdutil.DEFAULT_VHD_BLOCK_SIZE
+        ):
+            vhdinfo = vhdutil.getVHDInfo(TEST_VHD_PATH, FileSR.FileVDI.extractUuid)
 
-        # Act/Assert
-        self.assertEqual(18856*2*1024*1024 , vhdinfo.sizeAllocated)
+            # Act/Assert
+            self.assertEqual(18856*2*1024*1024 , vhdinfo.sizeAllocated)
 
     @testlib.with_context
     def test_get_allocated_size(self, context):
