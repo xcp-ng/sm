@@ -4033,6 +4033,18 @@ def start_gc(session, sr_uuid):
     subprocess.run([__file__, '-b', '-u', sr_uuid, '-g'],
                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, close_fds=True)
 
+def _gc_service_cmd(sr_uuid, action, extra_args=None):
+    """
+    Build and run the systemctl command for the GC service using util.doexec.
+    """
+    sr_uuid_esc = sr_uuid.replace("-", "\\x2d")
+    cmd=[ "/usr/bin/systemctl", "--quiet" ]
+    if extra_args:
+        cmd.extend(extra_args)
+    cmd += [action, f"SMGC@{sr_uuid_esc}"]
+    return util.doexec(cmd)
+
+
 def start_gc_service(sr_uuid, wait=False):
     """
     This starts the templated systemd service which runs GC on the given SR UUID.
@@ -4043,26 +4055,18 @@ def start_gc_service(sr_uuid, wait=False):
     run has finished. This is used to force a run of the GC instead of just kicking it
     in the background.
     """
-    sr_uuid_esc = sr_uuid.replace("-", "\\x2d")
     util.SMlog(f"Kicking SMGC@{sr_uuid}...")
-    cmd=[ "/usr/bin/systemctl", "--quiet" ]
-    if not wait:
-        cmd.append("--no-block")
-    cmd += ["start", f"SMGC@{sr_uuid_esc}"]
-    subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, close_fds=True)
+    _gc_service_cmd(sr_uuid, "start", extra_args=None if wait else ["--no-block"])
 
 
 def stop_gc_service(sr_uuid):
     """
     Stops the templated systemd service which runs GC on the given SR UUID.
     """
-    sr_uuid_esc = sr_uuid.replace("-", "\\x2d")
     util.SMlog(f"Stopping SMGC@{sr_uuid}...")
-    cmd = ["/usr/bin/systemctl", "--quiet", "stop", f"SMGC@{sr_uuid_esc}"]
-    try:
-        subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, close_fds=True, check=True)
-    except subprocess.CalledProcessError as e:
-        util.SMlog(f"Failed to stop gc service `SMGC@{sr_uuid_esc}`: `{e.stderr.decode().strip()}`")
+    (rc, _stdout, stderr) = _gc_service_cmd(sr_uuid, "stop")
+    if rc != 0:
+        util.SMlog(f"Failed to stop gc service `SMGC@{sr_uuid}`: `{stderr}`")
 
 def gc_force(session, srUuid, force=False, dryRun=False, lockSR=False):
     """Garbage collect all deleted VDIs in SR "srUuid". The caller must ensure
