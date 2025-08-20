@@ -95,23 +95,18 @@ def ioretry(cmd, text=True):
 
 def getBlockSize(path):
     cmd = [VHD_UTIL, "read", "-pn", path]
-    try:
-        ret = ioretry(cmd)
-    except util.CommandException as e:
-        util.SMlog("WARN: unable to fetch block size: {}".format(e))
-        return DEFAULT_VHD_BLOCK_SIZE
+    ret = ioretry(cmd)
     if isinstance(ret, bytes):
         import locale
         ret = ret.decode(
             encoding = locale.getpreferredencoding(False),
             errors="replace"
         )
-    fields = ret.strip().split('\n')
-    for field in fields:
-        field = field.strip()
+    for field in ret.split('\n'):
+        field = field.lstrip()
         if not field.startswith("Block size"): continue
-        return int(field.split(':')[1].strip().split(' ')[0])
-    return DEFAULT_VHD_BLOCK_SIZE
+        return int(field.split(':')[1].lstrip().split()[0])
+    raise util.SMException("Unable to find block size in VHD with path: {}".format(path))
 
 
 def convertAllocatedSizeToBytes(size, block_size):
