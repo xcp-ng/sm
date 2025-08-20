@@ -430,3 +430,22 @@ class TestVhdUtil(unittest.TestCase):
             [VHD_UTIL, "query", "--debug", "-a",
              "-n", TEST_VHD_NAME],
             call_args)
+
+    @testlib.with_context
+    def test_get_block_size(self, context):
+        """
+        Test that vhdutil.getBlockSize returns the block size in bytes
+        """
+
+        # Arrange
+        call_args = None
+
+        def test_function(args, inp):
+            nonlocal call_args
+            call_args = args
+            return 0, "Header version: 0x00010000\nBlock size: {} (2 MB)".format(vhdutil.DEFAULT_VHD_BLOCK_SIZE), ""
+
+        context.add_executable(VHD_UTIL, test_function)
+
+        # Act/Assert
+        self.assertEqual(vhdutil.DEFAULT_VHD_BLOCK_SIZE, vhdutil.getBlockSize(TEST_VHD_NAME))
