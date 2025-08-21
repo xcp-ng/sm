@@ -4038,7 +4038,7 @@ def _gc_service_cmd(sr_uuid, action, extra_args=None):
     Build and run the systemctl command for the GC service using util.doexec.
     """
     sr_uuid_esc = sr_uuid.replace("-", "\\x2d")
-    cmd=[ "/usr/bin/systemctl", "--quiet" ]
+    cmd=["/usr/bin/systemctl", "--quiet"]
     if extra_args:
         cmd.extend(extra_args)
     cmd += [action, f"SMGC@{sr_uuid_esc}"]
