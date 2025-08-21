@@ -3960,6 +3960,7 @@ def abort(srUuid, soft=False):
     """Abort GC/coalesce if we are currently GC'ing or coalescing a VDI pair.
     """
     if _abort(srUuid, soft):
+        stop_gc_service(srUuid)
         Util.log("abort: releasing the process lock")
         lockGCActive.release()
         return True

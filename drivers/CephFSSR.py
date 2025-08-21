@@ -216,7 +216,6 @@ class CephFSSR(FileSR.FileSR):
         self.unmount(self.mountpoint, True)
         os.unlink(self.path)
         self.attached = False
-        cleanup.stop_gc_service(sr_uuid)
 
     @override
     def create(self, sr_uuid, size) -> None:

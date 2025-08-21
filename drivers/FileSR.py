@@ -197,7 +197,6 @@ class FileSR(SR.SR):
             except Exception as e:
                 raise xs_errors.XenError('SRInUse', opterr=str(e))
         self.attached = False
-        cleanup.stop_gc_service(sr_uuid)
 
     @override
     def scan(self, sr_uuid) -> None:

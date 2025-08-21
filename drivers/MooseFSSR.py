@@ -210,7 +210,6 @@ class MooseFSSR(FileSR.FileSR):
         os.chdir(SR.MOUNT_BASE)
         self.unmount(self.mountpoint, True)
         self.attached = False
-        cleanup.stop_gc_service(sr_uuid)
 
     @override
     def create(self, sr_uuid, size) -> None:
