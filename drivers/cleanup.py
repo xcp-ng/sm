@@ -769,7 +769,15 @@ class VDI(object):
 
     def updateBlockInfo(self) -> Optional[str]:
         val = base64.b64encode(self._queryCowBlocks()).decode()
-        self.setConfig(VDI.DB_VDI_BLOCKS, val)
+        try:
+            self.setConfig(VDI.DB_VDI_BLOCKS, val)
+        except Exception:
+            if self.vdi_type != VdiType.QCOW2:
+                raise
+            # Sometime with QCOW2, our allocation table is too big to be stored in XAPI, in this case we do not store it
+            # and we write `skipped` instead so that hasWork is happy (and the GC doesn't run in loop indefinitely).
+            self.setConfig(VDI.DB_VDI_BLOCKS, "skipped")
+
         return val
 
     def rename(self, uuid) -> None:
