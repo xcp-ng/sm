@@ -15,6 +15,7 @@ import util
 import xs_errors
 import XenAPI
 
+from vditype import VdiType
 
 class BogusException(Exception):
     pass
@@ -137,7 +138,7 @@ class TestVDI(unittest.TestCase):
             autospec='blktap2.VDI.TargetDriver')
         mock_target.return_value = self.mock_target
 
-        self.mock_target.get_vdi_type.return_value = 'phy'
+        self.mock_target.get_vdi_type.return_value = VdiType.RAW
 
         def mock_handles(type_str):
             return type_str == 'udev'
