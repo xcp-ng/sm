@@ -101,7 +101,10 @@ def linstorhostcall(local_method, remote_method):
             remote_args.update(**kwargs)
             remote_args = {str(key): str(value) for key, value in remote_args.items()}
 
+            this_host_ref = util.get_this_host_ref(self._session)
             def call_method(host_label, host_ref):
+                if host_ref == this_host_ref:
+                    return self._call_local_method(local_method, device_path, *args[2:], **kwargs)
                 response = call_remote_method(self._session, host_ref, remote_method, remote_args)
                 log_successful_call(host_label, device_path, vdi_uuid, remote_method, response)
                 return response_parser(self, vdi_uuid, response)
