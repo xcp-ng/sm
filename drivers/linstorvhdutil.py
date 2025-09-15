@@ -75,23 +75,14 @@ class NoPathLinstorCallException(LinstorCallException):
     pass
 
 def log_successful_call(target_host, device_path, vdi_uuid, remote_method, response):
-    util.SMlog(
-        'Successful access on {} for device {} ({}): `{}` => {}'.format(target_host, device_path, vdi_uuid, remote_method, str(response)),
-        priority=util.LOG_DEBUG
-    )
+    util.SMlog('Successful access on {} for device {} ({}): `{}` => {}'.format(
+        target_host, device_path, vdi_uuid, remote_method, str(response)
+    ), priority=util.LOG_DEBUG)
 
 def log_failed_call(target_host, next_target, device_path, vdi_uuid, remote_method, e):
-    util.SMlog(
-        'Failed to call method on {} for device {} ({}): {}. Trying accessing on {}... (cause: {})'.format(
-            target_host,
-            device_path,
-            vdi_uuid,
-            remote_method,
-            next_target,
-            e
-        ),
-        priority=util.LOG_DEBUG
-    )
+    util.SMlog('Failed to call method on {} for device {} ({}): {}. Trying accessing on {}... (cause: {})'.format(
+        target_host, device_path, vdi_uuid, remote_method, next_target, e
+    ), priority=util.LOG_DEBUG)
 
 def linstorhostcall(local_method, remote_method):
     def decorated(response_parser):
@@ -110,52 +101,44 @@ def linstorhostcall(local_method, remote_method):
             remote_args.update(**kwargs)
             remote_args = {str(key): str(value) for key, value in remote_args.items()}
 
+            def call_method(host_label, host_ref):
+                response = call_remote_method(self._session, host_ref, remote_method, remote_args)
+                log_successful_call(host_label, device_path, vdi_uuid, remote_method, response)
+                return response_parser(self, vdi_uuid, response)
+
+            # 1. Try on attached host.
             try:
                 host_ref_attached = next(iter(util.get_hosts_attached_on(self._session, [vdi_uuid])), None)
                 if host_ref_attached:
-                    response = call_remote_method(
-                        self._session, host_ref_attached, remote_method, device_path, remote_args
-                    )
-                    log_successful_call('attached node', device_path, vdi_uuid, remote_method, response)
-                    return response_parser(self, vdi_uuid, response)
+                    return call_method('attached host', host_ref_attached)
             except Exception as e:
-                log_failed_call('attached node', 'master', device_path, vdi_uuid, remote_method, e)
+                log_failed_call('attached host', 'master', device_path, vdi_uuid, remote_method, e)
 
+            # 2. Try on master host.
             try:
-                master_ref = util.get_master_ref(self._session)
-                response = call_remote_method(self._session, master_ref, remote_method, device_path, remote_args)
-                log_successful_call('master', device_path, vdi_uuid, remote_method, response)
-                return response_parser(self, vdi_uuid, response)
+                return call_method('master', util.get_master_ref(self._session))
             except Exception as e:
                 log_failed_call('master', 'primary', device_path, vdi_uuid, remote_method, e)
 
+            # 3. Try on a primary.
+            hosts = self._get_hosts(remote_method, device_path)
 
             nodes, primary_hostname = self._linstor.find_up_to_date_diskful_nodes(vdi_uuid)
             if primary_hostname:
                 try:
-                    host_ref = self._get_readonly_host(vdi_uuid, device_path, {primary_hostname})
-                    response = call_remote_method(self._session, host_ref, remote_method, device_path, remote_args)
-                    log_successful_call('primary', device_path, vdi_uuid, remote_method, response)
-                    return response_parser(self, vdi_uuid, response)
+                    return call_method('primary', self._find_host_ref_from_hostname(hosts, primary_hostname))
                 except Exception as remote_e:
                     self._raise_openers_exception(device_path, remote_e)
-            else:
-                log_failed_call(
-                    'primary',
-                    'another node',
-                    device_path,
-                    vdi_uuid,
-                    remote_method,
-                    'no primary'
-                )
 
-                try:
-                    host = self._get_readonly_host(vdi_uuid, device_path, nodes)
-                    response = call_remote_method(self._session, host, remote_method, device_path, remote_args)
-                    log_successful_call('another node', device_path, vdi_uuid, remote_method, response)
-                    return response_parser(self, vdi_uuid, response)
-                except Exception as remote_e:
-                    self._raise_openers_exception(device_path, remote_e)
+            log_failed_call('primary', 'another node', device_path, vdi_uuid, remote_method, 'no primary')
+
+            # 4. Try on any host with local data.
+            try:
+                return call_method('another node', next(filter(None,
+                    (self._find_host_ref_from_hostname(hosts, hostname) for hostname in nodes)
+                ), None))
+            except Exception as remote_e:
+                self._raise_openers_exception(device_path, remote_e)
 
         return wrapper
     return decorated
@@ -463,34 +446,21 @@ class LinstorVhdUtil:
             device_path.rstrip('\n')
         )
 
-    def _get_readonly_host(self, vdi_uuid, device_path, node_names):
-        """
-        When vhd-util is called to fetch VDI info we must find a
-        diskful DRBD disk to read the data. It's the goal of this function.
-        Why? Because when a VHD is open in RO mode, the LVM layer is used
-        directly to bypass DRBD verifications (we can have only one process
-        that reads/writes to disk with DRBD devices).
-        """
-
-        if not node_names:
+    def _get_hosts(self, remote_method, device_path):
+        try:
+            return self._session.xenapi.host.get_all_records()
+        except Exception as e:
             raise xs_errors.XenError(
                 'VDIUnavailable',
-                opterr='Unable to find diskful node: {} (path={})'
-                .format(vdi_uuid, device_path)
+                opterr='Unable to get host list to run vhdutil command `{}` (path={}): {}'
+                .format(remote_method, device_path, e)
             )
 
-        hosts = self._session.xenapi.host.get_all_records()
-        for host_ref, host_record in hosts.items():
-            if host_record['hostname'] in node_names:
-                return host_ref
-
-        raise xs_errors.XenError(
-            'VDIUnavailable',
-            opterr='Unable to find a valid host from VDI: {} (path={})'
-            .format(vdi_uuid, device_path)
-        )
-
     # --------------------------------------------------------------------------
+
+    @staticmethod
+    def _find_host_ref_from_hostname(hosts, hostname):
+        return next((ref for ref, rec in hosts.items() if rec['hostname'] == hostname), None)
 
     def _raise_openers_exception(self, device_path, e):
         if isinstance(e, util.CommandException):
@@ -560,14 +530,7 @@ class LinstorVhdUtil:
 
         # B. Execute the command on another host.
         # B.1. Get host list.
-        try:
-            hosts = self._session.xenapi.host.get_all_records()
-        except Exception as e:
-            raise xs_errors.XenError(
-                'VDIUnavailable',
-                opterr='Unable to get host list to run vhd-util command `{}` (path={}): {}'
-                .format(remote_method, device_path, e)
-            )
+        hosts = self._get_hosts(remote_method, device_path)
 
         # B.2. Prepare remote args.
         remote_args = {
@@ -602,9 +565,8 @@ class LinstorVhdUtil:
                 if not openers:
                     continue
 
-                try:
-                    host_ref = next(ref for ref, rec in hosts.items() if rec['hostname'] == hostname)
-                except StopIteration:
+                host_ref = self._find_host_ref_from_hostname(hosts, hostname)
+                if not host_ref:
                     continue
 
                 no_host_found = False
