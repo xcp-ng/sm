@@ -111,7 +111,7 @@ def linstorhostcall(local_method, remote_method):
             remote_args = {str(key): str(value) for key, value in remote_args.items()}
 
             try:
-                host_ref_attached = next(iter(util.get_hosts_attached_on(self._session, [vdi_uuid])))
+                host_ref_attached = next(iter(util.get_hosts_attached_on(self._session, [vdi_uuid])), None)
                 if host_ref_attached:
                     response = call_remote_method(
                         self._session, host_ref_attached, remote_method, device_path, remote_args
