@@ -94,6 +94,9 @@ def linstorhostcall(local_method, remote_method):
                 self._linstor.get_volume_name(vdi_uuid)
             )
 
+            if not self._session:
+                return self._call_local_method(local_method, device_path, *args[2:], **kwargs)
+
             remote_args = {
                 'devicePath': device_path,
                 'groupName': self._linstor.group_name
