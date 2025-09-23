@@ -72,8 +72,7 @@ class LargeBlockSR(EXTSR.EXTSR):
             vg_device = self._get_device()
             self.dconf["device"] = ",".join(vg_device)
             self._create_emulated_device()
-            if not self._is_vg_connection_correct(): # Check if we need to redo the connection by parsing `vgs -o vg_name,devices self.vgname`
-                self._redo_vg_connection() # Call redo VG connection to connect it correctly to the loop device instead of the real 4KiB block device
+            self._redo_vg_connection() # Call redo VG connection to connect it correctly to the loop device instead of the real 4KiB block device
         super(LargeBlockSR, self).attach(sr_uuid)
 
     @override
@@ -187,7 +186,7 @@ class LargeBlockSR(EXTSR.EXTSR):
 
     def _get_device_from_vg(self):
         devices = []
-        output = util.pread2(["vgs", "--noheadings", "-o", "vg_name,devices", self.vgname]).splitlines()
+        output = util.pread2(["vgs", "--noheadings", "-o", "vg_name,devices", self.vgname, "--config", "devices{scan=[\"/dev/\"]}"]).splitlines()
         for line in output:
             line = line.split()
             dev = line[1].split("(")[0]
@@ -207,11 +206,6 @@ class LargeBlockSR(EXTSR.EXTSR):
 
         return vg_device
 
-    def _is_vg_connection_correct(self):
-        output = util.pread2(["vgs", "--noheadings", "-o", "vg_name,devices", self.vgname]).split()
-        output[1] = output[1].split("(")[0]
-        return bool(re.match(r"(.*\.512)|(/dev/loop[0-9]+)", output[1]))
-
     def _redo_vg_connection(self):
         """
         In case of using a LargeBlockSR, the LVM scan at boot will find the LogicalVolume on the real block device.
@@ -224,7 +218,7 @@ class LargeBlockSR(EXTSR.EXTSR):
         util.SMlog("Reconnecting VG {} to use emulated device".format(self.vgname))
         try:
             lvutil.setActiveVG(self.vgname, False)
-            lvutil.setActiveVG(self.vgname, True, config="devices{ global_filter = [ \"a|/dev/loop.*|\", \"r|.*|\" ] }")
+            lvutil.setActiveVG(self.vgname, True, config="devices{ scan = [\"/dev/\"] global_filter = [ \"a|/dev/loop.*|\", \"r|.*|\" ] }")
         except util.CommandException as e:
             xs_errors.XenError("LargeBlockVGReconnectFailed", opterr="Failed to reconnect the VolumeGroup {}, error: {}".format(self.vgname, e))
 
