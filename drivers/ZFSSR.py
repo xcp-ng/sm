@@ -120,7 +120,7 @@ class ZFSSR(FileSR.FileSR):
         return super(ZFSSR, self).detach(sr_uuid)
 
     @override
-    def vdi(self, uuid, loadLocked=False) -> VDI.VDI:
+    def vdi(self, uuid) -> VDI.VDI:
         return ZFSFileVDI(self, uuid)
 
     # Ensure _checkmount is overridden to prevent bad behaviors in FileSR.
