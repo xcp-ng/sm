@@ -278,7 +278,7 @@ class MooseFSSR(FileSR.FileSR):
                 raise xs_errors.SROSError(114, "Failed to remove MooseFS mount point")
 
     @override
-    def vdi(self, uuid, loadLocked=False) -> VDI.VDI:
+    def vdi(self, uuid) -> VDI.VDI:
         return MooseFSFileVDI(self, uuid)
 
     @staticmethod

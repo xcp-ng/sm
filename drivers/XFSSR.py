@@ -235,7 +235,7 @@ class XFSSR(FileSR.FileSR):
                   scsiutil.devlist_to_serialstring(self.dconf['device'].split(',')))
 
     @override
-    def vdi(self, uuid, loadLocked = False) -> VDI.VDI:
+    def vdi(self, uuid) -> VDI.VDI:
         return XFSFileVDI(self, uuid)
 
     @staticmethod

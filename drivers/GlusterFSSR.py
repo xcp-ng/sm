@@ -249,7 +249,7 @@ class GlusterFSSR(FileSR.FileSR):
                 raise xs_errors.SROSError(114, "Failed to remove GlusterFS mount point")
 
     @override
-    def vdi(self, uuid, loadLocked=False) -> VDI.VDI:
+    def vdi(self, uuid) -> VDI.VDI:
         return GlusterFSFileVDI(self, uuid)
 
     @staticmethod
