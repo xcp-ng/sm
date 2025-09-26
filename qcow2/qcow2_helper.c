@@ -58,7 +58,8 @@ uint64_t* get_l1_offset(struct qcow2_header* header, int fd){
 
     err = pread(fd, raw_l1, l1_table_size, l1_offset);
     if(err < 0){
-        fprintf(stderr, "Couldn't read L1 table\n");
+        fprintf(stderr, "Couldn't read L1 table: %s (%d)\n",
+                strerror(errno), errno);
         free(raw_l1);
         return NULL;
     }
