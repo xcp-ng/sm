@@ -758,11 +758,20 @@ class QCowUtil(CowUtil):
 
     @override
     def coalesce(self, path: str) -> int:
-            allocated_blocks = self.getAllocatedSize(path)
             # -d on commit make it not empty the original image since we don't intend to keep it
             cmd = [QEMU_IMG, "commit", "-f", QCOW2_TYPE, path, "-d"]
-            ret = cast(str, self._ioretry(cmd)) #TODO: parse for byte coalesced, our qemu-img is supposed to be patched to output it.
-            return allocated_blocks
+            ret = cast(str, self._ioretry(cmd)) # Allows to parse for byte coalesced, our qemu-img is supposed to be patched to output it.
+            lines = ret.splitlines()
+            if re.match("Image committed.", lines[-1]):
+                res_line = lines[-2]
+            else:
+                res_line = lines[-1]
+
+            results = re.match(r"\((\d+)/(\d+)\)", res_line)
+            if results:
+                committed_bytes = int(results.group(1))
+                return committed_bytes
+            raise xs_errors.XenError("TapdiskFailed", "Couldn't get commited size from qemu-img commit call") # TODO: We might not want to raise in this case, it would break if the qemu-img called isn't modified to print the coalesce result even if it succeeded in coalesceing
 
     @override
     def create(self, path: str, size: int, static: bool, msize: int = 0, block_size: Optional[int] = None) -> None:
