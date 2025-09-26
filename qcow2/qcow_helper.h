@@ -14,6 +14,8 @@
 #define CLUSTER_TYPE_BIT (1UL << 62) /* 0 for standard, 1 for compressed cluster */
 #define ALLOCATED_ENTRY_BIT (1UL << 63) /* Bit 63 is the allocated bit for standard cluster */
 
+/* Incompatible features */
+#define INCOMPATIBLE_FEATURE_EXTENDED_L2 0x0010
 
 struct qcow2_header {
     uint32_t magic;
@@ -37,12 +39,6 @@ struct qcow2_header {
 
     uint32_t refcount_order;
     uint32_t header_length;
-
-    /* Additional fields */
-    uint8_t compression_type;
-
-    /* header must be a multiple of 8 */
-    uint8_t padding[7];
 } __attribute__((packed));
 
 #define SWAP_BE_TO_LE(size, x) \
