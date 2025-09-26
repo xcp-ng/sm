@@ -73,6 +73,7 @@ uint64_t* get_l1_offset(struct qcow2_header* header, int fd){
 
 uint64_t* get_l2_table(struct qcow2_header* header, int fd, uint64_t offset){
     int i;
+    ssize_t bytes_read;
     uint64_t* raw_l2 = NULL;
     uint64_t cluster_size = (1 << header->cluster_bits);
     uint64_t nb_l2_entries = (cluster_size / sizeof(uint64_t));
@@ -83,7 +84,13 @@ uint64_t* get_l2_table(struct qcow2_header* header, int fd, uint64_t offset){
         return NULL;
     }
 
-    pread(fd, raw_l2, cluster_size, offset);
+    bytes_read = pread(fd, raw_l2, cluster_size, offset);
+    if (bytes_read == -1) {
+        fprintf(stderr, "Couldn't read L2 table: %s (%d)\n",
+                strerror(errno), errno);
+        free(raw_l2);
+        return NULL;
+    }
 
     for(i = 0; i < nb_l2_entries; i++){
         raw_l2[i] = __builtin_bswap64(raw_l2[i]);
