@@ -37,12 +37,6 @@ struct qcow2_header {
 
     uint32_t refcount_order;
     uint32_t header_length;
-
-    /* Additional fields */
-    uint8_t compression_type;
-
-    /* header must be a multiple of 8 */
-    uint8_t padding[7];
 } __attribute__((packed));
 
 #define SWAP_BE_TO_LE(size, x) \
