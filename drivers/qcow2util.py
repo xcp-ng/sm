@@ -18,7 +18,7 @@ from constants import NS_PREFIX_LVM, VG_PREFIX
 
 MAX_QCOW_CHAIN_LENGTH: Final = 30
 
-QCOW2_DEFAULT_CLUSTER_SIZE: Final = 64 * 1024 # 64 KiB
+QCOW2_DEFAULT_CLUSTER_SIZE: Final = 16 * 1024 # 16 KiB
 
 MIN_QCOW_SIZE: Final = QCOW2_DEFAULT_CLUSTER_SIZE
 
@@ -775,11 +775,12 @@ class QCowUtil(CowUtil):
 
     @override
     def create(self, path: str, size: int, static: bool, msize: int = 0, block_size: Optional[int] = None) -> None:
-        cmd = [QEMU_IMG, "create", "-f", QCOW2_TYPE, path, str(size)]
+        cmd = [QEMU_IMG, "create", "-f", QCOW2_TYPE, path, str(size), "-o", "extended_l2=on"]
         if static:
             cmd.extend(["-o", "preallocation=full"])
-        if block_size:
-            cmd.extend(["-o", f"cluster_size={str(block_size)}"])
+        if not block_size:
+            block_size = QCOW2_DEFAULT_CLUSTER_SIZE
+        cmd.extend(["-o", f"cluster_size={str(block_size)}"])
         self._ioretry(cmd)
         self.setHidden(path, False) #We add hidden header at creation
 
@@ -799,7 +800,7 @@ class QCowUtil(CowUtil):
             parent_type = QCOW2_TYPE
             parent_cluster_size = self.getBlockSize(parent)
 
-        cmd = [QEMU_IMG, "create", "-f", QCOW2_TYPE, "-b", parent, "-F", parent_type, "-o", f"cluster_size={parent_cluster_size}", path]
+        cmd = [QEMU_IMG, "create", "-f", QCOW2_TYPE, "-b", parent, "-F", parent_type, "-o", f"extended_l2=on,cluster_size={parent_cluster_size}", path]
         self._ioretry(cmd)
         self.setHidden(path, False) #We add hidden header at creation
 
