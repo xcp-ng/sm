@@ -356,7 +356,8 @@ class VhdUtil(CowUtil):
         parent: str,
         parentRaw: bool,
         msize: int = 0,
-        checkEmpty: bool = True
+        checkEmpty: bool = True,
+        is_mirror_image: bool = False
     ) -> None:
         cmd = [VHD_UTIL, "snapshot", OPT_LOG_ERR, "-n", path, "-p", parent]
         if parentRaw:

@@ -1673,7 +1673,7 @@ class LVMVDI(VDI.VDI):
 
     @override
     def _do_snapshot(self, sr_uuid, vdi_uuid, snapType,
-                     cloneOp=False, secondary=None, cbtlog=None) -> str:
+                     cloneOp=False, secondary=None, cbtlog=None, is_mirror_destination=False) -> str:
         # If cbt enabled, save file consistency state
         if cbtlog is not None:
             if blktap2.VDI.tap_status(self.session, vdi_uuid):
@@ -1691,7 +1691,7 @@ class LVMVDI(VDI.VDI):
 
         snapResult = None
         try:
-            snapResult = self._snapshot(snapType, cloneOp, cbtlog, consistency_state)
+            snapResult = self._snapshot(snapType, cloneOp, cbtlog, consistency_state, is_mirror_destination)
         except Exception as e1:
             try:
                 blktap2.VDI.tap_unpause(self.session, sr_uuid, vdi_uuid,
@@ -1708,7 +1708,7 @@ class LVMVDI(VDI.VDI):
                        (unpause_time - pause_time))
         return snapResult
 
-    def _snapshot(self, snapType, cloneOp=False, cbtlog=None, cbt_consistency=None):
+    def _snapshot(self, snapType, cloneOp=False, cbtlog=None, cbt_consistency=None, is_mirror_destination=False):
         util.SMlog("LVMVDI._snapshot for %s (type %s)" % (self.uuid, snapType))
 
         if not self.sr.isMaster:
@@ -1813,7 +1813,7 @@ class LVMVDI(VDI.VDI):
                 self.utilisation = lvSizeBase
             util.fistpoint.activate("LVHDRT_clone_vdi_after_shrink_parent", self.sr.uuid)
 
-            snapVDI = self._createSnap(origUuid, snapVdiType, lvSizeOrig, False)
+            snapVDI = self._createSnap(origUuid, snapVdiType, lvSizeOrig, False, is_mirror_destination)
             util.fistpoint.activate("LVHDRT_clone_vdi_after_first_snap", self.sr.uuid)
             snapVDI2 = None
             if snapType == VDI.SNAPSHOT_DOUBLE:
@@ -1865,7 +1865,7 @@ class LVMVDI(VDI.VDI):
 
         return self._finishSnapshot(snapVDI, snapVDI2, hostRefs, cloneOp, snapType)
 
-    def _createSnap(self, snapUuid, snapVdiType, snapSizeLV, isNew):
+    def _createSnap(self, snapUuid, snapVdiType, snapSizeLV, isNew, is_mirror_destination=False):
         """Snapshot self and return the snapshot VDI object"""
 
         snapLV = LV_PREFIX[snapVdiType] + snapUuid
@@ -1877,7 +1877,7 @@ class LVMVDI(VDI.VDI):
         self.sr.lvActivator.add(snapUuid, snapLV, False)
         parentRaw = (self.vdi_type == VdiType.RAW)
         self.cowutil.snapshot(
-            snapPath, self.path, parentRaw, max(self.size, self.cowutil.getDefaultPreallocationSizeVirt())
+            snapPath, self.path, parentRaw, max(self.size, self.cowutil.getDefaultPreallocationSizeVirt()), is_mirror_image=is_mirror_destination
         )
         snapParent = self.cowutil.getParent(snapPath, LvmCowUtil.extractUuid)
 
