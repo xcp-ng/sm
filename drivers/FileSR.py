@@ -757,7 +757,7 @@ class FileVDI(VDI.VDI):
 
     @override
     def _do_snapshot(self, sr_uuid, vdi_uuid, snapType,
-                     cloneOp=False, secondary=None, cbtlog=None) -> str:
+                     cloneOp=False, secondary=None, cbtlog=None, is_mirror_destination=False) -> str:
         # If cbt enabled, save file consistency state
         if cbtlog is not None:
             if blktap2.VDI.tap_status(self.session, vdi_uuid):
@@ -775,7 +775,7 @@ class FileVDI(VDI.VDI):
         if not blktap2.VDI.tap_pause(self.session, sr_uuid, vdi_uuid):
             raise util.SMException("failed to pause VDI %s" % vdi_uuid)
         try:
-            return self._snapshot(snapType, cbtlog, consistency_state)
+            return self._snapshot(snapType, cbtlog, consistency_state, is_mirror_destination)
         finally:
             self.disable_leaf_on_secondary(vdi_uuid, secondary=secondary)
             blktap2.VDI.tap_unpause(self.session, sr_uuid, vdi_uuid, secondary)
@@ -802,7 +802,7 @@ class FileVDI(VDI.VDI):
     def __fist_enospace(self):
         raise util.CommandException(28, "cowutil snapshot", reason="No space")
 
-    def _snapshot(self, snap_type, cbtlog=None, cbt_consistency=None):
+    def _snapshot(self, snap_type, cbtlog=None, cbt_consistency=None, is_mirror_destination=False):
         util.SMlog("FileVDI._snapshot for %s (type %s)" % (self.uuid, snap_type))
 
         args = []
@@ -854,7 +854,7 @@ class FileVDI(VDI.VDI):
             util.fistpoint.activate_custom_fn(
                 "FileSR_fail_snap1",
                 self.__fist_enospace)
-            util.ioretry(lambda: self._snap(tmpsrc, newsrcname))
+            util.ioretry(lambda: self._snap(tmpsrc, newsrcname, is_mirror_destination))
             # SMB3 can return EACCES if we attempt to rename over the
             # hardlink leaf too quickly after creating it.
             util.ioretry(lambda: self._rename(tmpsrc, src),
@@ -973,8 +973,8 @@ class FileVDI(VDI.VDI):
                   opterr='VDI %s unavailable %s' % (self.uuid, self.path))
         return super(FileVDI, self).get_params()
 
-    def _snap(self, child, parent):
-        self.cowutil.snapshot(child, parent, self.vdi_type == VdiType.RAW)
+    def _snap(self, child, parent, is_mirror_destination=False):
+        self.cowutil.snapshot(child, parent, self.vdi_type == VdiType.RAW, is_mirror_image=is_mirror_destination)
 
     def _clonecleanup(self, src, dst, newsrc):
         try:

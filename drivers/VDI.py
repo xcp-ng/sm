@@ -213,7 +213,7 @@ class VDI(object):
         raise xs_errors.XenError('Unimplemented')
 
     def _do_snapshot(self, sr_uuid, vdi_uuid, snapType,
-                     cloneOp=False, secondary=None, cbtlog=None) -> str:
+                     cloneOp=False, secondary=None, cbtlog=None, is_mirror_destination=False) -> str:
         raise xs_errors.XenError('Unimplemented')
 
     def _delete_cbt_log(self) -> None:
@@ -378,12 +378,15 @@ class VDI(object):
         if self.sr.srcmd.params['driver_params'].get("mirror"):
             secondary = self.sr.srcmd.params['driver_params']["mirror"]
 
+        is_mirror_destination = bool(self.sr.srcmd.params['driver_params'].get("base_mirror")) and not secondary
+        # This allow us to know is we are a snapshot for a migration mirror on the destination SR to apply specific configuration on the QCOW2 snapshot. See qcow2util.py::QCowUtil.snapshot() for more details.
+
         if self._get_blocktracking_status():
             cbtlog = self._get_cbt_logpath(self.uuid)
         else:
             cbtlog = None
         return  self._do_snapshot(sr_uuid, vdi_uuid, snapType,
-                                  secondary=secondary, cbtlog=cbtlog)
+                                  secondary=secondary, cbtlog=cbtlog, is_mirror_destination=is_mirror_destination)
 
     def activate(self, sr_uuid, vdi_uuid) -> Optional[Dict[str, str]]:
         """Activate VDI - called pre tapdisk open"""
