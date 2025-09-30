@@ -229,7 +229,8 @@ class CowUtil(ABC):
         parent: str,
         parentRaw: bool,
         msize: int = 0,
-        checkEmpty: bool = True
+        checkEmpty: bool = True,
+        is_mirror_image: bool = False
     ) -> None:
         pass
 
