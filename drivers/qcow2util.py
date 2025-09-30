@@ -812,16 +812,38 @@ class QCowUtil(CowUtil):
         parent: str,
         parentRaw: bool,
         msize: int = 0,
-        checkEmpty: bool = True
+        checkEmpty: bool = True,
+        is_mirror_image: bool = False
     ) -> None:
+        # TODO: msize, it's use to preallocate metadata, could we honor this too?
+        # TODO: checkEmpty? If it is False, then the parent could be empty and should still be used for snapshot
+        # But if True, if the parent is empty, we do what? vhd would just use the parent of parent as base, should we emulate this behavior?
+
+        cmd = [QEMU_IMG, "create"]
+
         if parentRaw:
             parent_type = RAW_TYPE
-            parent_cluster_size = QCOW2_DEFAULT_CLUSTER_SIZE
+            cluster_size = QCOW2_DEFAULT_CLUSTER_SIZE
         else:
             parent_type = QCOW2_TYPE
-            parent_cluster_size = self.getBlockSize(parent)
+            cluster_size = self.getBlockSize(parent)
+        args = ["-f", QCOW2_TYPE, "-F", parent_type, "-b", parent]
 
-        cmd = [QEMU_IMG, "create", "-f", QCOW2_TYPE, "-b", parent, "-F", parent_type, "-o", f"cluster_size={parent_cluster_size}", path]
+        if is_mirror_image:
+            # is_mirror_image override the cluster size to ensure that we have a write of 512b to avoid having to read the parent during a migration.
+            # This is needed because the blkif blocksize is only 512b, as such it will try to only write blocks smaller than the cluster size.
+            # To write a smaller block, we would need to read the parent image cluster then change the 512b block.
+            # The parent being empty during the mirroring phase, reading from it would read zeros and corrupt the cluster.
+            # It also enable extended_l2 for this purpose, this is only done in the snapshot used for the mirror, this configuration will be lost when coalesced in its parent.
+            # Ensuring we go back to a better cluster_size for performance reasons.
+            # This limit our images max size to 64TiB.
+            cluster_size = 16 * 1024 # 16KiB
+            args.extend(["-o", "extended_l2=on"])
+
+        args.extend(["-o", f"cluster_size={cluster_size}"])
+        cmd.extend(args)
+        cmd.append(path)
+
         self._ioretry(cmd)
         self.setHidden(path, False) #We add hidden header at creation
 
