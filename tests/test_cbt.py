@@ -61,9 +61,9 @@ class TestVDI(VDI.VDI):
 
     @override
     def _do_snapshot(self, sr_uuid, vdi_uuid, snapType,
-                     cloneOp=False, secondary=None, cbtlog=None) -> str:
+                     cloneOp=False, secondary=None, cbtlog=None, is_mirror_destination=False) -> str:
         return self.state_mock._do_snapshot(
-            sr_uuid, vdi_uuid, snapType, cloneOp, secondary, cbtlog
+            sr_uuid, vdi_uuid, snapType, cloneOp, secondary, cbtlog, is_mirror_destination
         )
 
     @override
@@ -366,7 +366,8 @@ class TestCBT(unittest.TestCase):
                                                             mock.ANY,
                                                             mock.ANY,
                                                             mock.ANY,
-                                                            None)
+                                                            None,
+                                                            False)
 
     @testlib.with_context
     @mock.patch('VDI.cbtutil', autospec=True)
