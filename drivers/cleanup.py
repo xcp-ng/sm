@@ -3367,6 +3367,11 @@ def start_gc_service(sr_uuid, wait=False):
     subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, close_fds=True)
 
 
+def wait_for_completion(sr_uuid):
+    while get_state(sr_uuid):
+        time.sleep(5)
+
+
 def gc_force(session, srUuid, force=False, dryRun=False, lockSR=False):
     """Garbage collect all deleted VDIs in SR "srUuid". The caller must ensure
     the SR lock is held.
