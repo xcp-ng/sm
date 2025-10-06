@@ -430,7 +430,8 @@ class QCowUtil(CowUtil):
 
     @override
     def getDefaultPreallocationSizeVirt(self) -> int:
-        return MAX_QCOW_SIZE
+        """vhdutil answer max size (2TiB) here but we don't want to allocate for max size in QCOW2, it would make small LV a lot bigger."""
+        return MIN_QCOW_SIZE
 
     @override
     def getMaxChainLength(self) -> int:
