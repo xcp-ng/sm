@@ -79,7 +79,7 @@ class VhdUtil(CowUtil):
         return MAX_VHD_CHAIN_LENGTH
 
     @override
-    def calcOverheadEmpty(self, virtual_size: int) -> int:
+    def calcOverheadEmpty(self, virtual_size: int, block_size: Optional[int] = None) -> int:
         """
         Calculate the VHD space overhead (metadata size) for an empty VDI of
         size virtual_size.

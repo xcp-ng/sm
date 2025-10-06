@@ -7,6 +7,7 @@ import re
 import time
 import struct
 import zlib
+import json
 from pathlib import Path
 
 import util
@@ -436,14 +437,14 @@ class QCowUtil(CowUtil):
         return MAX_QCOW_CHAIN_LENGTH
 
     @override
-    def calcOverheadEmpty(self, virtual_size: int) -> int:
-        size_l1 = QCOW2_DEFAULT_CLUSTER_SIZE
-        size_header = QCOW2_DEFAULT_CLUSTER_SIZE
-        size_l2 = (virtual_size * 8) / QCOW2_DEFAULT_CLUSTER_SIZE #It is only an estimation
-
-        size = size_l1 + size_l2 + size_header
-
-        return util.roundup(QCOW2_DEFAULT_CLUSTER_SIZE, size)
+    def calcOverheadEmpty(self, virtual_size: int, block_size: Optional[int] = None) -> int:
+        if block_size:
+            cluster_size = block_size
+        else:
+            cluster_size = QCOW2_DEFAULT_CLUSTER_SIZE
+        cmd = [QEMU_IMG, "measure", "-O", "qcow2", "--output", "json", "-o", f"cluster_size={cluster_size}", "--size", f"{virtual_size}"]
+        output = json.loads(self._ioretry(cmd))
+        return int(output["required"])
 
     @override
     def calcOverheadBitmap(self, virtual_size: int) -> int:
