@@ -115,7 +115,7 @@ class CowUtil(ABC):
         pass
 
     @abstractmethod
-    def calcOverheadEmpty(self, virtual_size: int) -> int:
+    def calcOverheadEmpty(self, virtual_size: int, block_size: Optional[int] = None) -> int:
         pass
 
     @abstractmethod
