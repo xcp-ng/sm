@@ -861,8 +861,7 @@ class VDI(object):
             try:
                 with open(file, "r") as f:
                     if not f.read():
-                        #TODO: Need to call commit cancel on the hostRef if we stop
-                        util.SMlog("DAMS: Cancelling")
+                        util.SMlog("DAMS: abortTest: Cancelling coalesce")
                         self._call_plug_cancel(hostRef)
                         return True
             except OSError as e:
@@ -870,6 +869,9 @@ class VDI(object):
                     util.SMlog("File {} does not exist".format(file))
                 else:
                     util.SMlog("IOError: {}".format(e))
+                return True
+            except Exception as e2:
+                util.SMlog(f"DAMS: Error in AbortTest for _doCoalesceOnHost: {e2}")
                 return True
             return False
 
