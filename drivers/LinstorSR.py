@@ -57,7 +57,7 @@ import xml.etree.ElementTree as xml_parser
 import xmlrpc.client
 import xs_errors
 
-from cowutil import CowUtil, getImageStringFromVdiType, getVdiTypeFromImageFormat
+from cowutil import CowUtil, ImageFormat, getImageStringFromVdiType, getVdiTypeFromImageFormat
 from srmetadata import \
     NAME_LABEL_TAG, NAME_DESCRIPTION_TAG, IS_A_SNAPSHOT_TAG, SNAPSHOT_OF_TAG, \
     TYPE_TAG, VDI_TYPE_TAG, READ_ONLY_TAG, SNAPSHOT_TIME_TAG, \
@@ -319,7 +319,7 @@ class LinstorSR(SR.SR):
 
     def __init__(self, srcmd, sr_uuid):
         SR.SR.__init__(self, srcmd, sr_uuid)
-        self._init_preferred_image_formats()
+        self._init_preferred_image_formats([ImageFormat.VHD])
 
     @override
     def load(self, sr_uuid) -> None:

@@ -523,10 +523,10 @@ class SR(object):
 
         return missing_keys
 
-    def _init_preferred_image_formats(self) -> None:
+    def _init_preferred_image_formats(self, default_image_formats=None) -> None:
         self.preferred_image_formats = parseImageFormats(
             self.dconf and self.dconf.get('preferred-image-formats'),
-            DEFAULT_IMAGE_FORMATS
+            default_image_formats or DEFAULT_IMAGE_FORMATS
         )
 
     def _get_snap_vdi_type(self, vdi_type: str, size: int) -> str:
