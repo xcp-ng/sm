@@ -1747,7 +1747,7 @@ class LinstorVolumeManager(object):
         :return: The current database path.
         :rtype: str
         """
-        return self._request_database_path(self._linstor)
+        return self._request_database_path(self._linstor, activate=True)
 
     @classmethod
     def get_all_group_names(cls, base_name):
