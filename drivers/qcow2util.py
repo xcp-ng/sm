@@ -462,10 +462,9 @@ class QCowUtil(CowUtil):
     ) -> CowImageInfo:
         #TODO:  handle resolveParent
         self._read_qcow2(path)
-        basename = Path(path).name
-        uuid = extractUuidFunction(basename)
+        uuid = extractUuidFunction(path)
         cowinfo = CowImageInfo(uuid)
-        cowinfo.path = basename
+        cowinfo.path = path
         cowinfo.sizeVirt = self.header["virtual_disk_size"]
         cowinfo.sizePhys = self.getSizePhys(path)
         cowinfo.hidden = self.getHidden(path)
@@ -529,6 +528,7 @@ class QCowUtil(CowUtil):
                     cowinfo = self._getInfoLV(lvcache, extractUuidFunction, vgName, lvName)
                     if cowinfo is None: #We get None if the LV stopped existing in the meanwhile
                         continue
+                    cowinfo.path = lvName # Function CowUtil.getParentChain expect lvName here, otherwise blktap.{_activate,_deactivate} crashes
                     result[cowinfo.uuid] = cowinfo
                     if parents:
                         parentUuid = cowinfo.parentUuid
@@ -538,9 +538,11 @@ class QCowUtil(CowUtil):
                             parent_cowinfo = self._getInfoLV(lvcache, extractUuidFunction, vgName, parentLvName)
                             if parent_cowinfo is None: #Parent disappeared while scanning
                                 raise util.SMException("Parent of {} wasn't found during scan".format(lvName))
-                            result[parent_cowinfo.uuid] = parent_cowinfo
                             parentUuid = parent_cowinfo.parentUuid
                             parentPath = parent_cowinfo.parentPath
+                            parent_cowinfo.path = parentLvName #Same reason as above, some users expect LvName here instead of path
+                            result[parent_cowinfo.uuid] = parent_cowinfo
+
             return result
         else:
             pattern_p: Path = Path(pattern)
