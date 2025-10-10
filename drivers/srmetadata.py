@@ -16,7 +16,7 @@
 # Functions to read and write SR metadata
 #
 
-from sm_typing import ClassVar, override
+from sm_typing import ClassVar, Tuple, override
 
 from abc import abstractmethod
 
@@ -138,11 +138,11 @@ def file_read_wrapper(fd, offset, bytesToRead=METADATA_BLK_SIZE):
             ([fd, offset, bytesToRead], e.errno))
 
 
-def to_utf8(s):
+def to_utf8(s: str) -> bytes:
     return s.encode("utf-8")
 
 
-def from_utf8(bs):
+def from_utf8(bs: bytes) -> str:
     return bs.decode("utf-8")
 
 
@@ -182,13 +182,14 @@ def buildHeader(length, major=metadata.MD_MAJOR, minor=metadata.MD_MINOR):
                    + str(minor))
 
 
-def unpackHeader(header):
-    vals = from_utf8(header).split(HEADER_SEP)
+def unpackHeader(header: bytes) -> Tuple[str, str, str, str]:
+    decoded = from_utf8(header)
+    if len(decoded.rstrip('\x00')) == 0:
+        raise xs_errors.XenError('MetadataError', opterr='Empty header')
+    vals = decoded.split(HEADER_SEP)
     if len(vals) != 4 or vals[0] != metadata.HDR_STRING:
-        util.SMlog("Exception unpacking metadata header: "
-                   "Error: Bad header '%s'" % (header))
-        raise xs_errors.XenError('MetadataError', \
-                        opterr='Bad header')
+        util.SMlog(f"Exception unpacking metadata header: Error: Bad header {header!r}")
+        raise xs_errors.XenError('MetadataError', opterr='Bad header')
     return (vals[0], vals[1], vals[2], vals[3])
 
 
