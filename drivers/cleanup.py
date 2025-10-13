@@ -106,6 +106,8 @@ SIGTERM = False
 class AbortException(util.SMException):
     pass
 
+class CancelException(util.SMException):
+    pass
 
 def receiveSignal(signalNumber, frame):
     global SIGTERM
@@ -178,7 +180,7 @@ class Util:
         return stdout
 
     @staticmethod
-    def runAbortable(func, ret, ns, abortTest, pollInterval, timeOut):
+    def runAbortable(func, ret, ns, abortTest, pollInterval, timeOut, prefSig=signal.SIGKILL):
         """execute func in a separate thread and kill it if abortTest signals
         so"""
         abortSignaled = abortTest()  # check now before we clear resultFlag
@@ -197,10 +199,10 @@ class Util:
                         resultFlag.clear("failure")
                         raise util.SMException("Child process exited with error")
                     if abortTest() or abortSignaled or SIGTERM:
-                        os.killpg(pid, signal.SIGKILL)
+                        os.killpg(pid, prefSig)
                         raise AbortException("Aborting due to signal")
                     if timeOut and _time() - startTime > timeOut:
-                        os.killpg(pid, signal.SIGKILL)
+                        os.killpg(pid, prefSig)
                         resultFlag.clearAll()
                         raise util.SMException("Timed out")
                     time.sleep(pollInterval)
@@ -836,17 +838,25 @@ class VDI(object):
     def _clearRef(self):
         self._vdiRef = None
 
-    def _call_plug_cancel(self, hostRef):
-        args = {"path": self.path, "vdi_type": self.vdi_type}
-        self.sr.xapi.session.xenapi.host.call_plugin( \
-                    hostRef, XAPI.PLUGIN_ON_SLAVE, "commit_cancel", args)
+    @staticmethod
+    def _cancel_exception(sig, frame):
+        raise CancelException()
 
     def _call_plugin_coalesce(self, hostRef):
+        signal.signal(signal.SIGTERM, self._cancel_exception)
         args = {"path": self.path, "vdi_type": self.vdi_type}
-        util.SMlog("DAMS: Calling remote coalesce with: {}".format(args))
-        ret = self.sr.xapi.session.xenapi.host.call_plugin( \
+        Util.log("Calling remote coalesce plugin with: {}".format(args))
+        try:
+            ret = self.sr.xapi.session.xenapi.host.call_plugin( \
                     hostRef, XAPI.PLUGIN_ON_SLAVE, "commit_tapdisk", args)
-        util.SMlog("DAMS: Remote coalesce returned {}".format(ret))
+            Util.log("Remote coalesce returned {}".format(ret))
+        except CancelException:
+            Util.log(f"Cancelling online coalesce following signal {args}")
+            self.sr.xapi.session.xenapi.host.call_plugin( \
+                hostRef, XAPI.PLUGIN_ON_SLAVE, "commit_cancel", args)
+            raise
+        except Exception:
+            raise
 
     def _doCoalesceOnHost(self, hostRef):
         self.validate()
@@ -861,23 +871,18 @@ class VDI(object):
             try:
                 with open(file, "r") as f:
                     if not f.read():
-                        util.SMlog("DAMS: abortTest: Cancelling coalesce")
-                        self._call_plug_cancel(hostRef)
+                        Util.log("abortTest: Cancelling coalesce")
                         return True
             except OSError as e:
                 if e.errno == errno.ENOENT:
-                    util.SMlog("File {} does not exist".format(file))
+                    Util.log("File {} does not exist".format(file))
                 else:
-                    util.SMlog("IOError: {}".format(e))
-                return True
-            except Exception as e2:
-                util.SMlog(f"DAMS: Error in AbortTest for _doCoalesceOnHost: {e2}")
+                    Util.log("IOError: {}".format(e))
                 return True
             return False
 
-        #TODO: Add exception handling here like when callinng in a runAbortable situation_doCoalesceCOWImage
-        Util.runAbortable(lambda: self._call_plugin_coalesce(hostRef),
-                          None, self.sr.uuid, abortTest, VDI.POLL_INTERVAL, 0)
+        Util.runAbortable(lambda: self._call_plugin_coalesce(hostRef), \
+                          None, self.sr.uuid, abortTest, VDI.POLL_INTERVAL, 0, prefSig=signal.SIGTERM)
 
         self.parent.validate(True)
         #self._verifyContents(0)
