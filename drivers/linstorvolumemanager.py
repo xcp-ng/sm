@@ -2391,11 +2391,15 @@ class LinstorVolumeManager(object):
                 )
                 return self._request_device_path(volume_uuid, volume_name)
             raise LinstorVolumeManagerError(
-                'Empty dev path for `{}`, but definition "seems" to exist'
+                'Unable to get dev path for `{}`, no resource found but definition "seems" to exist'
                 .format(volume_uuid)
             )
+
         # Contains a path of the /dev/drbd<id> form.
-        return resource.volumes[0].device_path
+        device_path = resource.volumes[0].device_path
+        if not device_path:
+            raise LinstorVolumeManagerError('Empty dev path for `{}`!'.format(volume_uuid))
+        return device_path
 
     def _destroy_resource(self, resource_name, force=False):
         result = self._linstor.resource_dfn_delete(resource_name)
