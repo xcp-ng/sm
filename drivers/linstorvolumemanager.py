@@ -821,31 +821,32 @@ class LinstorVolumeManager(object):
         self.ensure_volume_is_not_locked(volume_uuid)
         new_size = self.round_up_volume_size(new_size) // 1024
 
-        retry_count = 30
-        while True:
-            result = self._linstor.volume_dfn_modify(
-                rsc_name=volume_name,
-                volume_nr=0,
-                size=new_size
-            )
-
-            self._mark_resource_cache_as_dirty()
-
-            error_str = self._get_error_str(result)
-            if not error_str:
-                break
-
-            # After volume creation, DRBD volume can be unusable during many seconds.
-            # So we must retry the definition change if the device is not up to date.
-            # Often the case for thick provisioning.
-            if retry_count and error_str.find('non-UpToDate DRBD device') >= 0:
-                time.sleep(2)
-                retry_count -= 1
-                continue
-
+        # We can't resize anything until DRBD is up to date.
+        # We wait here for 5min max and raise an easy to understand error for the user.
+        # 5min is an arbitrary time, it's impossible to get a fit all situation value
+        # and it's currently impossible to know how much time we have to wait
+        # This is mostly an issue for thick provisioning, thin isn't affected.
+        start_time = time.monotonic()
+        try:
+            self._linstor.resource_dfn_wait_synced(volume_name, wait_interval=1.0, timeout=60*5)
+        except linstor.LinstorTimeoutError:
             raise LinstorVolumeManagerError(
-                'Could not resize volume `{}` from SR `{}`: {}'
-                .format(volume_uuid, self._group_name, error_str)
+                f"Volume resizing of `{volume_uuid}` from SR `{self._group_name}` is incomplete: timeout reached but it continues in background."
+            )
+        util.SMlog(f"DRBD is up to date, syncing took {time.monotonic() - start_time}s")
+
+        result = self._linstor.volume_dfn_modify(
+            rsc_name=volume_name,
+            volume_nr=0,
+            size=new_size
+        )
+
+        self._mark_resource_cache_as_dirty()
+
+        error_str = self._get_error_str(result)
+        if error_str:
+            raise LinstorVolumeManagerError(
+                f"Could not resize volume `{volume_uuid}` from SR `{self._group_name}`: {error_str}"
             )
 
     def get_volume_name(self, volume_uuid):
