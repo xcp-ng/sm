@@ -15,7 +15,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
 
-from sm_typing import override
+from sm_typing import Any, Dict, override
 
 import errno
 import json
@@ -273,7 +273,8 @@ class LinstorVolumeManagerError(Exception):
     ERR_VOLUME_EXISTS = 1,
     ERR_VOLUME_NOT_EXISTS = 2,
     ERR_VOLUME_DESTROY = 3,
-    ERR_GROUP_NOT_EXISTS = 4
+    ERR_GROUP_NOT_EXISTS = 4,
+    ERR_VOLUME_IN_USE = 5
 
     def __init__(self, message, code=ERR_GENERIC):
         super(LinstorVolumeManagerError, self).__init__(message)
@@ -302,7 +303,8 @@ class LinstorVolumeManager(object):
         '_base_group_name', '_group_name', '_ha_group_name',
         '_volumes', '_storage_pools', '_storage_pools_time',
         '_kv_cache', '_resource_cache', '_volume_info_cache',
-        '_kv_cache_dirty', '_resource_cache_dirty', '_volume_info_cache_dirty'
+        '_kv_cache_dirty', '_resource_cache_dirty', '_volume_info_cache_dirty',
+        '_resources_info_cache',
     )
 
     DEV_ROOT_PATH = DRBD_BY_RES_PATH
@@ -439,6 +441,7 @@ class LinstorVolumeManager(object):
         self._resource_cache_dirty = True
         self._volume_info_cache = None
         self._volume_info_cache_dirty = True
+        self._resources_info_cache = None
         self._build_volumes(repair=repair)
 
     @property
@@ -697,6 +700,13 @@ class LinstorVolumeManager(object):
 
         self._ensure_volume_exists(volume_uuid)
         self.ensure_volume_is_not_locked(volume_uuid)
+
+        is_volume_in_use = any(node["in-use"] for node in self.get_resource_info(volume_uuid)["nodes"].values())
+        if is_volume_in_use:
+            raise LinstorVolumeManagerError(
+                f"Could not destroy volume `{volume_uuid}` as it is currently in use",
+                LinstorVolumeManagerError.ERR_VOLUME_IN_USE
+            )
 
         # Mark volume as destroyed.
         volume_properties = self._get_volume_properties(volume_uuid)
@@ -1701,6 +1711,9 @@ class LinstorVolumeManager(object):
         Give all resources of current group name.
         :rtype: dict(str, list)
         """
+        if self._resources_info_cache and not self._resource_cache_dirty:
+            return self._resources_info_cache
+
         resources = {}
         resource_list = self._get_resource_cache()
         volume_names = self.get_volumes_with_name()
@@ -1757,7 +1770,23 @@ class LinstorVolumeManager(object):
             if resource:
                 resource['uuid'] = volume_uuid
 
-        return resources
+        self._resources_info_cache = resources
+        return self._resources_info_cache
+
+    def get_resource_info(self, volume_uuid: str) -> Dict[str, Any]:
+        """
+        Give a resource info based on its UUID.
+        :param volume_uuid str: volume uuid to search for
+        :rtype: dict(str, any)
+        """
+        for volume in self.get_resources_info().values():
+            if volume["uuid"] == volume_uuid:
+                return volume
+
+        raise LinstorVolumeManagerError(
+            f"Could not find info about volume `{volume_uuid}`",
+            LinstorVolumeManagerError.ERR_VOLUME_NOT_EXISTS
+        )
 
     def get_database_path(self):
         """
