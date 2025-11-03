@@ -1092,7 +1092,18 @@ class VDI(object):
                     raise
             self.refresh()
 
-    def _tagChildrenForRelink(self):
+    def _needRelink(self, list_not_to_relink):
+        """
+        If we coalesce up the chain, we shouldn't need to do the relink at all, we only need to do the relink on the children if their direct parent was the one we were coalescing
+        """
+        if not list_not_to_relink:
+            return True
+        if self.uuid in list_not_to_relink:
+            return False
+        else:
+            return True
+
+    def _tagChildrenForRelink(self, list_not_to_relink=None):
         if len(self.children) == 0:
             retries = 0
             try:
@@ -1102,13 +1113,17 @@ class VDI(object):
                         Util.log("VDI %s is activating, wait to relink" %
                                  self.uuid)
                     else:
-                        self.setConfig(VDI.DB_VDI_RELINKING, "True")
+                        if self._needRelink(list_not_to_relink):
+                            self.setConfig(VDI.DB_VDI_RELINKING, "True")
 
-                        if self.getConfig(VDI.DB_VDI_ACTIVATING):
-                            self.delConfig(VDI.DB_VDI_RELINKING)
-                            Util.log("VDI %s started activating while tagging" %
-                                     self.uuid)
+                            if self.getConfig(VDI.DB_VDI_ACTIVATING):
+                                self.delConfig(VDI.DB_VDI_RELINKING)
+                                Util.log("VDI %s started activating while tagging" %
+                                        self.uuid)
+                            else:
+                                return
                         else:
+                            Util.log(f"Not adding relinking tag to VDI {self.uuid}")
                             return
                     time.sleep(2)
 
@@ -1118,7 +1133,7 @@ class VDI(object):
                     raise
 
         for child in self.children:
-            child._tagChildrenForRelink()
+            child._tagChildrenForRelink(list_not_to_relink)
 
     def _loadInfoParent(self):
         ret = self.cowutil.getParent(self.path, LvmCowUtil.extractUuid)
@@ -1140,6 +1155,15 @@ class VDI(object):
 
     def _ensureParentActiveForRelink(self) -> None:
         pass
+
+    def _update_vhd_parent(self, real_parent_uuid):
+        try:
+            self.setConfig(self.DB_VDI_PARENT, real_parent_uuid)
+            Util.log("Updated the vhd-parent field for child %s with real parent %s following a online coalesce" % \
+                    (self.uuid, real_parent_uuid))
+        except:
+            Util.log("Failed to update %s with vhd-parent field %s" % \
+                    (self.uuid, real_parent_uuid))
 
     def isHidden(self) -> bool:
         if self._hidden is None:
@@ -2503,6 +2527,7 @@ class SR(object):
         os.unlink(self._gc_running_file(vdi))
 
     def _coalesce(self, vdi: VDI):
+        list_not_to_relink = None
         if self.journaler.get(vdi.JRN_RELINK, vdi.uuid):
             # this means we had done the actual coalescing already and just
             # need to finish relinking and/or refreshing the children
@@ -2526,19 +2551,26 @@ class SR(object):
             host_refs = self._hasLeavesAttachedOn(vdi)
             #TODO: this check of multiple host_refs should be done earlier in `is_coalesceable` to avoid stopping this late every time
             if len(host_refs) > 1:
-                util.SMlog("Not coalesceable, chain activated more than once")
+                Util.log("Not coalesceable, chain activated more than once")
                 raise Exception("Not coalesceable, chain activated more than once") #TODO: Use correct error
 
             try:
                 if host_refs and vdi.cowutil.isCoalesceableOnRemote():
                     #Leaf opened on another host, we need to call online coalesce
-                    util.SMlog("Remote coalesce for {}".format(vdi.path))
+                    Util.log("Remote coalesce for {}".format(vdi.path))
                     vdi._doCoalesceOnHost(list(host_refs)[0])
+                    # If we use a host OpaqueRef to do a online coalesce, this vdi will not need to be relinked since it was done by tapdisk
+                    # If we coalesce up the chain, we shouldn't need to do the relink at all, we only need to do the relink on the children if their direct parent was the one we were coalescing
+                    for child in vdi.children:
+                        real_parent_uuid = child.extractUuid(child.getParent())
+                        if real_parent_uuid == vdi.parent.uuid:
+                            child._update_vhd_parent(real_parent_uuid) # We update the sm-config:vhd-parent value for this VDI since it has already been relinked
+                            list_not_to_relink = [leaf.uuid for leaf in child.getAllLeaves()]
                 else:
-                    util.SMlog("Offline coalesce for {}".format(vdi.path))
+                    Util.log("Offline coalesce for {}".format(vdi.path))
                     vdi._doCoalesce()
             except Exception as e:
-                util.SMlog("EXCEPTION while coalescing: {}".format(e))
+                Util.log("EXCEPTION while coalescing: {}".format(e))
                 self._delete_running_file(vdi)
                 raise
 
@@ -2555,9 +2587,9 @@ class SR(object):
 
         self.lock()
         try:
-            vdi.parent._tagChildrenForRelink()
+            vdi.parent._tagChildrenForRelink(list_not_to_relink)
             self.scan()
-            vdi._relinkSkip() #TODO: We could check if the parent is already the right one before doing the relink, or we could do the relink a second time, it doesn't seem to cause issues
+            vdi._relinkSkip()
         finally:
             self.unlock()
             # Reload the children to leave things consistent
