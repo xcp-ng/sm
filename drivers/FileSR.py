@@ -718,6 +718,51 @@ class FileVDI(VDI.VDI):
         return VDI.VDI.get_params(self)
 
     @override
+    def resize_online(self, sr_uuid, vdi_uuid, size) -> str:
+        if not self.exists:
+            raise xs_errors.XenError('VDIUnavailable', \
+                  opterr='VDI %s unavailable %s' % (vdi_uuid, self.path))
+
+        if not VdiType.isCowImage(self.vdi_type):
+            raise xs_errors.XenError('Unimplemented')
+
+        if self.hidden:
+            raise xs_errors.XenError('VDIUnavailable', opterr='hidden VDI')
+
+        if size < self.size:
+            util.SMlog('vdi_resize: shrinking not supported: ' + \
+                    '(current size: %d, new size: %d)' % (self.size, size))
+            raise xs_errors.XenError('VDISize', opterr='shrinking not allowed')
+
+        if size == self.size:
+            return VDI.VDI.get_params(self)
+
+        # We already checked it is a cow image.
+        size = self.cowutil.validateAndRoundImageSize(int(size))
+
+        jFile = JOURNAL_FILE_PREFIX + self.uuid
+        if not blktap2.VDI.tap_pause(self.session, sr_uuid, vdi_uuid):
+            raise util.SMException("failed to pause VDI %s to resize it" % vdi_uuid)
+        try:
+            self.cowutil.setSizeVirt(self.path, size, jFile)
+
+            old_size = self.size
+            self.size = self.cowutil.getSizeVirt(self.path)
+            st = util.ioretry(lambda: os.stat(self.path))
+            self.utilisation = int(st.st_size)
+
+            self._db_update()
+            self.sr._update(self.sr.uuid, self.size - old_size)
+            super(FileVDI, self).resize_cbt(self.sr.uuid, self.uuid, self.size)
+            return VDI.VDI.get_params(self)
+        except:
+            # Revert the operation
+            self.cowutil.revert(self.path, jFile)
+            raise xs_errors.XenError('VDISize', opterr='online resize operation failed')
+        finally:
+            blktap2.VDI.tap_unpause(self.session, sr_uuid, vdi_uuid)
+
+    @override
     def clone(self, sr_uuid, vdi_uuid) -> str:
         return self._do_snapshot(sr_uuid, vdi_uuid, VDI.SNAPSHOT_DOUBLE)
 
