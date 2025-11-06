@@ -123,14 +123,8 @@ class VDI(object):
 
     @staticmethod
     def from_uuid(session, vdi_uuid):
-
-        _VDI = session.xenapi.VDI
-        vdi_ref = _VDI.get_by_uuid(vdi_uuid)
-        sr_ref = _VDI.get_SR(vdi_ref)
-
-        _SR = session.xenapi.SR
-        sr_uuid = _SR.get_uuid(sr_ref)
-
+        vdi_ref = session.xenapi.VDI.get_by_uuid(vdi_uuid)
+        sr_uuid = util.get_sr_from_vdi_ref(session, vdi_ref)
         sr = SR.SR.from_uuid(session, sr_uuid)
 
         sr.srcmd.params['vdi_ref'] = vdi_ref

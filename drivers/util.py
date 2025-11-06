@@ -16,6 +16,8 @@
 # Miscellaneous utility functions
 #
 
+from sm_typing import List
+
 import os
 import re
 import sys
@@ -1210,6 +1212,15 @@ def _getVDIs(srobj):
     return VDIs
 
 
+def get_sr_from_vdi_ref(session, vdi_ref: str) -> str:
+    sr_ref = session.xenapi.VDI.get_SR(vdi_ref)
+    return session.xenapi.SR.get_uuid(sr_ref)
+
+
+def get_sr_from_vdi_uuid(session, vdi_uuid: str) -> str:
+    return get_sr_from_vdi_ref(session, session.xenapi.VDI.get_by_uuid(vdi_uuid))
+
+
 def _getVDI(srobj, vdi_uuid):
     vdi = srobj.session.xenapi.VDI.get_by_uuid(vdi_uuid)
     ref = srobj.session.xenapi.VDI.get_record(vdi)
@@ -1482,6 +1493,17 @@ def pid_is_alive(pid):
         if e.errno == errno.EPERM:
             return True
         return False
+
+
+def get_process_cmdline(pid: int) -> List[str]:
+    try:
+        with open(os.path.join('/proc', str(pid), 'cmdline'), 'rb') as f:
+            line = f.read().split(b'\0')
+        return [arg.decode() for arg in line]
+    except OSError as e:
+        if e.errno != errno.ENOENT:
+            raise
+        return []
 
 
 # Looks at /proc and figures either
@@ -2156,3 +2178,25 @@ def conditional_decorator(decorator, condition):
             return func
         return decorator(func)
     return wrapper
+
+
+def get_srs_from_type(session, type):
+    srs = session.xenapi.SR.get_all_records_where(f"field \"type\" = \"{type}\"")
+    return {sr["uuid"]: sr for sr in srs.values()}
+
+
+def get_linstor_srs(session):
+    import LinstorSR # pylint: disable=C0415
+    return get_srs_from_type(session, LinstorSR.LinstorSR.DRIVER_TYPE)
+
+
+def find_pbd_uuid_from_dconf_value(session, srs, key, value, value_modifier = None):
+    for sr in srs.values():
+        for pbd_ref in sr["PBDs"]:
+            device_config = session.xenapi.PBD.get_device_config(pbd_ref)
+            cur_value = device_config.get(key)
+            if value_modifier:
+                cur_value = value_modifier(cur_value)
+            if cur_value and cur_value == value:
+                return session.xenapi.PBD.get_uuid(pbd_ref)
+    return None
