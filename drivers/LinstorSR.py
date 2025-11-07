@@ -1934,8 +1934,9 @@ class LinstorVDI(VDI.VDI):
             raise xs_errors.XenError('VDISize', opterr='shrinking not allowed')
 
         if size == self.size:
-            return VDI.VDI.get_params(self)
+            return VDI.VDI.get_params(self) # No change needed
 
+        # Compute VDI sizes
         if self.vdi_type == vhdutil.VDI_TYPE_RAW:
             old_volume_size = self.size
             new_volume_size = LinstorVolumeManager.round_up_volume_size(size)
@@ -1952,8 +1953,10 @@ class LinstorVDI(VDI.VDI):
         self.sr._ensure_space_available(space_needed)
 
         old_size = self.size
+
+        # Resize VDI
         if self.vdi_type == vhdutil.VDI_TYPE_RAW:
-            self._linstor.resize(self.uuid, new_volume_size)
+            self._linstor.resize_volume(self.uuid, new_volume_size)
         else:
             if new_volume_size != old_volume_size:
                 self.sr._vhdutil.inflate(
@@ -1965,6 +1968,7 @@ class LinstorVDI(VDI.VDI):
         # Reload size attributes.
         self._load_this()
 
+        # Update metadata
         vdi_ref = self.sr.srcmd.params['vdi_ref']
         self.session.xenapi.VDI.set_virtual_size(vdi_ref, str(self.size))
         self.session.xenapi.VDI.set_physical_utilisation(
