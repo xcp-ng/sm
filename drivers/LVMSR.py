@@ -1594,7 +1594,6 @@ class LVMVDI(VDI.VDI):
             if not self.sr.lvActivator.deactivateAll():
                 raise xs_errors.XenError("SMGeneral", opterr="deactivation")
 
-    # We only support offline resize
     @override
     def resize(self, sr_uuid, vdi_uuid, size) -> str:
         util.SMlog("LVMVDI.resize for %s" % self.uuid)
@@ -1654,6 +1653,66 @@ class LVMVDI(VDI.VDI):
         return VDI.VDI.get_params(self)
 
     @override
+    def resize_online(self, sr_uuid, vdi_uuid, size) -> str:
+        util.SMlog("LVMVDI.resize_online for %s" % self.uuid)
+        if not self.sr.isMaster:
+            raise xs_errors.XenError('LVMMaster')
+
+        self._loadThis()
+        if self.hidden:
+            raise xs_errors.XenError('VDIUnavailable', opterr='hidden VDI')
+
+        if size < self.size:
+            util.SMlog('vdi_resize: shrinking not supported: ' + \
+                    '(current size: %d, new size: %d)' % (self.size, size))
+            raise xs_errors.XenError('VDISize', opterr='shrinking not allowed')
+
+        size = self.cowutil.validateAndRoundImageSize(int(size))
+
+        if size == self.size:
+            return VDI.VDI.get_params(self)
+
+        if not VdiType.isCowImage(self.vdi_type):
+            lvSizeOld = self.size
+            lvSizeNew = util.roundup(lvutil.LVM_SIZE_INCREMENT, size)
+        else:
+            lvSizeOld = self.utilisation
+            lvSizeNew = self.lvmcowutil.calcVolumeSize(size)
+            if self.sr.provision == "thin":
+                # VDI is currently deflated, so keep it deflated
+                lvSizeNew = lvSizeOld
+        assert(lvSizeNew >= lvSizeOld)
+        spaceNeeded = lvSizeNew - lvSizeOld
+        self.sr._ensureSpaceAvailable(spaceNeeded)
+
+        oldSize = self.size
+        if not blktap2.VDI.tap_pause(self.session, sr_uuid, vdi_uuid):
+            raise util.SMException("failed to pause VDI %s to resize it" % vdi_uuid)
+        try:
+            if not VdiType.isCowImage(self.vdi_type):
+                self.sr.lvmCache.setSize(self.lvname, lvSizeNew)
+                self.size = self.sr.lvmCache.getSize(self.lvname)
+                self.utilisation = self.size
+            else:
+                if lvSizeNew != lvSizeOld:
+                    self.lvmcowutil.inflate(self.sr.journaler, self.sr.uuid, self.uuid, self.vdi_type, lvSizeNew)
+                self.cowutil.setSizeVirtFast(self.path, size)
+                self.size = self.cowutil.getSizeVirt(self.path)
+                self.utilisation = self.sr.lvmCache.getSize(self.lvname)
+
+            vdi_ref = self.sr.srcmd.params['vdi_ref']
+            self.session.xenapi.VDI.set_virtual_size(vdi_ref, str(self.size))
+            self.session.xenapi.VDI.set_physical_utilisation(vdi_ref,
+                    str(self.utilisation))
+            self.sr._updateStats(self.sr.uuid, self.size - oldSize)
+            super(LVMVDI, self).resize_cbt(self.sr.uuid, self.uuid, self.size)
+            return VDI.VDI.get_params(self)
+        except:
+            raise xs_errors.XenError('VDISize', opterr='online resize operation failed')
+        finally:
+            blktap2.VDI.tap_unpause(self.session, sr_uuid, vdi_uuid)
+
+   @override
     def clone(self, sr_uuid, vdi_uuid) -> str:
         return self._do_snapshot(
                      sr_uuid, vdi_uuid, VDI.SNAPSHOT_DOUBLE, cloneOp=True)
