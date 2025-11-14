@@ -1176,7 +1176,7 @@ class LinstorVolumeManager(object):
         """
         Check if a volume is currently used.
         :param str volume_uuid: The volume uuid to check.
-        :return: A dictionnary that contains states.
+        :return: A dictionary that contains states.
         :rtype: dict(str, bool or None)
         """
 
@@ -1194,14 +1194,14 @@ class LinstorVolumeManager(object):
         """
         Get openers of a volume.
         :param str volume_uuid: The volume uuid to monitor.
-        :return: A dictionnary that contains openers.
+        :return: A dictionary that contains openers.
         :rtype: dict(str, obj)
         """
         return get_all_volume_openers(self.get_volume_name(volume_uuid), '0')
 
     def get_volumes_with_name(self):
         """
-        Give a volume dictionnary that contains names actually owned.
+        Give a volume dictionary that contains names actually owned.
         :return: A volume/name dict.
         :rtype: dict(str, str)
         """
@@ -1209,7 +1209,7 @@ class LinstorVolumeManager(object):
 
     def get_volumes_with_info(self):
         """
-        Give a volume dictionnary that contains VolumeInfos.
+        Give a volume dictionary that contains VolumeInfos.
         :return: A volume/VolumeInfo dict.
         :rtype: dict(str, VolumeInfo)
         """
@@ -1233,7 +1233,7 @@ class LinstorVolumeManager(object):
 
     def get_volumes_with_metadata(self):
         """
-        Give a volume dictionnary that contains metadata.
+        Give a volume dictionary that contains metadata.
         :return: A volume/metadata dict.
         :rtype: dict(str, dict)
         """
