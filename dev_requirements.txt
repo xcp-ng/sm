@@ -1,4 +1,4 @@
-coverage<7.11
+coverage
 astroid
 pylint
 bitarray
