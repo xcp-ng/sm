@@ -392,7 +392,7 @@ class LinstorVolumeManager(object):
         """
         Create a new LinstorVolumeManager object.
         :param str uri: URI to communicate with the LINSTOR controller.
-        :param str group_name: The SR goup name to use.
+        :param str group_name: The SR group name to use.
         :param bool repair: If true we try to remove bad volumes due to a crash
         or unexpected behavior.
         :param function logger: Function to log messages.
@@ -402,6 +402,18 @@ class LinstorVolumeManager(object):
         self._linstor = self._create_linstor_instance(
             uri, attempt_count=attempt_count
         )
+
+
+        mismatched_nodes = [
+            node for node in self._linstor.node_list().pop().nodes if node.connection_status == "VERSION_MISMATCH"
+        ]
+
+        if mismatched_nodes:
+            raise LinstorVolumeManagerError(
+                "Some linstor nodes are not using the same version. " +
+                f"Incriminated nodes are: {','.join([node.name for node in mismatched_nodes])}"
+            )
+
         self._base_group_name = group_name
 
         # Ensure group exists.
@@ -420,7 +432,7 @@ class LinstorVolumeManager(object):
         self._volumes = set()
         self._storage_pools_time = 0
 
-        # To increate performance and limit request count to LINSTOR services,
+        # To increase performance and limit request count to LINSTOR services,
         # we use caches.
         self._kv_cache = self._create_kv_cache()
         self._resource_cache = None
