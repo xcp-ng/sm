@@ -1132,7 +1132,13 @@ class LinstorVolumeManager(object):
                 'after volume uuid update: {}'.format(e)
             )
 
-        self._volumes.remove(volume_uuid)
+        try:
+            self._volumes.remove(volume_uuid)
+        except KeyError:
+            # Can be missing if we are building the volume set attr AND
+            # we are processing a deleted resource.
+            assert force
+
         self._volumes.add(new_volume_uuid)
 
         self._logger(
