@@ -1772,7 +1772,7 @@ class LinstorVDI(VDI.VDI):
             )
 
             try:
-                raise xs_errors.XenError('VDIDelete', opterr=str(e))
+                raise e
             except LinstorVolumeManagerError as e:
                 if e.code != LinstorVolumeManagerError.ERR_VOLUME_DESTROY:
                     raise xs_errors.XenError('VDIDelete', opterr=str(e))
