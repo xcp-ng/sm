@@ -21,7 +21,7 @@
 import sys
 import XenAPIPlugin
 sys.path.append("/opt/xensource/sm/")
-import lvmcowutil
+from lvmcowutil import LvmCowUtil, getCowUtil
 import util
 from lvmcache import LVMCache
 from journaler import Journaler
