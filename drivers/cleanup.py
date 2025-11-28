@@ -54,7 +54,7 @@ from time import monotonic as _time
 
 try:
     from linstorjournaler import LinstorJournaler
-    from linstorvhdutil import LinstorVhdUtil
+    from linstorvhdutil import LinstorVhdUtil, MultiLinstorVhdUtil
     from linstorvolumemanager import get_controller_uri
     from linstorvolumemanager import LinstorVolumeManager
     from linstorvolumemanager import LinstorVolumeManagerError
@@ -3501,12 +3501,18 @@ class LinstorSR(SR):
         raise util.SMException('Scan error')
 
     def _load_vdi_info(self):
-        all_vdi_info = {}
-
-        # TODO: Ensure metadata contains the right info.
-
         all_volume_info = self._linstor.get_volumes_with_info()
         volumes_metadata = self._linstor.get_volumes_with_metadata()
+
+        all_vdi_info = {}
+        pending_vdi_uuids = []
+
+        def handle_fail(vdi_uuid, e):
+            Util.log(f" [VDI {vdi_uuid}: failed to load VDI info]: {e}")
+            info = vhdutil.VHDInfo(vdi_uuid)
+            info.error = 1
+            return info
+
         for vdi_uuid, volume_info in all_volume_info.items():
             try:
                 volume_metadata = volumes_metadata[vdi_uuid]
@@ -3534,34 +3540,26 @@ class LinstorSR(SR):
                     continue
 
                 vdi_type = volume_metadata.get(VDI_TYPE_TAG)
-                volume_name = self._linstor.get_volume_name(vdi_uuid)
-                if volume_name.startswith(LINSTOR_PERSISTENT_PREFIX):
-                    # Always RAW!
-                    info = None
-                elif vdi_type == vhdutil.VDI_TYPE_VHD:
-                    info = self._vhdutil.get_vhd_info(vdi_uuid)
+                if vdi_type == vhdutil.VDI_TYPE_VHD:
+                    pending_vdi_uuids.append(vdi_uuid)
                 else:
-                    # Ensure it's not a VHD...
-                    try:
-                        info = self._vhdutil.get_vhd_info(vdi_uuid)
-                    except:
-                        try:
-                            self._vhdutil.force_repair(
-                                self._linstor.get_device_path(vdi_uuid)
-                            )
-                            info = self._vhdutil.get_vhd_info(vdi_uuid)
-                        except:
-                            info = None
-
+                    all_vdi_info[vdi_uuid] = None
             except Exception as e:
-                Util.log(
-                    ' [VDI {}: failed to load VDI info]: {}'
-                    .format(vdi_uuid, e)
-                )
-                info = vhdutil.VHDInfo(vdi_uuid)
-                info.error = 1
+                all_vdi_info[vdi_uuid] = handle_fail(vdi_uuid, e)
 
-            all_vdi_info[vdi_uuid] = info
+        multi_vhdutil = MultiLinstorVhdUtil(self._linstor.uri, self._linstor.group_name)
+
+        def load_info(vdi_uuid, vhdutil_instance):
+            try:
+                return vhdutil_instance.get_vhd_info(vdi_uuid)
+            except Exception as e:
+                return handle_fail(vdi_uuid, e)
+
+        try:
+            for vdiInfo in multi_vhdutil.run(load_info, pending_vdi_uuids):
+                all_vdi_info[vdiInfo.uuid] = vdiInfo
+        finally:
+            del multi_vhdutil
 
         return all_vdi_info
 
