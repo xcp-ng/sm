@@ -656,6 +656,12 @@ def exists(path):
     (rc, stdout, stderr) = cmd_lvm([CMD_LVS, "--noheadings", path], pread_func=util.doexec)
     return rc == 0
 
+def listLv(path=None):
+    rc, stdout, stderr = cmd_lvm([CMD_LVS, "--noheadings", path or ""], pread_func=util.doexec)
+    if rc == 0:
+        return stdout
+
+    raise xs_errors.XenError('VolNotFound')
 
 @lvmretry
 def setSize(path, size, confirm):
@@ -728,6 +734,8 @@ def _checkActive(path):
     util.SMlog("_checkActive: %s does not exist!" % path)
     symlinkExists = os.path.lexists(path)
     util.SMlog("_checkActive: symlink exists: %s" % symlinkExists)
+
+    util.SMlog(f"LVM says {listLv(path=path)}")
 
     mapperDeviceExists = False
     mapperDevice = path[5:].replace("-", "--").replace("/", "-")
