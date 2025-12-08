@@ -191,8 +191,8 @@ class LinstorVhdUtil:
                         if e.errno == errno.ENODATA:
                             time.sleep(2)
                             continue
-                        if e.errno == errno.EROFS:
-                            util.SMlog('Volume not attachable because RO. Openers: {}'.format(
+                        if e.errno == errno.EROFS or e.errno == errno.EMEDIUMTYPE:
+                            util.SMlog('Volume not attachable because used. Openers: {}'.format(
                                 self._linstor.get_volume_openers(vdi_uuid)
                             ))
                         raise
