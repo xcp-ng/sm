@@ -16,7 +16,7 @@
 # Functions to read and write SR metadata
 #
 
-from sm_typing import ClassVar, override
+from sm_typing import ClassVar, Tuple, override
 
 from abc import abstractmethod
 
@@ -138,11 +138,11 @@ def file_read_wrapper(fd, offset, bytesToRead=METADATA_BLK_SIZE):
             ([fd, offset, bytesToRead], e.errno))
 
 
-def to_utf8(s):
+def to_utf8(s: str) -> bytes:
     return s.encode("utf-8")
 
 
-def from_utf8(bs):
+def from_utf8(bs: bytes) -> str:
     return bs.decode("utf-8")
 
 
@@ -182,7 +182,7 @@ def buildHeader(length, major=metadata.MD_MAJOR, minor=metadata.MD_MINOR):
                    + str(minor))
 
 
-def unpackHeader(header):
+def unpackHeader(header: bytes) -> Tuple[str, str, str, str]:
     decoded = from_utf8(header)
     if len(decoded.rstrip('\x00')) == 0:
         raise xs_errors.XenError('MetadataError', opterr='Empty header')
