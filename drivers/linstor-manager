@@ -920,6 +920,50 @@ def get_drbd_openers(session, args):
         util.SMlog('linstor-manager:get_drbd_openers error: {}'.format(e))
         raise
 
+def drbd_properties(session, args):
+    group_name = args['groupName']
+
+    linstor = LinstorVolumeManager(
+        get_controller_uri(),
+        group_name,
+        logger=util.SMlog
+    )
+
+    return str(
+        linstor._linstor.resource_group_list_raise(
+            filter_by_resource_groups=[linstor._group_name]
+        ).data_v1[0]['props']
+    )
+
+
+def drbd_properties_set(session, args):
+    allowed = [
+        'c-min-rate',
+        'c-max-rate',
+        'resync-rate',
+        'c-plan-ahead',
+    ]
+    group_name = args['groupName']
+    properties = {arg: args[arg] for arg in allowed if args.get(arg) is not None}
+
+    set_properties = {f"DrbdOptions/PeerDevice/{name}": f"{int(value)}" for name, value in properties.items() if value != ''}
+    del_properties = [f"DrbdOptions/PeerDevice/{name}" for name, value in properties.items() if value == '']
+
+    linstor = LinstorVolumeManager(
+        get_controller_uri(),
+        group_name,
+        logger=util.SMlog
+    )
+
+    util.SMlog(f"linstor-manager:drbd_properties_set: set_properties={set_properties}, del_properties={del_properties}")
+
+    return str(
+        linstor._linstor.resource_group_modify(
+            linstor._group_name,
+            property_dict=set_properties,
+            delete_props=del_properties
+        )
+    )
 
 class HealthCheckError(object):
     __slots__ = ('data')
@@ -1033,6 +1077,7 @@ def health_check(session, args):
                 result['errors'].append(HealthCheckError(
                     code=HealthCheckError.NODE_NOT_ONLINE,
                     name=node_name,
+
                     status=status
                 ))
 
@@ -1261,7 +1306,7 @@ if __name__ == '__main__':
         'coalesce': coalesce,
         'repair': repair,
 
-        # Misc writters.
+        # Misc writers.
         'deflate': deflate,
 
         'lockVdi': lock_vdi,
@@ -1281,5 +1326,8 @@ if __name__ == '__main__':
         'modifyNodeInterface': modify_node_interface,
         'listNodeInterfaces': list_node_interfaces,
         'getNodePreferredInterface': get_node_preferred_interface,
-        'setNodePreferredInterface': set_node_preferred_interface
+        'setNodePreferredInterface': set_node_preferred_interface,
+
+        'drbdProperties': drbd_properties,
+        'drbdPropertiesSet': drbd_properties_set,
     })
