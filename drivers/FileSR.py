@@ -904,6 +904,8 @@ class FileVDI(VDI.VDI):
                 leaf_vdi.utilisation = self.utilisation
                 leaf_vdi.sm_config = {}
                 leaf_vdi.sm_config['vhd-parent'] = dstparent
+                # TODO: fix the raw snapshot case  
+                leaf_vdi.sm_config["image-format"] = getImageStringFromVdiType(self.vdi_type)
                 # If the parent is encrypted set the key_hash
                 # for the new snapshot disk
                 vdi_ref = self.sr.srcmd.params['vdi_ref']
@@ -924,6 +926,8 @@ class FileVDI(VDI.VDI):
                 base_vdi.size = self.size
                 base_vdi.utilisation = self.utilisation
                 base_vdi.sm_config = {}
+                # TODO: fix the raw snapshot case 
+                base_vdi.sm_config["image-format"] = getImageStringFromVdiType(self.vdi_type)
                 grandparent = self.cowutil.getParent(newsrc, FileVDI.extractUuid)
                 if grandparent:
                     base_vdi.sm_config['vhd-parent'] = grandparent
@@ -941,6 +945,8 @@ class FileVDI(VDI.VDI):
                 vdi_ref = self.sr.srcmd.params['vdi_ref']
                 sm_config = self.session.xenapi.VDI.get_sm_config(vdi_ref)
                 sm_config['vhd-parent'] = srcparent
+                # TODO: fix the raw snapshot case 
+                sm_config["image-format"] = getImageStringFromVdiType(self.vdi_type)
                 self.session.xenapi.VDI.set_sm_config(vdi_ref, sm_config)
             except Exception as e:
                 util.SMlog("vdi_clone: caught error during VDI.db_introduce: %s" % (str(e)))
