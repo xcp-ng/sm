@@ -1895,6 +1895,8 @@ class LVMVDI(VDI.VDI):
                 snapVDI.sm_config[key] = val
         snapVDI.sm_config["vdi_type"] = snapVdiType
         snapVDI.sm_config["vhd-parent"] = snapParent
+        # TODO: fix the raw snapshot case  
+        snapVDI.sm_config["image-format"] = getImageStringFromVdiType(self.vdi_type)
         snapVDI.lvname = snapLV
         return snapVDI
 
