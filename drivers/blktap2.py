@@ -425,8 +425,20 @@ class TapCtl(object):
         if cbtlog:
             args.extend(["-c", cbtlog])
 
-        # TODO: Handle issue.
-        cls._pread(args)
+        # TODO: Clean and test me!
+        util.SMlog("==LETSGO== `{_file}`")
+        import time
+        time.sleep(8)
+
+        @retried(backoff=.5, limit=10)
+        def unpause():
+            try:
+                cls._pread(args)
+            except TapCtl.CommandFailure as e:
+                if e.get_error_code() in (errno.EROFS, errno.EMEDIUMTYPE) and Tapdisk.abort_linstor_gc(_file):
+                    raise RetryLoop.TransientFailure(e)
+
+        unpause()
 
     @classmethod
     def shutdown(cls, pid):
@@ -830,7 +842,7 @@ class Tapdisk(object):
         _, volume_name, _ = drbd_path.rsplit("/", 2)
         group_name = LinstorVolumeManager.get_volume_group_name(volume_name)
 
-        openers = get_all_volume_openers(volume_name, "0")
+        openers = get_all_volume_openers(volume_name, "0") # TODO: ACTIVATE CHAIN
 
         session = XenAPI.xapi_local()
         session.xenapi.login_with_password("root", "", "", "SM")
@@ -879,9 +891,7 @@ class Tapdisk(object):
                             TapCtl.open(pid, minor, _type, path, options)
                             break
                         except TapCtl.CommandFailure as e:
-                            err = (
-                                'status' in e.info and e.info['status']
-                            ) or None
+                            err = e.get_error_code()
                             if err in (errno.EROFS, errno.EMEDIUMTYPE) and cls.abort_linstor_gc(path):
                                 continue
 
