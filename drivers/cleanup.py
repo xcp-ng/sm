@@ -1019,6 +1019,9 @@ class VDI:
             Util.log("Failed to update %s with vhd-parent field %s" % \
                      (self.uuid, self.parentUuid))
 
+    def _ensureParentActiveForRelink(self):
+        pass
+
     def _loadInfoHidden(self):
         hidden = vhdutil.getHidden(self.path)
         self.hidden = (hidden != 0)
@@ -1409,6 +1412,9 @@ class LVHDVDI(VDI):
 
     def _deactivate(self):
         self.sr.lvActivator.deactivate(self.uuid, False)
+
+    def _ensureParentActiveForRelink(self):
+        self.parent._activate()
 
     def _increaseSizeVirt(self, size, atomic=True):
         "ensure the virtual size of 'self' is at least 'size'"
@@ -2002,6 +2008,10 @@ class SR:
             # this means we had done the actual coalescing already and just
             # need to finish relinking and/or refreshing the children
             Util.log("==> Coalesce apparently already done: skipping")
+
+            # The parent volume must be active for the parent change to occur.
+            # The parent volume may become inactive if the host is rebooted.
+            vdi._ensureParentActiveForRelink()
         else:
             # JRN_COALESCE is used to check which VDI is being coalesced in
             # order to decide whether to abort the coalesce. We remove the
