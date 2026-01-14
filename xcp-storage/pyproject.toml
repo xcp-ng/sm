@@ -1,0 +1,77 @@
+[tool.mypy]
+mypy_path = "stubs"
+
+disallow_untyped_defs = true
+enable_error_code = ["explicit-override"]
+ignore_missing_imports = false
+implicit_optional = false
+
+[[tool.mypy.overrides]]
+module = "setuptools.*"
+ignore_missing_imports = true
+
+# To generate stubs, run the following commands in the linstor source folder:
+# ./setup.py build
+# stubgen --include-private build/lib/linstor/ -o <XCP_STORAGE_PATH>/stubs/
+# echo "from . import sharedconsts as consts" >> <XCP_STORAGE_PATH>/stubs/linstor/__init__.pyi
+[[tool.mypy.overrides]]
+module = "linstor.*"
+
+disallow_untyped_defs = false
+disable_error_code = [
+    "arg-type",
+    "attr-defined",
+    "explicit-override",
+    "name-defined",
+    "no-redef",
+    "override"
+]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+exclude = ["stubs/*"]
+ignore = [
+    "B019",  # flake8-bugbear: cached-instance-method
+    "UP006", # pyupgrade: non-pep585-annotation
+    "UP007", # pyupgrade: non-pep604-annotation-union
+    "UP045"  # pyupgrade: non-pep604-annotation-optional
+]
+select = [
+    "ARG",    # flake8-unused-arguments
+    "B",      # flake8-bugbear
+    "C90",    # mccabe
+    "F",      # Pyflakes
+    "I",      # isort
+    "N",      # pep8-naming
+    "PTH",    # flake8-use-pathlib
+    "Q",      # flake8-quotes
+    "RUF013", # ruff: implicit-optional
+    "RUF059", # ruff: unused-unpacked-variable
+    "SIM",    # flake8-simplify
+    "SLF",    # flake8-self
+    "T20",    # flake8-print
+    "UP"      # pyupgrade
+]
+typing-modules = ["xcp_storage.typing"]
+
+[tool.ruff.lint.isort.sections]
+"typing" = ["xcp_storage.typing"]
+
+[tool.ruff.lint.isort]
+case-sensitive = false
+combine-as-imports = true
+force-sort-within-sections = true
+known-first-party = ["xcp_storage"]
+known-third-party = ["linstor"]
+lines-after-imports = 1
+order-by-type = false
+section-order = [
+    "future",
+    "standard-library",
+    "third-party",
+    "first-party",
+    "local-folder",
+    "typing"
+]
