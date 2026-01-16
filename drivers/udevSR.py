@@ -153,6 +153,10 @@ class udevVDI(VDI.VDI):
         self.utilisation = 0
         self.label = self.path
         self.sm_config = {}
+        self.vdi_type = "phy" # We give phy but there is a special case in blktap2.py:VDI.tap_wanted() for udevSR
+        self.image_format = "raw"
+        self.sm_config["image-format"] = self.image_format
+
         try:
             s = os.stat(self.path)
             self.deleted = False
