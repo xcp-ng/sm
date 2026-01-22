@@ -524,6 +524,8 @@ class LinstorVolumeManager(object):
         # Paths: /res_name/vol_number/size
         sizes = {}
 
+        self._scan_for_broken_diskless_resources()
+
         for resource in self._get_resource_cache().resources:
             if resource.name not in sizes:
                 current = sizes[resource.name] = {}
@@ -2117,6 +2119,47 @@ class LinstorVolumeManager(object):
         self._resource_cache_dirty = True
         self._volume_info_cache_dirty = True
 
+    def _repair_diskless_resource(self, resource, volume):
+        if linstor.consts.FLAG_DISKLESS not in resource.flags:
+            return
+
+        self._linstor.resource_delete(
+            node_name=resource.node_name,
+            rsc_name=resource.name
+        )
+
+        self._linstor.resource_create(
+            rscs=[
+                linstor.linstorapi.ResourceData(
+                    #node_id=?,
+                    #layer_list=?,
+                    node_name=resource.node_name,
+                    rsc_name=resource.name,
+                    storage_pool=volume.storage_pool_name,
+                    diskless=linstor.consts.FLAG_DISKLESS in resource.flags,
+                    drbd_diskless=linstor.consts.FLAG_DRBD_DISKLESS in resource.flags,
+                    nvme_initiator=linstor.consts.FLAG_NVME_INITIATOR in resource.flags,
+                    ebs_initiator=linstor.consts.FLAG_EBS_INITIATOR in resource.flags
+                )
+            ]
+        )
+
+    def _scan_for_broken_diskless_resources(self):
+        for resource in self._get_resource_cache().resources:
+            for volume in resource.volumes:
+                if (
+                    volume.storage_pool_name != self._group_name
+                    or volume.allocated_size >= 0
+                ):
+                    return
+                try: self._repair_diskless_resource(resource, volume)
+                except Exception as e:
+                    util.SMlog('Failed to repair diskless resource `{}` on `{}`: {}'.format(
+                        resource.name, volume.storage_pool_name, e
+                    ))
+        self._mark_resource_cache_as_dirty()
+
+
     # --------------------------------------------------------------------------
 
     def _ensure_volume_exists(self, volume_uuid):
@@ -2154,6 +2197,8 @@ class LinstorVolumeManager(object):
 
         if not self._volume_info_cache_dirty:
             return self._volume_info_cache
+
+        self._scan_for_broken_diskless_resources()
 
         def process_resource(resource):
             if resource.name not in all_volume_info:
