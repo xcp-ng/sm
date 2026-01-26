@@ -39,7 +39,6 @@ DATABASE_PATH = '/var/lib/linstor'
 DATABASE_MKFS = 'mkfs.ext4'
 
 REG_DRBDADM_PRIMARY = re.compile("([^\\s]+)\\s+role:Primary")
-REG_DRBDSETUP_IP = re.compile('[^\\s]+\\s+(.*):.*$')
 
 DRBD_BY_RES_PATH = '/dev/drbd/by-res/'
 
@@ -139,17 +138,18 @@ def get_remote_host_ip(node_name):
         conf = json.loads(stdout)
         if not conf:
             return
+    except Exception as e:
+        util.SMlog(f"Failed to read DRBD configuration as JSON: `{e}`.")
+        return
 
-        for connection in conf[0]['connections']:
-            if connection['net']['_name'] == node_name:
-                value = connection['path']['_remote_host']
-                res = REG_DRBDSETUP_IP.match(value)
-                if res:
-                    return res.groups()[0]
-                break
-    except Exception:
-        pass
-
+    try:
+        for connection in conf[0]["connections"]:
+            if connection["net"]["_name"] == node_name:
+                return connection["paths"][0]["remote_host"]["address"]
+    except KeyError as e:
+        util.SMlog(f"The key `{e}` could not be found in the DRBD configuration. The JSON format may have changed.")
+    except Exception as e:
+        util.SMlog(f"Failed to parse DRBD configuration: `{e}`. The JSON format may have changed.")
 
 def _get_controller_uri():
     PLUGIN_CMD = 'hasControllerRunning'
