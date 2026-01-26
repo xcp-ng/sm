@@ -124,7 +124,8 @@ class VDI(object):
     @property
     def block_size(self):
         if self._block_size < 0:
-            self._block_size = vhdutil.getBlockSize(self.path)
+            self._block_size = vhdutil.getBlockSize(self.path) if self.vdi_type == vhdutil.VDI_TYPE_VHD \
+                else vhdutil.DEFAULT_VHD_BLOCK_SIZE
         return self._block_size
 
     @staticmethod
