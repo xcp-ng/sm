@@ -139,13 +139,15 @@ def _get_controller_addresses() -> List[str]:
         (ret, stdout, stderr) = util.doexec([
             "/usr/sbin/ss", "-tnpH", "state", "established", f"( sport = :{LINSTOR_SATELLITE_PORT} )"
         ])
-        return [
-            line.split()[3].split(":")[0]
-            for line in stdout.splitlines()
-        ]
+        if ret == 0:
+            return [
+                line.split()[3].rsplit(":", 1)[0]
+                for line in stdout.splitlines()
+            ]
+        util.SMlog(f"Unexpected code {ret}: {stderr}")
     except Exception as e:
         util.SMlog(f"Unable to get controller addresses: {e}")
-        return []
+    return []
 
 def _get_controller_uri() -> str:
     # TODO: Check that an IP address from the current pool is returned.
@@ -160,7 +162,7 @@ def get_controller_uri():
             return uri
 
         retries += 1
-        if retries >= 10:
+        if retries >= 30:
             break
         time.sleep(1)
 
