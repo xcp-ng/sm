@@ -205,29 +205,30 @@ class TapCtl(object):
                                  universal_newlines=text_mode)
             if input:
                 p.stdin.write(input)
-                p.stdin.close()
         except OSError as e:
             raise cls.CommandFailure(cmd, errno=e.errno)
 
         return cls(cmd, p)
 
-    def _errmsg(self):
-        output = map(str.rstrip, self._p.stderr)
+    def _errmsg(self, stderr):
+        output = map(str.rstrip, stderr)
         return "; ".join(output)
 
-    def _wait(self, quiet=False):
+    def _wait(self, quiet=False, text_mode=True):
         """
         Reap the child tap-ctl process of this invocation.
         Raises a TapCtl.CommandFailure on non-zero exit status.
         """
-        status = self._p.wait()
+        stdout, stderr = self._p.communicate()
+        status = self._p.returncode
         if not quiet:
             util.SMlog(" = %d" % status)
 
         if status == 0:
-            return
+            return stdout
 
-        info = {'errmsg': self._errmsg(),
+        info = {'errmsg': self._errmsg(
+            stderr if text_mode else stderr.decode()),
                  'pid': self._p.pid}
 
         if status < 0:
@@ -245,9 +246,7 @@ class TapCtl(object):
         tapctl = cls._call(args=args, quiet=quiet, input=input,
                            text_mode=text_mode)
 
-        output = tapctl.stdout.readline().rstrip()
-
-        tapctl._wait(quiet)
+        output = tapctl._wait(quiet=quiet, text_mode=text_mode)
         return output
 
     @staticmethod
@@ -264,9 +263,10 @@ class TapCtl(object):
         args += cls._maybe("-t", _type)
         args += cls._maybe("-f", path)
 
-        tapctl = cls._call(args, True)
+        tapctl = cls._call(args, quiet=True)
+        stdout = tapctl._wait(quiet=True)
 
-        for stdout_line in tapctl.stdout:
+        for stdout_line in stdout.splitlines():
             # FIXME: tap-ctl writes error messages to stdout and
             # confuses this parser
             if stdout_line == "blktap kernel module not installed\n":
@@ -291,8 +291,6 @@ class TapCtl(object):
                 else:
                     util.SMlog("Ignoring unexpected tap-ctl output: %s" % repr(field))
             yield row
-
-        tapctl._wait(True)
 
     @classmethod
     @retried(backoff=.5, limit=10)

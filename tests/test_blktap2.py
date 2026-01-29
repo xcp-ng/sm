@@ -71,9 +71,10 @@ class TestTapdisk(unittest.TestCase):
         # For this one we want the real TapCtl
         blktap2.TapCtl = self.real_tapctl
         mock_process = mock.MagicMock(autospec='subprocess.Popen')
-        mock_process.stdout = StringIO(
-            "pid=705 minor=0 state=0 args=vhd:/dev/VG_XenStorage-2eeb9fd5-6545-8f0b-cf72-0378e413a31c/VHD-a7c0f37e-b7fb-4a44-a6fe-05067fb84c09")
-        mock_process.wait.return_value = 0
+        stdout = \
+            "pid=705 minor=0 state=0 args=vhd:/dev/VG_XenStorage-2eeb9fd5-6545-8f0b-cf72-0378e413a31c/VHD-a7c0f37e-b7fb-4a44-a6fe-05067fb84c09"
+        mock_process.communicate.return_value = (stdout, "")
+        mock_process.returncode = 0
         self.mock_subprocess.Popen.return_value = mock_process
 
         results = list(blktap2.Tapdisk.list())
@@ -644,9 +645,10 @@ class TestTapCtl(unittest.TestCase):
         TapCtl list no args
         """
         mock_process = mock.MagicMock(autospec='subprocess.Popen')
-        mock_process.stdout = StringIO(
-            "pid=705 minor=0 state=0 args=vhd:/dev/VG_XenStorage-2eeb9fd5-6545-8f0b-cf72-0378e413a31c/VHD-a7c0f37e-b7fb-4a44-a6fe-05067fb84c09")
-        mock_process.wait.return_value = 0
+        stdout = \
+            "pid=705 minor=0 state=0 args=vhd:/dev/VG_XenStorage-2eeb9fd5-6545-8f0b-cf72-0378e413a31c/VHD-a7c0f37e-b7fb-4a44-a6fe-05067fb84c09"
+        mock_process.communicate.return_value = (stdout, "")
+        mock_process.returncode = 0
         self.mock_subprocess.Popen.return_value = mock_process
 
         results = blktap2.TapCtl.list()
@@ -668,8 +670,9 @@ class TestTapCtl(unittest.TestCase):
         TapCtl list pid arg
         """
         mock_process = mock.MagicMock(autospec='subprocess.Popen')
-        mock_process.stdout = StringIO("")
-        mock_process.wait.return_value = 0
+        stdout = ""
+        mock_process.communicate.return_value = (stdout, "")
+        mock_process.returncode = 0
         self.mock_subprocess.Popen.return_value = mock_process
 
         attrs = {"pid": 705}
@@ -686,11 +689,13 @@ class TestTapCtl(unittest.TestCase):
         TapCtl list retry on eproto
         """
         mock_process1 = mock.MagicMock(autospec='subprocess.Popen')
-        mock_process1.stdout = StringIO("")
-        mock_process1.wait.return_value = errno.EPROTO
+        stdout = ""
+        mock_process1.communicate.return_value = (stdout, "")
+        mock_process1.returncode = errno.EPROTO
         mock_process2 = mock.MagicMock(autospec='subprocess.Popen')
-        mock_process2.stdout = StringIO("")
-        mock_process2.wait.return_value = 0
+        stdout = ""
+        mock_process2.communicate.return_value = (stdout, "")
+        mock_process2.returncode = 0
 
         self.mock_subprocess.Popen.side_effect = [
             mock_process1, mock_process2]
@@ -705,8 +710,9 @@ class TestTapCtl(unittest.TestCase):
         TapCtl list failure on eperm
         """
         mock_process1 = mock.MagicMock(autospec='subprocess.Popen')
-        mock_process1.stdout = StringIO("")
-        mock_process1.wait.return_value = errno.EPERM
+        stdout = b""
+        mock_process1.communicate.return_value = (stdout, "")
+        mock_process1.returncode = errno.EPERM
 
         self.mock_subprocess.Popen.side_effect = [
             mock_process1]
@@ -721,8 +727,9 @@ class TestTapCtl(unittest.TestCase):
         TapCtl list, exited signalled
         """
         mock_process1 = mock.MagicMock(autospec='subprocess.Popen')
-        mock_process1.stdout = StringIO("")
-        mock_process1.wait.return_value = -11
+        stdout = ""
+        mock_process1.communicate.return_value = (stdout, "")
+        mock_process1.returncode = -11
 
         self.mock_subprocess.Popen.side_effect = [
             mock_process1]
@@ -737,9 +744,10 @@ class TestTapCtl(unittest.TestCase):
         TapCtl allocate
         """
         mock_process = mock.MagicMock(autospec='subprocess.Popen')
-        mock_process.stdout = StringIO('/dev/xen/blktap-2/tapdev1')
-        mock_process.wait.return_value = 0
-        self.mock_subprocess.Popen.side_effect = [mock_process]
+        stdout = '/dev/xen/blktap-2/tapdev1'
+        mock_process.communicate.return_value = (stdout, "")
+        mock_process.returncode = 0
+        self.mock_subprocess.Popen.return_value = mock_process
 
         results = blktap2.TapCtl.allocate()
 
@@ -756,8 +764,9 @@ class TestTapCtl(unittest.TestCase):
         TapCtl free
         """
         mock_process = mock.MagicMock(autospec='subprocess.Popen')
-        mock_process.stdout = StringIO('')
-        mock_process.wait.return_value = 0
+        stdout = ''
+        mock_process.communicate.return_value = (stdout, "")
+        mock_process.returncode = 0
         self.mock_subprocess.Popen.side_effect = [mock_process]
 
         blktap2.TapCtl.free(1)
@@ -773,8 +782,9 @@ class TestTapCtl(unittest.TestCase):
         TapCtl spawn
         """
         mock_process = mock.MagicMock(autospec='subprocess.Popen')
-        mock_process.stdout = StringIO('22127')
-        mock_process.wait.return_value = 0
+        stdout = '22127'
+        mock_process.communicate.return_value = (stdout, "")
+        mock_process.returncode = 0
         self.mock_subprocess.Popen.side_effect = [mock_process]
 
         pid = blktap2.TapCtl.spawn()
@@ -792,11 +802,13 @@ class TestTapCtl(unittest.TestCase):
         TapCtl spawn, retry (CA-292268)
         """
         mock_process1 = mock.MagicMock(autospec='subprocess.Popen')
-        mock_process1.stdout = StringIO('')
-        mock_process1.wait.return_value = errno.EPERM
+        stdout = ''
+        mock_process1.communicate.return_value = (stdout, "")
+        mock_process1.returncode = errno.EPERM
         mock_process2 = mock.MagicMock(autospec='subprocess.Popen')
-        mock_process2.stdout = StringIO('22127')
-        mock_process2.wait.return_value = 0
+        stdout = '22127'
+        mock_process2.communicate.return_value = (stdout, "")
+        mock_process2.returncode = 0
         self.mock_subprocess.Popen.side_effect = [
             mock_process1, mock_process2]
 
@@ -815,8 +827,9 @@ class TestTapCtl(unittest.TestCase):
         TapCtl spawn, command failure
         """
         mock_process = mock.MagicMock(autospec='subprocess.Popen')
-        mock_process.stdout = StringIO('')
-        mock_process.wait.return_value = errno.EIO
+        stdout = ''
+        mock_process.communicate.return_value = (stdout, "")
+        mock_process.returncode = errno.EIO
         self.mock_subprocess.Popen.side_effect = [mock_process]
 
         with self.assertRaises(blktap2.TapCtl.CommandFailure) as cf:
@@ -829,8 +842,9 @@ class TestTapCtl(unittest.TestCase):
         TapCtl attach
         """
         mock_process = mock.MagicMock(autospec='subprocess.Popen')
-        mock_process.stdout = StringIO('')
-        mock_process.wait.return_value = 0
+        stdout = ''
+        mock_process.communicate.return_value = (stdout, "")
+        mock_process.returncode = 0
         self.mock_subprocess.Popen.side_effect = [mock_process]
 
         blktap2.TapCtl.attach(22127, 2)
@@ -846,8 +860,9 @@ class TestTapCtl(unittest.TestCase):
         TapCtl detach
         """
         mock_process = mock.MagicMock(autospec='subprocess.Popen')
-        mock_process.stdout = StringIO('')
-        mock_process.wait.return_value = 0
+        stdout = ''
+        mock_process.communicate.return_value = (stdout, "")
+        mock_process.returncode = 0
         self.mock_subprocess.Popen.side_effect = [mock_process]
 
         blktap2.TapCtl.detach(22127, 2)
@@ -863,8 +878,9 @@ class TestTapCtl(unittest.TestCase):
         Tapctl close
         """
         mock_process = mock.MagicMock(autospec='subprocess.Popen')
-        mock_process.stdout = StringIO('')
-        mock_process.wait.return_value = 0
+        stdout = ''
+        mock_process.communicate.return_value = (stdout, "")
+        mock_process.returncode = 0
         self.mock_subprocess.Popen.side_effect = [mock_process]
 
         blktap2.TapCtl.close(22127, 2)
@@ -884,8 +900,9 @@ class TestTapCtl(unittest.TestCase):
         Tapctl close, forced
         """
         mock_process = mock.MagicMock(autospec='subprocess.Popen')
-        mock_process.stdout = StringIO('')
-        mock_process.wait.return_value = 0
+        stdout = ''
+        mock_process.communicate.return_value = (stdout, "")
+        mock_process.returncode = 0
         self.mock_subprocess.Popen.side_effect = [mock_process]
 
         blktap2.TapCtl.close(22127, 2, force=True)
@@ -905,8 +922,9 @@ class TestTapCtl(unittest.TestCase):
         TapCtl pause
         """
         mock_process = mock.MagicMock(autospec='subprocess.Popen')
-        mock_process.stdout = StringIO('')
-        mock_process.wait.return_value = 0
+        stdout = ''
+        mock_process.communicate.return_value = (stdout, "")
+        mock_process.returncode = 0
         self.mock_subprocess.Popen.side_effect = [mock_process]
 
         blktap2.TapCtl.pause(22127, 2)
@@ -922,8 +940,9 @@ class TestTapCtl(unittest.TestCase):
         TapCtl unpause
         """
         mock_process = mock.MagicMock(autospec='subprocess.Popen')
-        mock_process.stdout = StringIO('')
-        mock_process.wait.return_value = 0
+        stdout = ''
+        mock_process.communicate.return_value = (stdout, "")
+        mock_process.returncode = 0
         self.mock_subprocess.Popen.side_effect = [mock_process]
 
         blktap2.TapCtl.unpause(
@@ -946,8 +965,9 @@ class TestTapCtl(unittest.TestCase):
         TapCtl unpause, mirroring
         """
         mock_process = mock.MagicMock(autospec='subprocess.Popen')
-        mock_process.stdout = StringIO('')
-        mock_process.wait.return_value = 0
+        stdout = ''
+        mock_process.communicate.return_value = (stdout, "")
+        mock_process.returncode = 0
         self.mock_subprocess.Popen.side_effect = [mock_process]
 
         blktap2.TapCtl.unpause(22127, 2, mirror='nbd:mirror_vbd/10/xvda')
@@ -964,8 +984,9 @@ class TestTapCtl(unittest.TestCase):
         TapCtl unpause, CBT logging
         """
         mock_process = mock.MagicMock(autospec='subprocess.Popen')
-        mock_process.stdout = StringIO('')
-        mock_process.wait.return_value = 0
+        stdout = ''
+        mock_process.communicate.return_value = (stdout, "")
+        mock_process.returncode = 0
         self.mock_subprocess.Popen.side_effect = [mock_process]
 
         blktap2.TapCtl.unpause(
@@ -988,8 +1009,9 @@ class TestTapCtl(unittest.TestCase):
         TapCtl open
         """
         mock_process = mock.MagicMock(autospec='subprocess.Popen')
-        mock_process.stdout = StringIO('')
-        mock_process.wait.return_value = 0
+        stdout = ''
+        mock_process.communicate.return_value = (stdout, "")
+        mock_process.returncode = 0
         self.mock_subprocess.Popen.side_effect = [mock_process]
 
         options = {'timeout': 40}
@@ -1013,8 +1035,9 @@ class TestTapCtl(unittest.TestCase):
         TapCtl open, readonly
         """
         mock_process = mock.MagicMock(autospec='subprocess.Popen')
-        mock_process.stdout = StringIO('')
-        mock_process.wait.return_value = 0
+        stdout = ''
+        mock_process.communicate.return_value = (stdout, "")
+        mock_process.returncode = 0
         self.mock_subprocess.Popen.side_effect = [mock_process]
 
         options = {'rdonly': True}
@@ -1033,8 +1056,9 @@ class TestTapCtl(unittest.TestCase):
         TapCtl open, readonly
         """
         mock_process = mock.MagicMock(autospec='subprocess.Popen')
-        mock_process.stdout = StringIO('')
-        mock_process.wait.return_value = 0
+        stdout = ''
+        mock_process.communicate.return_value = (stdout, "")
+        mock_process.returncode = 0
         self.mock_subprocess.Popen.side_effect = [mock_process]
 
         options = {'secondary': 'nbd:mirror_vbd/10/xvda'}
@@ -1053,8 +1077,9 @@ class TestTapCtl(unittest.TestCase):
         TapCtl open, read cache
         """
         mock_process = mock.MagicMock(autospec='subprocess.Popen')
-        mock_process.stdout = StringIO('')
-        mock_process.wait.return_value = 0
+        stdout = ''
+        mock_process.communicate.return_value = (stdout, "")
+        mock_process.returncode = 0
         self.mock_subprocess.Popen.side_effect = [mock_process]
 
         options = {'o_direct': False}
@@ -1073,8 +1098,9 @@ class TestTapCtl(unittest.TestCase):
         TapCtl open, intellicache leaf
         """
         mock_process = mock.MagicMock(autospec='subprocess.Popen')
-        mock_process.stdout = StringIO('')
-        mock_process.wait.return_value = 0
+        stdout = ''
+        mock_process.communicate.return_value = (stdout, "")
+        mock_process.returncode = 0
         self.mock_subprocess.Popen.side_effect = [mock_process]
 
         options = {
@@ -1099,8 +1125,9 @@ class TestTapCtl(unittest.TestCase):
         TapCtl open, intellicache leaf, non-persistent
         """
         mock_process = mock.MagicMock(autospec='subprocess.Popen')
-        mock_process.stdout = StringIO('')
-        mock_process.wait.return_value = 0
+        stdout = ''
+        mock_process.communicate.return_value = (stdout, "")
+        mock_process.returncode = 0
         self.mock_subprocess.Popen.side_effect = [mock_process]
 
         options = {
@@ -1126,8 +1153,9 @@ class TestTapCtl(unittest.TestCase):
         TapCtl open, intellicache parent
         """
         mock_process = mock.MagicMock(autospec='subprocess.Popen')
-        mock_process.stdout = StringIO('')
-        mock_process.wait.return_value = 0
+        stdout = ''
+        mock_process.communicate.return_value = (stdout, "")
+        mock_process.returncode = 0
         self.mock_subprocess.Popen.side_effect = [mock_process]
 
         options = {
@@ -1149,8 +1177,9 @@ class TestTapCtl(unittest.TestCase):
         TapCtl open, CBT logging
         """
         mock_process = mock.MagicMock(autospec='subprocess.Popen')
-        mock_process.stdout = StringIO('')
-        mock_process.wait.return_value = 0
+        stdout = ''
+        mock_process.communicate.return_value = (stdout, "")
+        mock_process.returncode = 0
         self.mock_subprocess.Popen.side_effect = [mock_process]
 
         options = {
@@ -1177,8 +1206,9 @@ class TestTapCtl(unittest.TestCase):
         TapCtl open, with encryption key
         """
         mock_process = mock.MagicMock(autospec='subprocess.Popen')
-        mock_process.stdout = StringIO('')
-        mock_process.wait.return_value = 0
+        stdout = b''
+        mock_process.communicate.return_value = (stdout, "")
+        mock_process.returncode = 0
         self.mock_subprocess.Popen.side_effect = [mock_process]
 
         options = {'key_hash':
@@ -1229,8 +1259,9 @@ class TestTapCtl(unittest.TestCase):
         TapCtl stats
         """
         mock_process = mock.MagicMock(autospec='subprocess.Popen')
-        mock_process.stdout = StringIO('{ "name": "vhd:/dev/VG_XenStorage-2eeb9fd5-6545-8f0b-cf72-0378e413a31c/VHD-a7c0f37e-b7fb-4a44-a6fe-05067fb84c09", "secs": [ 688, 0 ], "images": [ { "name": "/dev/VG_XenStorage-2eeb9fd5-6545-8f0b-cf72-0378e413a31c/VHD-a7c0f37e-b7fb-4a44-a6fe-05067fb84c09", "hits": [ 688, 0 ], "fail": [ 0, 0 ], "driver": { "type": 4, "name": "vhd", "status": null } } ], "tap": { "minor": 0, "reqs": [ 35, 35 ], "kicks": [ 33, 28 ] }, "FIXME_enospc_redirect_count": 0, "nbd_mirror_failed": 0, "reqs_outstanding": 0, "read_caching": "false" }')
-        mock_process.wait.return_value = 0
+        stdout = '{ "name": "vhd:/dev/VG_XenStorage-2eeb9fd5-6545-8f0b-cf72-0378e413a31c/VHD-a7c0f37e-b7fb-4a44-a6fe-05067fb84c09", "secs": [ 688, 0 ], "images": [ { "name": "/dev/VG_XenStorage-2eeb9fd5-6545-8f0b-cf72-0378e413a31c/VHD-a7c0f37e-b7fb-4a44-a6fe-05067fb84c09", "hits": [ 688, 0 ], "fail": [ 0, 0 ], "driver": { "type": 4, "name": "vhd", "status": null } } ], "tap": { "minor": 0, "reqs": [ 35, 35 ], "kicks": [ 33, 28 ] }, "FIXME_enospc_redirect_count": 0, "nbd_mirror_failed": 0, "reqs_outstanding": 0, "read_caching": "false" }'
+        mock_process.communicate.return_value = (stdout, "")
+        mock_process.returncode = 0
         self.mock_subprocess.Popen.side_effect = [mock_process]
 
         results = blktap2.TapCtl.stats(705, 0)
@@ -1248,8 +1279,9 @@ class TestTapCtl(unittest.TestCase):
         TapCtl major
         """
         mock_process = mock.MagicMock(autospec='subprocess.Popen')
-        mock_process.stdout = StringIO('254')
-        mock_process.wait.return_value = 0
+        stdout = '254'
+        mock_process.communicate.return_value = (stdout, "")
+        mock_process.returncode = 0
         self.mock_subprocess.Popen.side_effect = [mock_process]
 
         results = blktap2.TapCtl.major()
