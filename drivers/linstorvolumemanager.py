@@ -15,9 +15,13 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
 
-from sm_typing import Any, Dict, override
+from sm_typing import (
+    Any,
+    Dict,
+    List,
+    override,
+)
 
-import errno
 import json
 import linstor
 import os.path
@@ -37,6 +41,8 @@ DATABASE_VOLUME_NAME = PERSISTENT_PREFIX + 'database'
 DATABASE_SIZE = 1 << 30  # 1GB.
 DATABASE_PATH = '/var/lib/linstor'
 DATABASE_MKFS = 'mkfs.ext4'
+
+LINSTOR_SATELLITE_PORT = 3366
 
 REG_DRBDADM_PRIMARY = re.compile("([^\\s]+)\\s+role:Primary")
 REG_DRBDSETUP_IP = re.compile('[^\\s]+\\s+(.*):.*$')
@@ -128,73 +134,23 @@ def round_down(value, divisor):
 
 # ==============================================================================
 
-def get_remote_host_ip(node_name):
-    (ret, stdout, stderr) = util.doexec([
-        'drbdsetup', 'show', DATABASE_VOLUME_NAME, '--json'
-    ])
-    if ret != 0:
-        return
-
+def _get_controller_addresses() -> List[str]:
     try:
-        conf = json.loads(stdout)
-        if not conf:
-            return
+        (ret, stdout, stderr) = util.doexec([
+            "/usr/sbin/ss", "-tnpH", "state", "established", f"( sport = :{LINSTOR_SATELLITE_PORT} )"
+        ])
+        return [
+            line.split()[3].split(":")[0]
+            for line in stdout.splitlines()
+        ]
+    except Exception as e:
+        util.SMlog(f"Unable to get controller addresses: {e}")
+        return []
 
-        for connection in conf[0]['connections']:
-            if connection['net']['_name'] == node_name:
-                value = connection['path']['_remote_host']
-                res = REG_DRBDSETUP_IP.match(value)
-                if res:
-                    return res.groups()[0]
-                break
-    except Exception:
-        pass
-
-
-def _get_controller_uri():
-    PLUGIN_CMD = 'hasControllerRunning'
-
-    # Try to find controller using drbdadm.
-    (ret, stdout, stderr) = util.doexec([
-        'drbdadm', 'status', DATABASE_VOLUME_NAME
-    ])
-    if ret == 0:
-        # If we are here, the database device exists locally.
-
-        if stdout.startswith('{} role:Primary'.format(DATABASE_VOLUME_NAME)):
-            # Nice case, we have the controller running on this local host.
-            return 'linstor://localhost'
-
-        # Try to find the host using DRBD connections.
-        res = REG_DRBDADM_PRIMARY.search(stdout)
-        if res:
-            node_name = res.groups()[0]
-            ip = get_remote_host_ip(node_name)
-            if ip:
-                return 'linstor://' + ip
-
-    # Worst case: we use many hosts in the pool (>= 4), so we can't find the
-    # primary using drbdadm because we don't have all connections to the
-    # replicated volume. `drbdadm status xcp-persistent-database` returns
-    # 3 connections by default.
-    try:
-        session = util.timeout_call(10, util.get_localAPI_session)
-
-        for host_ref, host_record in session.xenapi.host.get_all_records().items():
-            node_name = host_record['hostname']
-            try:
-                if util.strtobool(
-                    session.xenapi.host.call_plugin(host_ref, PLUGIN, PLUGIN_CMD, {})
-                ):
-                    return 'linstor://' + host_record['address']
-            except Exception as e:
-                # Can throw and exception if a host is offline. So catch it.
-                util.SMlog('Unable to search controller on `{}`: {}'.format(
-                    node_name, e
-                ))
-    except:
-        # Not found, maybe we are trying to create the SR...
-        pass
+def _get_controller_uri() -> str:
+    # TODO: Check that an IP address from the current pool is returned.
+    addresses = _get_controller_addresses()
+    return "linstor://" + addresses[0] if addresses else ""
 
 def get_controller_uri():
     retries = 0
