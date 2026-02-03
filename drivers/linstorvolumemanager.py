@@ -1226,8 +1226,8 @@ class LinstorVolumeManager(object):
 
         volumes = {}
 
-        all_volume_info = self._get_volumes_info()
         volume_names = self.get_volumes_with_name()
+        all_volume_info = self._get_volumes_info(volume_names)
         for volume_uuid, volume_name in volume_names.items():
             if volume_name:
                 volume_info = all_volume_info.get(volume_name)
@@ -2149,11 +2149,17 @@ class LinstorVolumeManager(object):
                 resource_names.add(dfn.name)
         return resource_names
 
-    def _get_volumes_info(self, volume_name=None):
+    def _get_volumes_info(self, volume_names=None):
         all_volume_info = {}
 
         if not self._volume_info_cache_dirty:
             return self._volume_info_cache
+
+        # `volume_names` MUST contain all volumes registered in the KV store.
+        # It can be provided to the function to avoid double fetching.
+        if not volume_names:
+            volume_names = self.get_volumes_with_name()
+        volume_names = set(volume_names.values())
 
         def process_resource(resource):
             if resource.name not in all_volume_info:
@@ -2187,7 +2193,8 @@ class LinstorVolumeManager(object):
 
         try:
             for resource in self._get_resource_cache().resources:
-                process_resource(resource)
+                if resource.name in volume_names:
+                    process_resource(resource)
             for volume in all_volume_info.values():
                 if volume.allocated_size <= 0:
                     raise LinstorVolumeManagerError('Failed to get allocated size of `{}`'.format(resource.name))
