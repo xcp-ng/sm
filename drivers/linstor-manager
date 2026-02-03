@@ -29,7 +29,12 @@ import XenAPIPlugin
 from json import JSONEncoder
 from linstorjournaler import LinstorJournaler
 from linstorvhdutil import LinstorVhdUtil, check_ex
-from linstorvolumemanager import get_controller_uri, get_local_volume_openers, LinstorVolumeManager
+from linstorvolumemanager import (
+    get_controller_uri,
+    get_local_volume_openers,
+    LinstorVolumeManager,
+    LINSTOR_SATELLITE_PORT,
+)
 from lock import Lock
 import json
 import LinstorSR
@@ -42,7 +47,7 @@ LVM_PLUGIN = 'lvm.py'
 THIN_POOL = 'thin_pool'
 
 FIREWALL_PORT_SCRIPT = '/etc/xapi.d/plugins/firewall-port'
-LINSTOR_PORTS = [3366, 3370, 3376, 3377, 8076, 8077]
+LINSTOR_PORTS = (LINSTOR_SATELLITE_PORT, 3370, 3376, 3377, 8076, 8077)
 DRBD_PORTS = '7000:8000'
 
 DRBD_REACTOR_CONF = '/etc/drbd-reactor.d/sm-linstor.toml'
