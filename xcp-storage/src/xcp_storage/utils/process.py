@@ -46,7 +46,7 @@ def run_internal_command(
     args: List[str],
     *,
     simple: Literal[True] = True,
-    expected_ret_code: Optional[int] = 0,
+    expected_ret_code: Optional[int] = None,
     ret_code_callback: Callable[[str, str, int], int] = default_ret_code_callback,
     quiet: bool = False
 ) -> str:
@@ -57,7 +57,7 @@ def run_internal_command(
     args: List[str],
     *,
     simple: Literal[False],
-    expected_ret_code: Optional[int] = 0,
+    expected_ret_code: Optional[int] = None,
     ret_code_callback: Callable[[str, str, int], int] = default_ret_code_callback,
     quiet: bool = False
 ) -> Tuple[str, str, int]:
@@ -68,7 +68,7 @@ def run_internal_command(
     args: List[str],
     *,
     simple: bool,
-    expected_ret_code: Optional[int] = 0,
+    expected_ret_code: Optional[int] = None,
     ret_code_callback: Callable[[str, str, int], int] = default_ret_code_callback,
     quiet: bool = False
 ) -> Union[str, Tuple[str, str, int]]:
@@ -78,7 +78,7 @@ def run_internal_command(
     args: List[str],
     *,
     simple: bool = True,
-    expected_ret_code: Optional[int] = 0,
+    expected_ret_code: Optional[int] = None,
     ret_code_callback: Callable[[str, str, int], int] = default_ret_code_callback,
     quiet: bool = False
 ) -> Union[str, Tuple[str, str, int]]:
@@ -109,7 +109,7 @@ def run_command(
     args: List[str],
     *,
     simple: Literal[True] = True,
-    expected_ret_code: Optional[int] = 0,
+    expected_ret_code: Optional[int] = None,
     ret_code_callback: Callable[[str, str, int], int] = default_ret_code_callback,
     quiet: bool = False
 ) -> str:
@@ -120,7 +120,7 @@ def run_command(
     args: List[str],
     *,
     simple: Literal[False],
-    expected_ret_code: Optional[int] = 0,
+    expected_ret_code: Optional[int] = None,
     ret_code_callback: Callable[[str, str, int], int] = default_ret_code_callback,
     quiet: bool = False
 ) -> Tuple[str, str, int]:
@@ -130,7 +130,7 @@ def run_command(
     args: List[str],
     *,
     simple: bool = True,
-    expected_ret_code: Optional[int] = 0,
+    expected_ret_code: Optional[int] = None,
     ret_code_callback: Callable[[str, str, int], int] = default_ret_code_callback,
     quiet: bool = False
 ) -> Union[str, Tuple[str, str, int]]:

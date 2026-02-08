@@ -28,7 +28,7 @@ _EXEC_PATH_SYSTEMCTL = "/usr/bin/systemctl"
 # ------------------------------------------------------------------------------
 
 class ServiceError(Exception):
-    def __init__(self, message: str, code: Optional[int] = None):
+    def __init__(self, message: str, code: Optional[int] = None) -> None:
         super().__init__(message)
         self.code = code
 

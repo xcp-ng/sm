@@ -38,19 +38,19 @@ LOG_SYSLOG_FACILITY = logging.handlers.SysLogHandler.LOG_LOCAL2
 
 # ------------------------------------------------------------------------------
 
-def debug(message: str, *args: Any, **kwargs: Any) -> None:
+def debug(message: str, *args: Any, **kwargs: Any) -> None: # noqa: ANN401
     _LOGGER.debug(message, *args, **kwargs)
 
-def info(message: str, *args: Any, **kwargs: Any) -> None:
+def info(message: str, *args: Any, **kwargs: Any) -> None: # noqa: ANN401
     _LOGGER.info(message, *args, **kwargs)
 
-def warning(message: str, *args: Any, **kwargs: Any) -> None:
+def warning(message: str, *args: Any, **kwargs: Any) -> None: # noqa: ANN401
     _LOGGER.warning(message, *args, **kwargs)
 
-def error(message: str, *args: Any, **kwargs: Any) -> None:
+def error(message: str, *args: Any, **kwargs: Any) -> None: # noqa: ANN401
     _LOGGER.error(message, *args, **kwargs)
 
-def critical(message: str, *args: Any, **kwargs: Any) -> None:
+def critical(message: str, *args: Any, **kwargs: Any) -> None: # noqa: ANN401
     _LOGGER.critical(message, *args, **kwargs)
 
 # ------------------------------------------------------------------------------

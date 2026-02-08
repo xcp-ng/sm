@@ -37,6 +37,8 @@ from xcp_storage.typing import (
 
 DRBD_BY_RES_PATH = "/dev/drbd/by-res/"
 
+DRBD_PORT_RANGE = (7000, 8000)
+
 # ------------------------------------------------------------------------------
 
 _EXEC_PATH_DRBDSETUP = "/usr/sbin/drbdsetup"

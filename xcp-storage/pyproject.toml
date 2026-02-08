@@ -39,11 +39,13 @@ ignore = [
     "UP045"  # pyupgrade: non-pep604-annotation-optional
 ]
 select = [
+    "ANN",    # flake8-annotations
     "ARG",    # flake8-unused-arguments
     "B",      # flake8-bugbear
     "C90",    # mccabe
     "F",      # Pyflakes
     "I",      # isort
+    "ICN",    # flake8-import-conventions
     "N",      # pep8-naming
     "PTH",    # flake8-use-pathlib
     "Q",      # flake8-quotes
@@ -52,6 +54,7 @@ select = [
     "SIM",    # flake8-simplify
     "SLF",    # flake8-self
     "T20",    # flake8-print
+    "TID",    # flake8-tidy-imports
     "UP"      # pyupgrade
 ]
 typing-modules = ["xcp_storage.typing"]
@@ -75,3 +78,7 @@ section-order = [
     "local-folder",
     "typing"
 ]
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "stubs"]
+testpaths = ["tests"]

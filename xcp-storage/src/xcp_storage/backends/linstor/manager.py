@@ -24,8 +24,9 @@ import re
 import linstor
 
 import xcp_storage.log as log
-from xcp_storage.utils.process import run_command
 from xcp_storage.utils.sync import wait_for_condition
+
+from .controller import get_controller_uri
 
 from xcp_storage.typing import (
     Any,
@@ -51,23 +52,147 @@ T = TypeVar("T")
 
 # ==============================================================================
 
-LINSTOR_SATELLITE_PORT = 3366
+class NodeInterface:
+    def __init__(self, name: str, address: str, active: bool) -> None:
+        self.name = name
+        self.address = address
+        self.active = active
+
+    @override
+    def __repr__(self) -> str:
+        return f'NodeInterface("{self.name}", "{self.address}", {self.active})'
 
 # ------------------------------------------------------------------------------
 
-def _get_controller_addresses() -> List[str]:
-    stdout = run_command([
-        "/usr/sbin/ss", "-tnpH", "state", "established", f"( sport = :{LINSTOR_SATELLITE_PORT} )"
-    ], expected_ret_code=0)
-    return [
-        line.split()[3].rsplit(":", 1)[0]
-        for line in stdout.splitlines()
-    ]
+class StoragePoolStats:
+    def __init__(self, name: str, node_name: str, free_size: int, capacity: int) -> None:
+        self.name = name
+        self.node_name = node_name
+        self.free_size = free_size
+        self.capacity = capacity
 
-def _get_controller_uri() -> str:
-    # TODO: Check that an IP address from the current pool is returned.
-    addresses = _get_controller_addresses()
-    return "linstor://" + addresses[0] if addresses else ""
+    @override
+    def __repr__(self) -> str:
+        return f'StoragePoolStats("{self.name}", "{self.node_name}", {self.free_size}, {self.capacity})'
+
+# ------------------------------------------------------------------------------
+
+class ResourceGroupStats:
+    def __init__(self, name: str, free_size: int, capacity: int, virtual_capacity: int) -> None:
+        self.name = name
+        self.free_size = free_size
+        self.used_size = max(capacity - free_size, 0)
+        self.capacity = capacity
+        self.virtual_capacity = virtual_capacity
+
+    @override
+    def __repr__(self) -> str:
+        return ("ResourceGroupStats("
+            f'"{self.name}", {self.free_size}, {self.used_size}, {self.capacity}, {self.virtual_capacity}'
+        ")")
+
+# ------------------------------------------------------------------------------
+
+class ResourceMode(IntEnum):
+    DISKLESS = 0
+    DISKFUL = 1
+
+# ------------------------------------------------------------------------------
+
+class VolumeDetails:
+    def __init__( self, number: int, max_allocated_size: int, capacity: int, default_storage_pool_name: str) -> None:
+        self.number = number
+        self.max_allocated_size = max_allocated_size
+        self.capacity = capacity
+        # If not set, resource definition or RG slot config is used instead
+        # when a volume must be created on another node.
+        self.default_storage_pool_name = default_storage_pool_name
+
+    def deduce_volume_size(self) -> int:
+        volume_size = self.max_allocated_size
+        if volume_size < 0:
+            # Fallback in case of fetching issue.
+            volume_size = self.capacity
+            if volume_size < 0:
+                return -1
+        return volume_size
+
+    @override
+    def __repr__(self) -> str:
+        return ("VolumeDetails("
+            f'{self.number}, {self.max_allocated_size}, {self.capacity}, "{self.default_storage_pool_name}"'
+        ")")
+
+class ResourceReplicasMode(IntEnum):
+    # Fetch all replicas.
+    ALL = 0
+    # Only fetch replicas when there is a risk of split brain or an insufficient number of diskfuls.
+    MISSING_ONLY = 1
+    # Same as above, but check that there are enough up-to-date diskfuls to avoid data loss.
+    STRICT_DATA_INTEGRITY = 2
+
+class ResourceReplicasState:
+    def __init__(
+        self,
+        diskful_node_names: List[str],
+        diskless_node_names: List[str],
+        up_to_date_node_names: List[str],
+        storage_pool_names: List[str],
+        volume_details_list: List[VolumeDetails]
+    ) -> None:
+        self.diskful_node_names = diskful_node_names
+        self.diskless_node_names = diskless_node_names
+        self.up_to_date_node_names = up_to_date_node_names
+        self.storage_pool_names = storage_pool_names
+        self.volume_details_list = volume_details_list
+
+    def is_on_node(self, node_name: str) -> bool:
+        return node_name in self.diskful_node_names or node_name in self.diskless_node_names
+
+    @override
+    def __repr__(self) -> str:
+        return ("ResourceReplicasState("
+            f"{self.diskful_node_names}, {self.diskless_node_names}, {self.up_to_date_node_names}, "
+            f"{self.storage_pool_names}, {self.volume_details_list}"
+        ")")
+
+class ResourceReplicasCount:
+    def __init__(
+        self,
+        diskful_count: int,
+        diskless_count: int,
+        up_to_date_count: int,
+        expected_place_count: int
+    ) -> None:
+        # Count is the value AFTER simulating node eviction.
+        self.diskful = diskful_count
+        self.diskless = diskless_count
+        self.up_to_date = up_to_date_count
+        self.expected_place = expected_place_count
+
+    @override
+    def __repr__(self) -> str:
+        return ("ResourceReplicasCount("
+            f"{self.diskful}, {self.diskless}, {self.up_to_date}, {self.expected_place}"
+        ")")
+
+class ResourceReplicas:
+    def __init__(self, name: str, state: ResourceReplicasState, count: ResourceReplicasCount) -> None:
+        self.name = name
+        self.state = state
+        self.count = count
+
+    @property
+    def missing_diskful_count(self) -> int:
+        return max(self.count.expected_place - self.count.diskful, 0)
+
+    @property
+    def missing_diskless_count(self) -> int:
+        return max(3 - self.count.diskful - self.count.diskless, 0)
+
+    @override
+    def __repr__(self) -> str:
+        return f"ResourceReplicas({self.name}, {self.state}, {self.count})"
 
 # ------------------------------------------------------------------------------
 
@@ -231,79 +356,18 @@ class LinstorManager(LinstorManagerBase):
     _ERR_MSG_RESOURCE_DEFINITION_NOT_EXISTS = "definition doesn't exist"
     _ERR_MSG_RESOURCE_GROUP_NOT_EXISTS = "group doesn't exist"
 
+    _PROP_AUTO_PLACE_TARGET = "AutoplaceTarget"
+    _PROP_STORAGE_POOL_NAME = "StorPoolName"
+
     # ----------------------------------
     # Controller helpers.
     # ----------------------------------
-
-    class StoragePoolStats:
-        def __init__(self, name: str, node_name: str, free_size: int, capacity: int) -> None:
-            self.name = name
-            self.node_name = node_name
-            self.free_size = free_size
-            self.capacity = capacity
-
-        @override
-        def __repr__(self) -> str:
-            return f"StoragePoolStats({self.name}, {self.node_name}, {self.free_size}, {self.capacity})"
-
-    class ResourceReplicasMode(IntEnum):
-        # Fetch all replicas.
-        ALL = 0
-        # Only fetch replicas when there is a risk of split brain or an insufficient number of diskfuls.
-        MISSING_ONLY = 1
-        # Same as above, but check that there are enough up-to-date diskfuls to avoid data loss.
-        STRICT_DATA_INTEGRITY = 2
-
-    class ResourceReplicas:
-        def __init__(
-            self,
-            name: str,
-            diskful_node_names: List[str],
-            diskless_node_names: List[str],
-            up_to_date_node_names: List[str],
-            diskful_count: int,
-            diskless_count: int,
-            up_to_date_count: int,
-            storage_pool_names: List[str],
-            expected_place_count: int
-        ) -> None:
-            self.name = name
-            self.diskful_node_names = diskful_node_names
-            self.diskless_node_names = diskless_node_names
-            self.up_to_date_node_names = up_to_date_node_names
-
-            # Count is the value AFTER evacuation of specific nodes.
-            # Therefore, it can be smaller than the size of the node lists.
-            self.diskful_count = diskful_count
-            self.diskless_count = diskless_count
-            self.up_to_date_count = up_to_date_count
-
-            self.storage_pool_names = storage_pool_names
-            self.expected_place_count = expected_place_count
-
-        @property
-        def missing_diskful_count(self) -> int:
-            return max(self.expected_place_count - self.diskful_count, 0)
-
-        @property
-        def missing_diskless_count(self) -> int:
-            return max(3 - self.expected_place_count + self.diskless_count, 0)
-
-        @override
-        def __repr__(self) -> str:
-            return ("ResourceReplicas("
-                f"{self.name}, "
-                f"{self.diskful_count}:{self.diskful_node_names}, "
-                f"{self.diskless_count}:{self.diskless_node_names}, "
-                f"{self.up_to_date_count}:{self.up_to_date_node_names}, "
-                f"{self.storage_pool_names}, {self.expected_place_count}"
-            ")")
 
     def get_controller_mismatched_nodes(self) -> List[str]:
         return [node.name for node in self._fetch_nodes().values() if node.connection_status == "VERSION_MISMATCH"]
 
     def get_controller_storage_pool_stats(self) -> Dict[str, List[StoragePoolStats]]:
-        storage_pools_stats: Dict[str, List[LinstorManager.StoragePoolStats]] = {}
+        storage_pools_stats: Dict[str, List[StoragePoolStats]] = {}
         for storage_pool_name, storage_pools in self._fetch_storage_pools().items():
             current_list = storage_pools_stats[storage_pool_name] = []
             for storage_pool in storage_pools:
@@ -315,7 +379,7 @@ class LinstorManager(LinstorManagerBase):
                     free_size = space.free_capacity * 1024
                     capacity = space.total_capacity * 1024
 
-                current_list.append(self.StoragePoolStats(
+                current_list.append(StoragePoolStats(
                     storage_pool_name,
                     storage_pool.node_name,
                     free_size,
@@ -329,7 +393,7 @@ class LinstorManager(LinstorManagerBase):
         ignore_deleted: bool = True
     ) -> Set[str]:
         resource_definitions = self._fetch_resource_definitions()
-        resource_groups = self._fetch_resource_groups()
+        resource_groups = self._fetch_resource_groups(group_names) if group_names else None
 
         resource_names = set()
         for resource_definition in resource_definitions.values():
@@ -338,6 +402,16 @@ class LinstorManager(LinstorManagerBase):
             ):
                 resource_names.add(resource_definition.name)
         return resource_names
+
+    def get_controller_resource_count_per_node(self) -> Dict[str, int]:
+        result: Dict[str, int] = defaultdict(int)
+
+        resource_entries = self._fetch_resource_entries()
+        for resource_entry in resource_entries.values():
+            for resource in resource_entry.resources:
+                result[resource.node_name] += 1
+
+        return result
 
     def get_controller_resource_replicas( # noqa: C901
         self,
@@ -366,6 +440,23 @@ class LinstorManager(LinstorManagerBase):
             if not resource_entry:
                 continue
 
+            resource_group_storage_pool_names = resource_group.select_filter.storage_pool_list
+
+            # 1. Build volume details.
+            default_storage_pool_name = resource_definition.properties.get(self._PROP_STORAGE_POOL_NAME, "")
+
+            max_volume_number = max(volume.number for volume in resource_definition.volume_definitions)
+            volume_details_list = [VolumeDetails(-1, -1, -1, "")] * (max_volume_number + 1)
+            for volume_definition in resource_definition.volume_definitions:
+                volume_details = volume_details_list[volume_definition.number]
+
+                volume_details.number = volume_definition.number
+                if volume_definition.size > 0:
+                    volume_details.capacity = volume_definition.size * 1024
+                volume_details.default_storage_pool_name = \
+                    volume_definition.properties.get(self._PROP_STORAGE_POOL_NAME, default_storage_pool_name)
+
+            # 2. Process node names and volume(s) used size.
             diskful_node_names = []
             diskless_node_names = []
             up_to_date_node_names = []
@@ -386,6 +477,20 @@ class LinstorManager(LinstorManagerBase):
                     if all(map(self._is_up_to_date_volume, resource.volumes)):
                         up_to_date_node_names.append(resource.node_name)
 
+                for volume in resource.volumes:
+                    allocated_size = volume.allocated_size
+                    if not allocated_size or allocated_size <= 0:
+                        continue
+
+                    try:
+                        volume_details = volume_details_list[volume.number]
+                    except IndexError:
+                        continue # Probably a race condition caused by another call. Ignore it.
+
+                    allocated_size *= 1024
+                    if allocated_size > volume_details.max_allocated_size:
+                        volume_details.max_allocated_size = allocated_size
+
             if excluded_node_names:
                 def count_helper(node_names: List[str]) -> int:
                     return sum(node_name not in excluded_node_names for node_name in node_names)
@@ -401,29 +506,164 @@ class LinstorManager(LinstorManagerBase):
             expected_place_count = self._get_resource_group_place_count(resource_group)
             if (
                 # All.
-                mode == self.ResourceReplicasMode.ALL or
+                mode == ResourceReplicasMode.ALL or
                 # Simple checks.
                 (diskful_count < expected_place_count or diskful_count + diskless_count < 3) or
                 # Strict.
                 (
-                    mode == self.ResourceReplicasMode.STRICT_DATA_INTEGRITY and
+                    mode == ResourceReplicasMode.STRICT_DATA_INTEGRITY and
                     expected_place_count >= 2 and
                     up_to_date_count < 2
                 )
             ):
-                resource_replicas.append(self.ResourceReplicas(
+                storage_pool_names = \
+                    [default_storage_pool_name] if default_storage_pool_name else resource_group_storage_pool_names
+                resource_replicas.append(ResourceReplicas(
                     resource_definition.name,
-                    diskful_node_names,
-                    diskless_node_names,
-                    up_to_date_node_names,
-                    diskful_count,
-                    diskless_count,
-                    up_to_date_count,
-                    resource_group.select_filter.storage_pool_list,
-                    expected_place_count
+                    ResourceReplicasState(
+                        diskful_node_names,
+                        diskless_node_names,
+                        up_to_date_node_names,
+                        storage_pool_names,
+                        volume_details_list
+                    ),
+                    ResourceReplicasCount(
+                        diskful_count,
+                        diskless_count,
+                        up_to_date_count,
+                        expected_place_count
+                    )
                 ))
 
         return resource_replicas
+
+    def get_controller_missing_resource_replica_fixes(
+        self,
+        resource_replicas: List[ResourceReplicas],
+        excluded_node_names: Optional[Set[str]] = None
+    ) -> None:
+        # Important: resource replicas are modified by this call.
+
+        if not resource_replicas:
+            return
+
+        # 1. Get available nodes. So take only ONLINE nodes without evacuating or error flags.
+        class NodeState:
+            def __init__(self, node: linstor.responses.Node, auto_place_target: bool) -> None:
+                self.node = node
+                self.auto_place_target = auto_place_target
+
+        node_states = {
+            node.name: NodeState(node, self._has_node_auto_place_target(node))
+            for node in self._fetch_nodes().values()
+            if node.connection_status == "ONLINE"
+        }
+        if excluded_node_names:
+            node_states = {
+                node_name: node_state
+                for node_name, node_state in node_states.items()
+                if node_name not in excluded_node_names
+            }
+
+        if not node_states:
+            print("No node to place replicas.")
+            return
+
+        node_name_to_resource_count = {
+            node_name: resource_count
+            for node_name, resource_count in self.get_controller_resource_count_per_node().items()
+            if node_name in node_states
+        }
+
+        # 2. Get stats.
+        name_to_storage_pools_stats = self.get_controller_storage_pool_stats()
+
+        # 3. Process.
+        def take_diskful_node(resource_replica: LinstorManager.ResourceReplicas) -> str:
+            for node_name, node_state in node_states.items():
+                if not node_state.auto_place_target or node_name in resource_replica.state.diskful_node_names:
+                    continue # Never place diskful on node with auto place target flag.
+
+        def take_diskless_node(resource_replica: LinstorManager.ResourceReplicas) -> str:
+            best = None
+
+            for node_name, resource_count in node_name_to_resource_count.items():
+                if resource_replica.state.is_on_node(node_name):
+                    continue
+
+                # We try to avoid placing resources on a node with the auto place target flag set to false.
+                # If we have no other choice, we propose that node.
+                candidate_score = (not node_states[node_name].auto_place_target, resource_count)
+
+                if not best or best[1] > candidate_score:
+                    best = (node_name, candidate_score)
+
+            if best:
+                node_name = best[0]
+                node_name_to_resource_count[node_name] += 1
+                resource_replica.state.diskless_node_names.append(node_name)
+                resource_replica.count.diskless += 1
+                return node_name
+
+            return ""
+
+        for resource_replica in resource_replicas:
+            if resource_replica.missing_diskful_count and not resource_replica.state.diskful_node_names:
+                print(f"# /!\ Resource without diskful: `{resource_replica.name}`.")
+                continue
+
+            # Place diskful.
+            while resource_replica.missing_diskful_count:
+                node_name = take_diskful_node(resource_replica)
+                if node_name:
+                    print(f"linstor r c {node_name} {resource_replica.name}")
+                else:
+                    print(f"# /!\ No target to create diskful resource `{resource_replica.name}`.")
+                    break
+
+            # Place diskless.
+            while resource_replica.missing_diskless_count:
+                node_name = take_diskless_node(resource_replica)
+                if node_name:
+                    print(f"linstor r c {node_name} {resource_replica.name} --diskless")
+                else:
+                    print(f"# /!\\ No target to create diskless resource `{resource_replica.name}`.")
+                    break
+
+    def find_controller_storage_pool_for_volume(
+        self,
+        volume_details: VolumeDetails,
+        name_to_storage_pools_stats: Dict[str, List[StoragePoolStats]],
+        storage_pool_names: List[str],
+        excluded_node_names: Set[str]
+    ) -> Optional[StoragePoolStats]:
+        # Helper to find best location to create a diskful.
+
+        best = None
+
+        volume_size = volume_details.deduce_volume_size()
+        if volume_size < 0:
+            return None # Cannot place volume without this info.
+
+        if volume_details.default_storage_pool_name:
+            # Force storage pool name list if the volume definition has a default one.
+            storage_pool_names = [volume_details.default_storage_pool_name]
+
+        for storage_pool_name, storage_pool_stats in name_to_storage_pools_stats.items():
+            if storage_pool_name not in name_to_storage_pools_stats:
+                continue
+
+            for candidate in storage_pool_stats:
+                if candidate.node_name in excluded_node_names or candidate.free_size < volume_size:
+                    continue
+
+                if not best or candidate.free_size > best.free_size:
+                    best = candidate
+
+        if best:
+            assert best.free_size >= volume_size
+            return best
+        return None
 
     def remove_controller_skip_disks(self) -> None:
         # This method MUST only be called to destroy diskful with invalid resources.
@@ -458,19 +698,29 @@ class LinstorManager(LinstorManagerBase):
                         f"on node `{resource.node_name}`: `{e}`."
                     )
 
+    @staticmethod
+    def can_controller_force_place_volumes(volume_details_list: List[VolumeDetails]) -> bool:
+        storage_pool_name = None
+        has_multiple_storage_pools = False
+
+        for volume_details in volume_details_list:
+            if not volume_details.default_storage_pool_name:
+                if not has_multiple_storage_pools:
+                    continue
+                return False
+
+            if not storage_pool_name:
+                storage_pool_name = volume_details.default_storage_pool_name
+                continue
+
+            if storage_pool_name != volume_details.default_storage_pool_name:
+                has_multiple_storage_pools = True
+
+        return True
+
     # ----------------------------------
     # Node helpers.
     # ----------------------------------
-
-    class NodeInterface:
-        def __init__(self, name: str, address: str, active: bool) -> None:
-            self.name = name
-            self.address = address
-            self.active = active
-
-        @override
-        def __repr__(self) -> str:
-            return f"NodeInterface({self.name}, {self.address}, {self.active})"
 
     def create_node(self, node_name: str, ip: str) -> None:
         errors = self._filter_errors(self._exec_query(
@@ -512,7 +762,7 @@ class LinstorManager(LinstorManagerBase):
             )
 
         return [
-            self.NodeInterface(interface.name, interface.address, interface.is_active)
+            NodeInterface(interface.name, interface.address, interface.is_active)
             for interface in node.net_interfaces
         ]
 
@@ -707,20 +957,6 @@ class LinstorManager(LinstorManagerBase):
     # Resource group helpers.
     # ----------------------------------
 
-    class ResourceGroupStats:
-        def __init__(self, name: str, free_size: int, capacity: int, virtual_capacity: int) -> None:
-            self.name = name
-            self.free_size = free_size
-            self.used_size = max(capacity - free_size, 0)
-            self.capacity = capacity
-            self.virtual_capacity = virtual_capacity
-
-        @override
-        def __repr__(self) -> str:
-            return ("ResourceGroupStats("
-                f"{self.name}, {self.free_size}, {self.used_size}, {self.capacity}, {self.virtual_capacity}"
-            ")")
-
     def create_resource_group(
         self,
         group_name: str,
@@ -820,15 +1056,15 @@ class LinstorManager(LinstorManagerBase):
 
             for volume_definition in resource_definition.volume_definitions:
                 size = volume_definition.size
-                if size < 0:
+                if size > 0:
+                    virtual_capacity += size * 1024
+                else:
                     log.warning(
                         "Invalid resource definition size detected on "
-                        f"`{resource_definition.name}/{volume_definition.number}: {virtual_capacity}."
+                        f"`{resource_definition.name}/{volume_definition.number}: {size}."
                     )
 
-                virtual_capacity += size * 1024
-
-        return self.ResourceGroupStats(group_name, free_size, capacity, virtual_capacity)
+        return ResourceGroupStats(group_name, free_size, capacity, virtual_capacity)
 
     def get_resource_group_place_count(self, group_name: str) -> int:
         resource_group = self._fetch_one_resource_group(group_name)
@@ -934,10 +1170,6 @@ class LinstorManager(LinstorManagerBase):
     # Resource helpers.
     # ----------------------------------
 
-    class ResourceMode(IntEnum):
-        DISKLESS = 0
-        DISKFUL = 1
-
     def create_resource(self, resource_name: str, node_name: str, mode: ResourceMode) -> None:
         self.create_resources(resource_name, { node_name: mode })
 
@@ -960,7 +1192,7 @@ class LinstorManager(LinstorManagerBase):
                 linstor.ResourceData(
                     rsc_name=resource_name,
                     node_name=node_name,
-                    diskless=(mode == LinstorManager.ResourceMode.DISKLESS)
+                    diskless=(mode == ResourceMode.DISKLESS)
                 )
                 for node_name, mode in node_info.items()
             ]
@@ -1192,6 +1424,13 @@ class LinstorManager(LinstorManagerBase):
     # Cache helpers.
     # ----------------------------------
 
+    def invalidate_caches(self) -> None:
+        self.invalidate_node_cache()
+        self.invalidate_storage_pool_cache()
+        self.invalidate_resource_group_cache()
+        self.invalidate_resource_cache()
+        self.invalidate_resource_definition_cache()
+
     def invalidate_node_cache(self) -> None:
         self._fetch_nodes_impl.cache_clear()
 
@@ -1218,8 +1457,12 @@ class LinstorManager(LinstorManagerBase):
             self.resources: List[linstor.responses.Resource] = []
             self.states: List[linstor.responses.ResourceState] = []
 
+        @override
+        def __repr__(self) -> str:
+            return f"ResourceEntry({self.resources}, {self.states})"
+
     @staticmethod
-    def _sanitize_err_fetch_reason(reason: Any) -> str:
+    def _sanitize_err_fetch_reason(reason: Any) -> str: # noqa: ANN401
         # If we don't have a reason, there is probably a node version mismatch or something like that.
         return str(reason) if reason else "controller issue"
 
@@ -1533,6 +1776,11 @@ class LinstorManager(LinstorManagerBase):
     @staticmethod
     def _is_evacuating_node(node: linstor.responses.Node) -> bool:
         return linstor.consts.FLAG_EVACUATE in node.flags
+
+    @classmethod
+    def _has_node_auto_place_target(cls, node: linstor.responses.Node) -> bool:
+        value = node.properties.get(cls._PROP_AUTO_PLACE_TARGET)
+        return not value or value.lower() != "false"
 
     @staticmethod
     def _has_resource_flags(
