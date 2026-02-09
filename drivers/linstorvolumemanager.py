@@ -90,9 +90,7 @@ def get_all_volume_openers(resource_name, volume):
     volume = str(volume)
     openers = {}
 
-    # Make sure this call never stucks because this function can be called
-    # during HA init and in this case we can wait forever.
-    session = util.timeout_call(10, util.get_localAPI_session)
+    session = util.get_localAPI_session()
 
     hosts = session.xenapi.host.get_all_records()
     for host_ref, host_record in hosts.items():
@@ -257,7 +255,7 @@ class LinstorVolumeManager(object):
     """
 
     __slots__ = (
-        '_linstor', '_logger', '_redundancy',
+        '_linstor', '_uri', '_logger', '_redundancy',
         '_base_group_name', '_group_name', '_ha_group_name',
         '_volumes', '_storage_pools', '_storage_pools_time',
         '_kv_cache', '_resource_cache', '_volume_info_cache',
@@ -359,6 +357,7 @@ class LinstorVolumeManager(object):
         :param int attempt_count: Number of attempts to join the controller.
         """
 
+        self._uri = uri
         self._linstor = self._create_linstor_instance(
             uri, attempt_count=attempt_count
         )
@@ -401,6 +400,10 @@ class LinstorVolumeManager(object):
         self._volume_info_cache_dirty = True
         self._resources_info_cache = None
         self._build_volumes(repair=repair)
+
+    @property
+    def uri(self) -> str:
+        return self._uri
 
     @property
     def group_name(self):
