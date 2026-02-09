@@ -14,14 +14,17 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-from sm_typing import override
+from sm_typing import List, override
 
 from linstorjournaler import LinstorJournaler
 from linstorvolumemanager import LinstorVolumeManager
+
+from concurrent.futures import ThreadPoolExecutor
 import base64
 import errno
 import json
 import socket
+import threading
 import time
 import util
 import vhdutil
@@ -597,3 +600,72 @@ class LinstorVhdUtil:
                 'EIO',
                 opterr='Failed to zero out VHD footer {}'.format(path)
             )
+
+class MultiLinstorVhdUtil:
+    class ExecutorData(threading.local):
+        def __init__(self):
+            self.clear()
+
+        def clear(self):
+            self.session = None
+            self.linstor = None
+            self.vhdutil = None
+
+    class Load:
+        def __init__(self, session):
+            self.session = session
+
+        def cleanup(self):
+            if self.session:
+                self.session.xenapi.session.logout()
+                self.session = None
+
+    def __init__(self, uri, group_name) -> None:
+        self._uri = uri
+        self._group_name = group_name
+        self._loads: List[MultiLinstorVhdUtil.Load] = []
+        self._executor_data = self.ExecutorData()
+
+    def __del__(self):
+        self._cleanup()
+
+    def run(self, func, vdi_uuids):
+        def wrapper(func, vdi_uuid):
+            if not self._executor_data.session:
+                self._init_executor_thread()
+            return func(vdi_uuid, self._executor_data.vhdutil)
+
+        with ThreadPoolExecutor(thread_name_prefix="VhdUtil") as executor:
+            return executor.map(lambda vdi_uuid: wrapper(func, vdi_uuid), vdi_uuids)
+
+    @property
+    def local_vhdutil(self):
+        return self._executor_data.vhdutil
+
+    def _init_executor_thread(self):
+        session = util.get_localAPI_session()
+        load = self.Load(session)
+        try:
+            linstor = LinstorVolumeManager(
+                self._uri,
+                self._group_name,
+                repair=False,
+                logger=util.SMlog
+            )
+            self._executor_data.linstor = linstor
+            self._executor_data.vhdutil = LinstorVhdUtil(session, linstor)
+            self._executor_data.session = session
+        except:
+            self._executor_data.clear()
+            load.cleanup()
+            raise
+
+        self._loads.append(load)
+
+    def _cleanup(self):
+        for load in self._loads:
+            try:
+                load.cleanup()
+            except Exception as e:
+                util.SMlog(f"Failed to clean load executor: {e}")
+        self._loads.clear()

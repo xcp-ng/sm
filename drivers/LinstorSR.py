@@ -20,7 +20,7 @@ from constants import CBTLOG_TAG
 
 try:
     from linstorjournaler import LinstorJournaler
-    from linstorvhdutil import LinstorVhdUtil
+    from linstorvhdutil import LinstorVhdUtil, MultiLinstorVhdUtil
     from linstorvolumemanager import get_controller_uri
     from linstorvolumemanager import get_controller_node_name
     from linstorvolumemanager import LinstorVolumeManager
@@ -372,6 +372,7 @@ class LinstorSR(SR.SR):
         self._vdis_loaded = False
         self._all_volume_info_cache = None
         self._all_volume_metadata_cache = None
+        self._multi_vhdutil = None
 
     # To remove in python 3.10.
     # Use directly @staticmethod instead.
@@ -1092,8 +1093,10 @@ class LinstorSR(SR.SR):
             else:
                 introduce = True
 
-        # 4. Now check all volume info.
+        # 4. Now process all volume info.
         vdi_to_snaps = {}
+        vdi_uuids = []
+
         for vdi_uuid, volume_info in all_volume_info.items():
             if vdi_uuid.startswith(cleanup.SR.TMP_RENAME_PREFIX):
                 continue
@@ -1202,14 +1205,30 @@ class LinstorSR(SR.SR):
                         vdi_to_snaps[snap_uuid] = [vdi_uuid]
 
             # 4.b. Add the VDI in the list.
+            vdi_uuids.append(vdi_uuid)
+
+        # 5. Create VDIs.
+        self._multi_vhdutil = MultiLinstorVhdUtil(self._linstor.uri, self._group_name)
+
+        def load_vdi(vdi_uuid, vhdutil_instance):
             vdi = self.vdi(vdi_uuid)
-            self.vdis[vdi_uuid] = vdi
 
             if USE_KEY_HASH and vdi.vdi_type == vhdutil.VDI_TYPE_VHD:
-                vdi.sm_config_override['key_hash'] = self._vhdutil.get_key_hash(vdi_uuid)
+                vdi.sm_config_override['key_hash'] = vhdutil_instance.get_key_hash(vdi_uuid)
 
-            # 4.c. Update CBT status of disks either just added
-            # or already in XAPI.
+            return vdi
+
+        try:
+            self.vdis = {vdi.uuid: vdi for vdi in self._multi_vhdutil.run(load_vdi, vdi_uuids)}
+        finally:
+            multi_vhdutil = self._multi_vhdutil
+            self._multi_vhdutil = None
+            del multi_vhdutil
+
+        # 6. Update CBT status of disks either just added
+        # or already in XAPI.
+        for vdi in self.vdis.values():
+            volume_metadata = volumes_metadata.get(vdi.uuid)
             cbt_uuid = volume_metadata.get(CBTLOG_TAG)
             if cbt_uuid in cbt_vdis:
                 vdi_ref = xenapi.VDI.get_by_uuid(vdi_uuid)
@@ -1220,7 +1239,7 @@ class LinstorSR(SR.SR):
                 self.vdis[vdi_uuid].cbt_enabled = True
                 cbt_vdis.remove(cbt_uuid)
 
-        # 5. Now set the snapshot statuses correctly in XAPI.
+        # 7. Now set the snapshot statuses correctly in XAPI.
         for src_uuid in vdi_to_snaps:
             try:
                 src_ref = xenapi.VDI.get_by_uuid(src_uuid)
@@ -1239,7 +1258,7 @@ class LinstorSR(SR.SR):
         # TODO: Check correctly how to use CBT.
         # Update cbt_enabled on the right VDI, check LVM/FileSR code.
 
-        # 6. If we have items remaining in this list,
+        # 8. If we have items remaining in this list,
         # they are cbt_metadata VDI that XAPI doesn't know about.
         # Add them to self.vdis and they'll get added to the DB.
         for cbt_uuid in cbt_vdis:
@@ -1248,10 +1267,10 @@ class LinstorSR(SR.SR):
             new_vdi.cbt_enabled = True
             self.vdis[cbt_uuid] = new_vdi
 
-        # 7. Update virtual allocation, build geneology and remove useless VDIs
+        # 9. Update virtual allocation, build geneology and remove useless VDIs
         self.virtual_allocation = 0
 
-        # 8. Build geneology.
+        # 10. Build geneology.
         geneology = {}
 
         for vdi_uuid, vdi in self.vdis.items():
@@ -1265,7 +1284,7 @@ class LinstorSR(SR.SR):
             if not vdi.hidden:
                 self.virtual_allocation += vdi.size
 
-        # 9. Remove all hidden leaf nodes to avoid introducing records that
+        # 11. Remove all hidden leaf nodes to avoid introducing records that
         # will be GC'ed.
         for vdi_uuid in list(self.vdis.keys()):
             if vdi_uuid not in geneology and self.vdis[vdi_uuid].hidden:
@@ -2096,13 +2115,15 @@ class LinstorVDI(VDI.VDI):
         volume_metadata = None
         if self.sr._all_volume_metadata_cache:
             volume_metadata = self.sr._all_volume_metadata_cache.get(self.uuid)
-        if volume_metadata is None:
+            assert volume_metadata
+        else:
             volume_metadata = self._linstor.get_volume_metadata(self.uuid)
 
         volume_info = None
         if self.sr._all_volume_info_cache:
             volume_info = self.sr._all_volume_info_cache.get(self.uuid)
-        if volume_info is None:
+            assert volume_info
+        else:
             volume_info = self._linstor.get_volume_info(self.uuid)
 
         # Contains the max physical size used on a disk.
@@ -2119,7 +2140,13 @@ class LinstorVDI(VDI.VDI):
             self.size = volume_info.virtual_size
             self.parent = ''
         else:
-            vhd_info = self.sr._vhdutil.get_vhd_info(self.uuid)
+            if self.sr._multi_vhdutil:
+                vhdutil_instance = self.sr._multi_vhdutil.local_vhdutil
+            else:
+                vhdutil_instance = self.sr._vhdutil
+
+            vhd_info = vhdutil_instance.get_vhd_info(self.uuid)
+
             self.hidden = vhd_info.hidden
             self.size = vhd_info.sizeVirt
             self.parent = vhd_info.parentUuid
@@ -2223,32 +2250,26 @@ class LinstorVDI(VDI.VDI):
         Determine whether this is a RAW or a VHD VDI.
         """
 
-        # 1. Check vdi_ref and vdi_type in config.
-        try:
-            vdi_ref = self.session.xenapi.VDI.get_by_uuid(self.uuid)
-            if vdi_ref:
-                sm_config = self.session.xenapi.VDI.get_sm_config(vdi_ref)
-                vdi_type = sm_config.get('vdi_type')
-                if vdi_type:
-                    # Update parent fields.
-                    self.vdi_type = vdi_type
-                    self.sm_config_override = sm_config
-                    self._update_device_name(
-                        self._linstor.get_volume_name(self.uuid)
-                    )
-                    return
-        except Exception:
-            pass
+        if self.sr._all_volume_metadata_cache:
+            # We are currently loading all volumes.
+            volume_metadata = self.sr._all_volume_metadata_cache.get(self.uuid)
+            if not volume_metadata:
+                raise xs_errors.XenError(
+                    'VDIUnavailable',
+                    opterr='failed to get metadata'
+                )
+        else:
+            # Simple load.
+            volume_metadata = self._linstor.get_volume_metadata(self.uuid)
 
-        # 2. Otherwise use the LINSTOR volume manager directly.
-        # It's probably a new VDI created via snapshot.
-        volume_metadata = self._linstor.get_volume_metadata(self.uuid)
+        # Set type and path.
         self.vdi_type = volume_metadata.get(VDI_TYPE_TAG)
         if not self.vdi_type:
             raise xs_errors.XenError(
                 'VDIUnavailable',
                 opterr='failed to get vdi_type in metadata'
             )
+
         self._update_device_name(self._linstor.get_volume_name(self.uuid))
 
     def _update_device_name(self, device_name):

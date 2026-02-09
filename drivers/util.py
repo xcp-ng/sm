@@ -26,7 +26,9 @@ import signal
 import time
 import datetime
 import errno
+import functools
 import socket
+import threading
 import xml.dom.minidom
 import scsiutil
 import stat
@@ -137,10 +139,28 @@ def make_WWN(name):
     return name
 
 
-def _logToSyslog(ident, facility, priority, message):
+def synchronized(func):
+    lock = threading.RLock()
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        with lock:
+            return func(*args, **kwargs)
+
+    return wrapper
+
+
+@synchronized
+def _writeToSyslog(ident, facility, priority, message):
     syslog.openlog(ident, 0, facility)
-    syslog.syslog(priority, "[%d] %s" % (os.getpid(), message))
+    syslog.syslog(priority, message)
     syslog.closelog()
+
+
+def _logToSyslog(ident, facility, priority, message):
+    pid = os.getpid()
+    thread_name = threading.current_thread().name
+    _writeToSyslog(ident, facility, priority, f"[{pid}][{thread_name}] {message}")
 
 
 def SMlog(message, ident="SM", priority=LOG_INFO):
