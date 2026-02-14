@@ -20,6 +20,7 @@ from xcp_storage.utils.process import CommandError, run_command
 from xcp_storage.typing import (
     List,
     Optional,
+    Tuple,
 )
 
 # ==============================================================================
@@ -118,7 +119,7 @@ def update_iptables_tcp_port(
     _update_iptables_ports(_PROTOCOL_TCP, str(port), open_port, stateful, chain)
 
 def update_iptables_tcp_port_range(
-    ports: (int, int),
+    ports: Tuple[int, int],
     *,
     open_ports: bool,
     stateful: bool = True,

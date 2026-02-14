@@ -303,12 +303,12 @@ class LinstorManagerBase:
 
     @staticmethod
     def find_controller_uri(timeout: int = 30) -> Optional[str]:
-        return wait_for_condition(_get_controller_uri, timeout, interval=1)
+        return wait_for_condition(get_controller_uri, timeout, interval=1)
 
     def _exec_query(self, query: Callable[Concatenate[linstor.Linstor, P], T], *args: P.args, **kwargs: P.kwargs) -> T:
         while True:
             self.connect()
-            assert self._linstor
+            assert self._linstor, "Linstor instance must exist."
             try:
                 return query(self._linstor, *args, **kwargs)
             except (linstor.errors.LinstorNetworkError, linstor.errors.LinstorTimeoutError):
