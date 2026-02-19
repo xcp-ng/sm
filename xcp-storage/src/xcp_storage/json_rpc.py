@@ -15,6 +15,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 from abc import ABC, abstractmethod
+import contextlib
 import json
 
 from xcp_storage.utils.exception import stringify_exception
@@ -60,42 +61,56 @@ class JsonRpcRequestError(JsonRpcError):
 # Response errors.
 # ------------------------------------------------------------------------------
 
-class _JsonRpcResponseError(JsonRpcError):
-    def __init__(self, data: Optional[JsonDict] = None) -> None:
-        super().__init__(self.MESSAGE)
-        self.payload = {
-            "code": self.CODE,
-            "message": self.MESSAGE
-        }
-        if data:
-            self.payload["data"] = data
+class JsonRpcResponseError(JsonRpcError):
+    def __init__(self, code: int, message: str, data: Optional[JsonDict] = None) -> None:
+        super().__init__(message)
+        self._payload: Optional[JsonDict] = None
+        self.code = code
+        self.message = message
         self.data = data
+
+    @property
+    def payload(self) -> JsonDict:
+        if self._payload is None:
+            self._payload = {
+                "code": self.code,
+                "message": self.message
+            }
+            if self.data:
+                self._payload["data"] = self.data
+        return self._payload
 
 # ------------------------------------------------------------------------------
 
-class JsonRpcResponseParseError(_JsonRpcResponseError):
-    CODE = -32700
-    MESSAGE = "Parse error"
+class JsonRpcResponseParseError(JsonRpcResponseError):
+    def __init__(self, data: Optional[JsonDict] = None) -> None:
+        super().__init__(-32700, "Parse error", data)
 
-class JsonRpcResponseInvalidRequestError(_JsonRpcResponseError):
-    CODE = -32600
-    MESSAGE = "Invalid Request"
+class JsonRpcResponseInvalidRequestError(JsonRpcResponseError):
+    def __init__(self, data: Optional[JsonDict] = None) -> None:
+        super().__init__(-32600, "Invalid Request", data)
 
-class JsonRpcResponseMethodNotFoundError(_JsonRpcResponseError):
-    CODE = -32601
-    MESSAGE = "Method not found"
+class JsonRpcResponseMethodNotFoundError(JsonRpcResponseError):
+    def __init__(self, data: Optional[JsonDict] = None) -> None:
+        super().__init__(-32601, "Method not found", data)
 
-class JsonRpcResponseInvalidParamsError(_JsonRpcResponseError):
-    CODE = -32602
-    MESSAGE = "Invalid params"
+class JsonRpcResponseInvalidParamsError(JsonRpcResponseError):
+    def __init__(self, data: Optional[JsonDict] = None) -> None:
+        super().__init__(-32602, "Invalid params", data)
 
-class JsonRpcResponseInternalError(_JsonRpcResponseError):
-    CODE = -32603
-    MESSAGE = "Internal error"
+class JsonRpcResponseInternalError(JsonRpcResponseError):
+    def __init__(self, data: Optional[JsonDict] = None) -> None:
+        super().__init__(-32603, "Internal error", data)
 
-class JsonRpcResponseServerError(_JsonRpcResponseError):
-    CODE = -32000
-    MESSAGE = "Server error"
+class JsonRpcResponseServerError(JsonRpcResponseError):
+    def __init__(self, data: Optional[JsonDict] = None) -> None:
+        super().__init__(-32000, "Server error", data)
+
+# ------------------------------------------------------------------------------
+
+class JsonRpcResponseClientError(JsonRpcResponseError):
+    def __init__(self, message: str) -> None:
+        super().__init__(-33000, message)
 
 # ------------------------------------------------------------------------------
 # Base Response/Request object.
@@ -121,10 +136,14 @@ class JsonRpcRequest(JsonRpcObject):
         params: Union[JsonList, JsonDict, None] = None
     ) -> None:
         self._payload: JsonDict = {}
-        self._modified = True
+        self._json_payload: Optional[str] = None
         self.identifier = identifier
         self.method = method
         self.params = params
+
+    def _invalidate(self) -> None:
+        self._modified = True
+        self._json_payload = None
 
     @property
     def identifier(self) -> Union[str, int, None]:
@@ -133,7 +152,7 @@ class JsonRpcRequest(JsonRpcObject):
     @identifier.setter
     def identifier(self, value: Union[str, int, None]) -> None:
         self._identifier = value
-        self._modified = True
+        self._invalidate()
 
     @property
     def method(self) -> str:
@@ -144,7 +163,7 @@ class JsonRpcRequest(JsonRpcObject):
         if value.startswith("rpc."):
             raise JsonRpcRequestError("Cannot use reserved RPC prefix as method name.")
         self._method = value
-        self._modified = True
+        self._invalidate()
 
     @property
     def params(self) -> Union[JsonList, JsonDict, None]:
@@ -153,7 +172,7 @@ class JsonRpcRequest(JsonRpcObject):
     @params.setter
     def params(self, value: Union[JsonList, JsonDict, None]) -> None:
         self._params = value
-        self._modified = True
+        self._invalidate()
 
     @property
     def args(self) -> List:
@@ -162,7 +181,7 @@ class JsonRpcRequest(JsonRpcObject):
     @args.setter
     def args(self, value: List[JsonValue]) -> None:
         self._params = value
-        self._modified = True
+        self._invalidate()
 
     @property
     def kwargs(self) -> JsonDict:
@@ -171,7 +190,7 @@ class JsonRpcRequest(JsonRpcObject):
     @kwargs.setter
     def kwargs(self, value: JsonDict) -> None:
         self._params = value
-        self._modified = True
+        self._invalidate()
 
     @property
     def payload(self) -> JsonDict:
@@ -195,7 +214,17 @@ class JsonRpcRequest(JsonRpcObject):
 
     @override
     def to_json(self) -> str:
-        return json.dumps(self.payload)
+        if self._json_payload is None:
+            self._json_payload = json.dumps(self.payload)
+        return self._json_payload
+
+    @classmethod
+    def from_json(cls, request_str: str) -> Union["JsonRpcRequest", "JsonRpcBatchRequest"]:
+        try:
+            payload = json.loads(request_str)
+        except (TypeError, ValueError):
+            raise JsonRpcRequestError("Invalid request. Parse error.") from None
+        return cls.from_payload(payload)
 
     @classmethod
     def from_payload(cls, payload: JsonValue) -> Union["JsonRpcRequest", "JsonRpcBatchRequest"]:
@@ -203,7 +232,7 @@ class JsonRpcRequest(JsonRpcObject):
             return cls._from_request_payload(payload)
 
         if not payload:
-            raise JsonRpcRequestError("Invalid request: `empty batch`.")
+            raise JsonRpcRequestError("Invalid request. Empty batch.")
 
         payloads = payload
         return JsonRpcBatchRequest([cls._from_request_payload(payload) for payload in payloads])
@@ -214,7 +243,6 @@ class JsonRpcRequest(JsonRpcObject):
             raise JsonRpcRequestError("Invalid request. Payload must be an object or a list of objects.")
 
         payload = cast(JsonDict, payload)
-
         payload_keys = set(payload.keys())
 
         missing_members = cls.PAYLOAD_REQUIRED_MEMBERS - payload_keys
@@ -228,23 +256,26 @@ class JsonRpcRequest(JsonRpcObject):
         request = JsonRpcRequest()
 
         try:
-            method = payload["method"]
-            if not isinstance(method, str):
-                raise JsonRpcRequestError("`method` is not a string.") from None
-            params = payload.get("params")
-            if params is not None and not isinstance(params, (list, dict)):
-                raise JsonRpcRequestError("`params` is not a list or dict.") from None
             identifier = payload.get("id")
             if identifier is not None and not isinstance(identifier, (int, str)):
-                raise JsonRpcRequestError("`id` is not a list or dict.") from None
+                raise JsonRpcRequestError("Invalid request. `id` is not an integer or string.")
 
+            method = payload["method"]
+            if not isinstance(method, str):
+                raise JsonRpcRequestError("Invalid request. `method` is not a string.")
+
+            params = payload.get("params")
+            if params is not None and not isinstance(params, (list, dict)):
+                raise JsonRpcRequestError("Invalid request. `params` is not a list or dict.")
+
+            request.identifier = identifier
             request.method = method
             request.params = params
-            request.identifier = identifier
         except ValueError as e:
-            raise JsonRpcRequestError(f"Missing member: `{e}`.") from None
-        except Exception as e:
-            raise JsonRpcRequestError(f"Unable to create request: `{e}`.") from None
+            raise JsonRpcRequestError(f"Invalid request. Missing member: `{e}`.") from None
+
+        request._modified = False
+        request._payload = payload
 
         return request
 
@@ -254,7 +285,7 @@ class JsonRpcBatchRequest(JsonRpcObject):
 
     @override
     def to_json(self) -> str:
-        return json.dumps([request.payload for request in self.requests])
+        return "[" + ", ".join([request.to_json() for request in self.requests]) + "]"
 
 # ------------------------------------------------------------------------------
 # Response.
@@ -264,37 +295,147 @@ class JsonRpcResponse(JsonRpcObject):
     def __init__(
         self,
         *,
-        request: Optional[JsonRpcRequest] = None,
+        identifier: Union[str, int, None] = None,
         error: Optional[JsonDict] = None,
         result: Any = None # noqa: ANN401
     ) -> None:
-        assert error is None or result is None, "Only error or result can be set, but not both."
+        if error is not None and result is not None:
+            raise JsonRpcResponseClientError("Invalid response. Only error or result can be set, but not both.")
 
-        payload: JsonDict = {
-            "jsonrpc": JSON_RPC_VERSION,
-            "id": request.identifier if request else None
-        }
-        if error:
-            payload["error"] = error
-        else:
-            payload["result"] = result
-
-        # TODO: Detect a `to_json` method on `result` or use a specific encoder.
-        self._json_payload = json.dumps(payload)
-
-        self.request = request
+        self._payload: JsonDict = {}
+        self._json_payload: Optional[str] = None
+        self.identifier = identifier
         self.error = error
         self.result = result
-        self.payload = payload
+
+    def _invalidate(self) -> None:
+        self._modified = True
+        self._json_payload = None
+
+    @property
+    def identifier(self) -> Union[str, int, None]:
+        return self._identifier
+
+    @identifier.setter
+    def identifier(self, value: Union[str, int, None]) -> None:
+        self._identifier = value
+        self._invalidate()
+
+    @property
+    def error(self) -> Optional[JsonDict]:
+        return self._error
+
+    @error.setter
+    def error(self, value: Optional[JsonDict]) -> None:
+        if value is not None:
+            try:
+                _code = value["code"]
+                _message = value["message"]
+            except KeyError as e:
+                raise JsonRpcResponseClientError(f"Invalid response. Missing error member: `{e}`.") from None
+
+        self._error = value
+        self._invalidate()
+
+    @property
+    def result(self) -> Any: # noqa: ANN401
+        return self._result
+
+    @result.setter
+    def result(self, value: Any) -> None: # noqa: ANN401
+        self._result = value
+        self._invalidate()
+
+    @property
+    def payload(self) -> JsonDict:
+        if not self._modified:
+            return self._payload
+
+        self._payload = {
+            "jsonrpc": JSON_RPC_VERSION,
+            "id": self._identifier
+        }
+        if self._error:
+            self._payload["error"] = self._error
+        else:
+            self._payload["result"] = self._result
+
+        self._modified = False
+        return self._payload
 
     @override
     def to_json(self) -> str:
+        if self._json_payload is None:
+            # TODO: Detect a `to_json` method on `result` or use a specific encoder.
+            self._json_payload = json.dumps(self.payload)
         return self._json_payload
 
+    @classmethod
+    def from_json(cls, response_str: str) -> Union["JsonRpcResponse", "JsonRpcBatchResponse"]:
+        try:
+            payload = json.loads(response_str)
+        except (TypeError, ValueError):
+            raise JsonRpcResponseClientError("Invalid reponse. Parse error.") from None
+        return cls.from_payload(payload)
+
+    @classmethod
+    def from_payload(cls, payload: JsonValue) -> Union["JsonRpcResponse", "JsonRpcBatchResponse"]:
+        if not isinstance(payload, list):
+            return cls._from_response_payload(payload)
+
+        if not payload:
+            raise JsonRpcResponseClientError("Invalid reponse. Empty batch.")
+
+        payloads = payload
+        return JsonRpcBatchResponse([cls._from_response_payload(payload) for payload in payloads])
+
+    @classmethod
+    def _from_response_payload(cls, payload: JsonValue) -> "JsonRpcResponse":
+        if not isinstance(payload, dict):
+            raise JsonRpcResponseClientError("Invalid response. Payload must be an object or a list of objects.")
+
+        payload = cast(JsonDict, payload)
+
+        response = JsonRpcResponse()
+
+        try:
+            identifier = payload["id"]
+            if identifier is not None and not isinstance(identifier, (int, str)):
+                raise JsonRpcResponseClientError("Invalid response. `id` is not an integer or string.")
+
+            error: JsonValue = None
+            result: Any = None
+            has_result = False
+
+            with contextlib.suppress(KeyError):
+                error = payload["error"]
+                if not isinstance(error, dict):
+                    raise JsonRpcResponseClientError("Invalid response. `error` is not an object.")
+
+            with contextlib.suppress(KeyError):
+                # We don't use `get` here to differentiate between: `"result": None` and the absence of field.
+                result = payload["result"]
+                has_result = True
+                if error is not None:
+                    raise JsonRpcResponseClientError("Invalid response. `error` and `result` are set.")
+
+            if error is None and not has_result:
+                raise JsonRpcResponseClientError("Invalid response. `error` and `result` are not set.")
+
+            response.identifier = identifier
+            response.error = cast(JsonDict, error)
+            response.result = result
+        except ValueError as e:
+            raise JsonRpcResponseClientError(f"Invalid response. Missing member: `{e}`.") from None
+
+        response._modified = False
+        response._payload = payload
+
+        return response
+
 class JsonRpcBatchResponse(JsonRpcObject):
-    def __init__(self, request: JsonRpcBatchRequest, responses: List[JsonRpcResponse]) -> None:
+    def __init__(self, responses: List[JsonRpcResponse]) -> None:
         assert responses, "Response list must have at least one item."
-        self.request = request
         self.responses = responses
 
     @override
@@ -306,7 +447,7 @@ class JsonRpcBatchResponse(JsonRpcObject):
 # ------------------------------------------------------------------------------
 
 class JsonRpcCallResult:
-    def __init__(self, *, result: Any = None, error: Optional[_JsonRpcResponseError] = None) -> None: # noqa: ANN401
+    def __init__(self, *, result: Any = None, error: Optional[JsonRpcResponseError] = None) -> None: # noqa: ANN401
         assert error is None or result is None, "Only error or result can be set, but not both."
         self.result = result
         self.error = error
@@ -354,8 +495,6 @@ class JsonRpcRequestProcessor:
         try:
             payload = json.loads(request_str)
         except (TypeError, ValueError):
-            # Note: no type errors should occur if type checking is used,
-            # but just in case, it's best to have it checked....
             return JsonRpcResponse(error=JsonRpcResponseParseError().payload)
 
         # 2. Get request.
@@ -374,35 +513,38 @@ class JsonRpcRequestProcessor:
 
         responses = self._process_requests(request.requests)
         if responses:
-            return JsonRpcBatchResponse(request, responses)
+            return JsonRpcBatchResponse(responses)
         return None
 
     def _process_request(self, request: JsonRpcRequest) -> Optional[JsonRpcResponse]:
+        identifier = request.identifier
         try:
             call_result = self._dispatcher.call_method(request.method, *request.args, **request.kwargs)
         except Exception as e:
             return JsonRpcResponse(
-                request=request,
+                identifier=identifier,
                 error=JsonRpcResponseInternalError(data={
                     "message": stringify_exception(e)
                 }).payload
             )
 
         if not call_result.is_success():
-            return JsonRpcResponse(request=request, error=call_result.error.payload)
+            return JsonRpcResponse(identifier=identifier, error=call_result.error.payload)
 
-        if request.identifier is None:
+        if identifier is None:
             return None # Notification.
 
+        response = JsonRpcResponse(identifier=identifier, result=call_result.result)
         try:
-            return JsonRpcResponse(request=request, result=call_result.result)
+            response.to_json()
         except Exception as e:
-            # Probably a problem with the conversion of the result to JSON.
+            # It's possible that the value cannot be converted to JSON...
             return JsonRpcResponse(
-                request=request,
+                identifier=identifier,
                 error=JsonRpcResponseServerError(data={
                     "message": stringify_exception(e)
                 }).payload)
+        return response
 
     def _process_requests(self, requests: List[JsonRpcRequest]) -> List[JsonRpcResponse]:
         responses = []

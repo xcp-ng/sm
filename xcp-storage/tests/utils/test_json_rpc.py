@@ -29,8 +29,8 @@ from xcp_storage.typing import Union
 
 # ==============================================================================
 
-def assert_response_result(
-    response: Union[JsonRpcResponse, JsonRpcBatchResponse, None],
+def assert_response_result_impl(
+    response: Union[JsonRpcResponse, JsonRpcBatchResponse],
     expected_identifier: Union[int, None],
     expected_result: JsonValue
 ) -> None:
@@ -41,8 +41,19 @@ def assert_response_result(
     assert payload["id"] == expected_identifier
     assert payload["result"] == expected_result
 
-def assert_response_error(
+def assert_response_result(
     response: Union[JsonRpcResponse, JsonRpcBatchResponse, None],
+    expected_identifier: Union[int, None],
+    expected_result: JsonValue
+) -> None:
+    assert isinstance(response, JsonRpcResponse)
+    assert_response_result_impl(response, expected_identifier, expected_result)
+    assert_response_result_impl(JsonRpcResponse.from_json(response.to_json()), expected_identifier, expected_result)
+
+# ------------------------------------------------------------------------------
+
+def assert_response_error_impl(
+    response: Union[JsonRpcResponse, JsonRpcBatchResponse],
     expected_identifier: Union[int, None],
     expected_error: JsonDict
 ) -> None:
@@ -52,6 +63,15 @@ def assert_response_error(
     assert payload["jsonrpc"] == JSON_RPC_VERSION
     assert payload["id"] == expected_identifier
     assert payload["error"] == expected_error
+
+def assert_response_error(
+    response: Union[JsonRpcResponse, JsonRpcBatchResponse, None],
+    expected_identifier: Union[int, None],
+    expected_error: JsonDict
+) -> None:
+    assert isinstance(response, JsonRpcResponse)
+    assert_response_error_impl(response, expected_identifier, expected_error)
+    assert_response_error_impl(JsonRpcResponse.from_json(response.to_json()), expected_identifier, expected_error)
 
 # ------------------------------------------------------------------------------
 
@@ -107,7 +127,7 @@ class TestJsonRpcRequest:
         assert_response_error(response, None, {
             "code": -32600,
             "message": "Invalid Request",
-            "data": {"message": "Unable to create request: ``method` is not a string.`."}
+            "data": {"message": "Invalid request. `method` is not a string."}
         })
 
     def test_method_not_found(self) -> None:
@@ -196,7 +216,7 @@ class TestJsonRpcBatchRequest:
         assert_response_error(response, None, {
             "code": -32600,
             "message": "Invalid Request",
-            "data": {"message": "Invalid request: `empty batch`."}
+            "data": {"message": "Invalid request. Empty batch."}
         })
 
     def test_invalid_request(self) -> None:
