@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-#
 # Copyright (C) 2026  Vates SAS
 #
 # This program is free software: you can redistribute it and/or modify
@@ -15,6 +13,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import contextlib
+from dataclasses import dataclass
 import json
 from pathlib import Path
 import re
@@ -132,6 +131,7 @@ def get_drbd_primary_address(resource_name: str) -> str:
 
 # ------------------------------------------------------------------------------
 
+@dataclass
 class DrbdOpeners:
     # The duration is expressed in milliseconds.
     def __init__(self, pid: int, process_name: str, cmdline: List[str], open_duration: int) -> None:
