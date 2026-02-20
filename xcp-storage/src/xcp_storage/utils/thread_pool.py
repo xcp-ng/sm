@@ -28,6 +28,10 @@ from xcp_storage.typing import (
 
 # ==============================================================================
 
+_DEFAULT_WORKER_COUNT = 16
+
+# ------------------------------------------------------------------------------
+
 class ThreadPoolError(Exception):
     def __init__(self, message: str) -> None:
         super().__init__(message)
@@ -40,9 +44,9 @@ class ThreadPoolNoWorkerError(ThreadPoolError):
 
 class ThreadPool:
     class _Worker(threading.Thread):
-        def __init__(self, pool: "ThreadPool") -> None:
+        def __init__(self, thread_pool: "ThreadPool") -> None:
             super().__init__(daemon=True)
-            self._pool: Optional[ThreadPool] = pool
+            self._thread_pool: Optional[ThreadPool] = thread_pool
             self._running = True
             self._task: Optional[Callable[[], Any]] = None
             self._event_task_changed = threading.Event()
@@ -57,7 +61,7 @@ class ThreadPool:
 
         @override
         def run(self) -> None:
-            assert self._pool
+            assert self._thread_pool
 
             while self._running:
                 self._event_task_changed.wait()
@@ -73,11 +77,15 @@ class ThreadPool:
                     log.error(f"Unhandled thread pool exception: `{e}`.")
 
                 self._task = None
-                self._pool._handle_finished_task(self) # noqa: SLF001
+                self._thread_pool._handle_finished_task(self) # noqa: SLF001
 
-            self._pool = None
+            self._thread_pool = None
 
-    def __init__(self, min_worker_count: int, max_worker_count: int) -> None:
+    def __init__(
+        self,
+        min_worker_count: int = _DEFAULT_WORKER_COUNT,
+        max_worker_count: int = _DEFAULT_WORKER_COUNT
+    ) -> None:
         if min_worker_count < 0:
             min_worker_count = 0
         max_worker_count = max(min_worker_count, max_worker_count, 1)
@@ -109,7 +117,7 @@ class ThreadPool:
         self.stop()
 
     def stop(self) -> None:
-        # Must be called by creator thread of this thread pool.
+        # Must be called by owner thread of this thread pool.
         with self._lock:
             if not self._running:
                 return
@@ -123,7 +131,7 @@ class ThreadPool:
         self._busy_workers.clear()
 
         for worker in workers:
-            worker.join(timeout=0.5)
+            worker.join(timeout=2.0)
 
     def add_task(self, task: Callable[[], Any], wait: bool = True) -> None:
         while True:

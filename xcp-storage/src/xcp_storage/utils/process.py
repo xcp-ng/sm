@@ -12,6 +12,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+import asyncio
 from pathlib import Path
 import subprocess
 
@@ -19,6 +20,7 @@ import xcp_storage.log as log
 
 from xcp_storage.typing import (
     Callable,
+    cast,
     List,
     Literal,
     Optional,
@@ -38,6 +40,8 @@ class CommandError(Exception):
 
 def default_ret_code_callback(_stdout: str, _stderr: str, ret_code: int) -> int:
     return ret_code
+
+# ------------------------------------------------------------------------------
 
 @overload
 def run_internal_command(
@@ -102,6 +106,8 @@ def run_internal_command(
         return stdout
     return stdout, stderr, result.returncode
 
+# ------------------------------------------------------------------------------
+
 @overload
 def run_command(
     args: List[str],
@@ -134,6 +140,113 @@ def run_command(
 ) -> Union[str, Tuple[str, str, int]]:
     log.info(f"Running command `{' '.join(args)}`.")
     return run_internal_command(
+        args,
+        simple=simple,
+        expected_ret_code=expected_ret_code,
+        ret_code_callback=ret_code_callback,
+        quiet=quiet
+    )
+
+# ------------------------------------------------------------------------------
+
+@overload
+async def run_internal_command_async(
+    args: List[str],
+    *,
+    simple: Literal[True] = True,
+    expected_ret_code: Optional[int] = None,
+    ret_code_callback: Callable[[str, str, int], int] = default_ret_code_callback,
+    quiet: bool = False
+) -> str:
+    ...
+
+@overload
+async def run_internal_command_async(
+    args: List[str],
+    *,
+    simple: Literal[False],
+    expected_ret_code: Optional[int] = None,
+    ret_code_callback: Callable[[str, str, int], int] = default_ret_code_callback,
+    quiet: bool = False
+) -> Tuple[str, str, int]:
+    ...
+
+@overload
+async def run_internal_command_async(
+    args: List[str],
+    *,
+    simple: bool,
+    expected_ret_code: Optional[int] = None,
+    ret_code_callback: Callable[[str, str, int], int] = default_ret_code_callback,
+    quiet: bool = False
+) -> Union[str, Tuple[str, str, int]]:
+    ...
+
+async def run_internal_command_async(
+    args: List[str],
+    *,
+    simple: bool = True,
+    expected_ret_code: Optional[int] = None,
+    ret_code_callback: Callable[[str, str, int], int] = default_ret_code_callback,
+    quiet: bool = False
+) -> Union[str, Tuple[str, str, int]]:
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout_data, stderr_data = await process.communicate()
+
+        stdout = stdout_data.decode("utf-8")
+        stderr = stderr_data.decode("utf-8")
+        ret_code = cast(int, process.returncode)
+    except Exception as e:
+        raise CommandError(None, str(args), reason=f"Failed to run command: `{e}`.") from e
+
+    if expected_ret_code is not None and ret_code != expected_ret_code:
+        if not quiet:
+            log.error(f"Command `{' '.join(args)}` exited with code {ret_code}: `{stderr.strip()}`.")
+        raise CommandError(ret_code_callback(stdout, stderr, ret_code), str(args), reason=stderr.strip())
+
+    if simple:
+        return stdout
+    return stdout, stderr, ret_code
+
+# ------------------------------------------------------------------------------
+
+@overload
+async def run_command_async(
+    args: List[str],
+    *,
+    simple: Literal[True] = True,
+    expected_ret_code: Optional[int] = None,
+    ret_code_callback: Callable[[str, str, int], int] = default_ret_code_callback,
+    quiet: bool = False
+) -> str:
+    ...
+
+@overload
+async def run_command_async(
+    args: List[str],
+    *,
+    simple: Literal[False],
+    expected_ret_code: Optional[int] = None,
+    ret_code_callback: Callable[[str, str, int], int] = default_ret_code_callback,
+    quiet: bool = False
+) -> Tuple[str, str, int]:
+    ...
+
+async def run_command_async(
+    args: List[str],
+    *,
+    simple: bool = True,
+    expected_ret_code: Optional[int] = None,
+    ret_code_callback: Callable[[str, str, int], int] = default_ret_code_callback,
+    quiet: bool = False
+) -> Union[str, Tuple[str, str, int]]:
+    log.info(f"Running command `{' '.join(args)}`.")
+    return await run_internal_command_async(
         args,
         simple=simple,
         expected_ret_code=expected_ret_code,

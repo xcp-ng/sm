@@ -21,10 +21,9 @@ import re
 
 import linstor
 
+from xcp_storage.backends.linstor.controller import get_controller_uri
 import xcp_storage.log as log
 from xcp_storage.utils.sync import wait_for_condition
-
-from .controller import get_controller_uri
 
 from xcp_storage.typing import (
     Any,

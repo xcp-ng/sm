@@ -12,6 +12,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+from xcp_storage.backends.linstor.satellite import LINSTOR_SATELLITE_PORT_PLAIN, LINSTOR_SATELLITE_PORT_SSL
 from xcp_storage.utils.process import run_command
 from xcp_storage.utils.service import (
     is_service_active,
@@ -19,8 +20,6 @@ from xcp_storage.utils.service import (
     start_service,
     stop_service,
 )
-
-from .satellite import LINSTOR_SATELLITE_PORT_PLAIN, LINSTOR_SATELLITE_PORT_SSL
 
 from xcp_storage.typing import List
 

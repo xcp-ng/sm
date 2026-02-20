@@ -47,6 +47,7 @@ select = [
     "I",      # isort
     "ICN",    # flake8-import-conventions
     "N",      # pep8-naming
+    "PIE",    # flake8-pie
     "PTH",    # flake8-use-pathlib
     "Q",      # flake8-quotes
     "RUF013", # ruff: implicit-optional
@@ -78,6 +79,9 @@ section-order = [
     "local-folder",
     "typing"
 ]
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
 
 [tool.pytest.ini_options]
 pythonpath = ["src", "stubs"]
