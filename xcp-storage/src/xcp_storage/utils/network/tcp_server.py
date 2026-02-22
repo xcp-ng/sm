@@ -122,7 +122,7 @@ class TcpServer(ABC):
             self._clients.clear()
             self._running = False
 
-    async def _handle_client( # noqa: C901
+    async def _handle_client(
         self,
         client_reader: asyncio.StreamReader,
         client_writer: asyncio.StreamWriter
@@ -136,11 +136,14 @@ class TcpServer(ABC):
             if not await self._handle_client_connect(client):
                 rejected = True
                 return
-            while not client_writer.is_closing():
-                await self._handle_client_request(client)
+            while not client_writer.transport.is_closing():
+                if not await self._handle_client_request(client):
+                    break
             log.info(f"Client {client} has terminated.")
         except asyncio.TimeoutError as e:
-            log.error(f"Timeout reached for client {client}: `{e}`.")
+            log.warning(f"Timeout reached for client {client}: `{e}`.")
+        except asyncio.IncompleteReadError as e:
+            log.warning(f"Connection closed for client {client}: `{e}`.")
         except Exception as e:
             log.error(f"Unhandled exception for client {client}: `{e}`.")
         finally:
@@ -163,5 +166,5 @@ class TcpServer(ABC):
         pass
 
     @abstractmethod
-    async def _handle_client_request(self, client: Client) -> None:
-        pass
+    async def _handle_client_request(self, client: Client) -> bool:
+        return False

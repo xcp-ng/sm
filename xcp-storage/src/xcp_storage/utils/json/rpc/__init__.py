@@ -14,7 +14,9 @@
 
 from abc import ABC, abstractmethod
 import contextlib
+import inspect
 import json
+from pathlib import PurePath
 
 from xcp_storage.utils.exception import stringify_exception
 from xcp_storage.utils.json import JsonDict, JsonList, JsonValue
@@ -444,6 +446,8 @@ class JsonRpcBatchResponse(JsonRpcObject):
 # Dispatcher.
 # ------------------------------------------------------------------------------
 
+JsonRpcCallable = Callable[..., Any]
+
 class JsonRpcCallResult:
     def __init__(self, *, result: Any = None, error: Optional[JsonRpcResponseError] = None) -> None: # noqa: ANN401
         assert error is None or result is None, "Only error or result can be set, but not both."
@@ -454,8 +458,9 @@ class JsonRpcCallResult:
         return self.error is None
 
 class JsonRpcDispatcher:
-    def __init__(self) -> None:
-        self._name_to_method: Dict[str, Callable[..., Any]] = {}
+    def __init__(self, use_module_name: bool = False) -> None:
+        self._name_to_method: Dict[str, JsonRpcCallable] = {}
+        self._use_module_name = use_module_name
 
     def call_method(self, method: str, *args: Any, **kwargs: Any) -> Any: # noqa: ANN401
         try:
@@ -477,7 +482,10 @@ class JsonRpcDispatcher:
         return JsonRpcCallResult(result=result)
 
     def method(self, func: Callable[P, T]) -> Callable[P, T]:
-        self._name_to_method[func.__name__] = func
+        name = func.__name__
+        if self._use_module_name:
+            name = PurePath(inspect.getfile(func)).stem + "." + name
+        self._name_to_method[name] = func
         return func
 
 # ------------------------------------------------------------------------------

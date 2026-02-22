@@ -65,8 +65,9 @@ class XcpProtocol(Protocol):
 
             self.total_size = XcpProtocol.HEADER_SIZE + self._payload_size
             if self.total_size > XcpProtocol.MAX_PACKET_SIZE:
-                self._raise_too_large_packet(self.total_size)
+                self._raise_too_large_packet(self.total_size, self._seq)
 
+        @override
         def encode(self) -> bytes:
             return struct.pack(
                 XcpProtocol.HEADER_FORMAT,
@@ -100,7 +101,7 @@ class XcpProtocol(Protocol):
 
         def set_payload(self, payload: bytes) -> None:
             if len(payload) != self._payload_size:
-                raise ProtocolError("Incompatible payload size.")
+                raise ProtocolError("Incompatible payload size.", self._seq)
 
         @classmethod
         def from_header(cls, header: bytes) -> "XcpProtocol.Packet":
@@ -112,44 +113,62 @@ class XcpProtocol(Protocol):
             payload_size, _ = struct.unpack(XcpProtocol.HEADER_FORMAT, header)
 
             if header_magic != XcpProtocol.HEADER_MAGIC:
-               raise ProtocolError("Invalid magic value!")
+               raise ProtocolError("Invalid magic value!", seq)
             if protocol_version != XcpProtocol.VERSION:
                 raise ProtocolError(
-                    f"Invalid protocol version! Packet={protocol_version}. Expected={XcpProtocol.VERSION}."
+                    f"Invalid protocol version! Packet={protocol_version}. Expected={XcpProtocol.VERSION}.",
+                    seq
                 )
 
             total_size = XcpProtocol.HEADER_SIZE + payload_size
             if total_size > XcpProtocol.MAX_PACKET_SIZE:
-                cls._raise_too_large_packet(total_size)
+                cls._raise_too_large_packet(total_size, seq)
 
             packet = cls(message_type, message_flags, seq, None)
             packet.total_size = total_size
             return packet
 
         @staticmethod
-        def _raise_too_large_packet(total_size: int) -> Never:
-            raise ProtocolError(f"Packet is too large! {total_size} > {XcpProtocol.MAX_PACKET_SIZE}.")
+        def _raise_too_large_packet(total_size: int, seq: int) -> Never:
+            raise ProtocolError(f"Packet is too large! {total_size} > {XcpProtocol.MAX_PACKET_SIZE}.", seq)
 
-    @classmethod
+    @override
+    def create_packet(self, message_type: Protocol.MessageType, seq: int, payload: Optional[bytes]) -> Packet:
+        return self.Packet(
+            message_type,
+            self.MessageFlags.NONE,
+            seq,
+            payload
+        )
+
     @override
     async def receive_packet_async(
-        cls,
+        self,
         stream_reader: asyncio.StreamReader,
         message_types: Sequence[Protocol.MessageType]
     ) -> Packet:
-        if cls.MessageType.CONNECT in message_types:
-            return cls.Packet(cls.MessageType.CONNECT, cls.MessageFlags.NONE, -1, None)
+        if self.MessageType.CONNECT in message_types:
+            return self.Packet(self.MessageType.CONNECT, self.MessageFlags.NONE, -1, None)
 
-        if cls.MessageType.REQUEST not in message_types:
+        if self.MessageType.REQUEST not in message_types:
             raise ProtocolError("Only CONNECT and REQUEST are supported by XCP protocol.")
 
-        header = await stream_reader.readexactly(cls.HEADER_SIZE)
-        packet = cls.Packet.from_header(header)
+        header = await stream_reader.readexactly(self.HEADER_SIZE)
+        packet = self.Packet.from_header(header)
 
-        if packet.message_type != cls.MessageType.REQUEST:
-            raise ProtocolError(f"Unexpected message type: {packet.message_type}. Expected: REQUEST.")
+        if packet.message_type != self.MessageType.REQUEST:
+            raise ProtocolError(f"Unexpected message type: {packet.message_type}. Expected: REQUEST.", packet.seq)
 
         payload = await stream_reader.readexactly(packet.payload_size)
         packet.set_payload(payload)
 
         return packet
+
+    @override
+    async def send_packet_async(
+        self,
+        stream_writer: asyncio.StreamWriter,
+        packet: Protocol.Packet
+    ) -> None:
+        stream_writer.write(packet.encode())
+        await stream_writer.drain()

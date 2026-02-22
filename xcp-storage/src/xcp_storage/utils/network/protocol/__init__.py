@@ -16,13 +16,14 @@ from abc import ABC, abstractmethod
 import asyncio
 from enum import IntEnum
 
-from xcp_storage.typing import Sequence
+from xcp_storage.typing import Optional, Sequence
 
 # ==============================================================================
 
 class ProtocolError(Exception):
-    def __init__(self, message: str) -> None:
+    def __init__(self, message: str, seq: Optional[int] = None) -> None:
         super().__init__(message)
+        self.seq = seq
 
 # ------------------------------------------------------------------------------
 
@@ -30,8 +31,13 @@ class Protocol(ABC):
     class MessageType(IntEnum):
         CONNECT = 0
         REQUEST = 1
+        RESPONSE = 2
 
     class Packet(ABC):
+        @abstractmethod
+        def encode(self) -> bytes:
+            pass
+
         @property
         @abstractmethod
         def message_type(self) -> "Protocol.MessageType":
@@ -47,11 +53,22 @@ class Protocol(ABC):
         def payload(self) -> bytes:
             pass
 
-    @classmethod
+    @abstractmethod
+    def create_packet(self, message_type: MessageType, seq: int, payload: Optional[bytes]) -> Packet:
+        pass
+
     @abstractmethod
     async def receive_packet_async(
-        cls,
+        self,
         stream_reader: asyncio.StreamReader,
         message_types: Sequence[MessageType]
     ) -> Packet:
+        pass
+
+    @abstractmethod
+    async def send_packet_async(
+        self,
+        stream_writer: asyncio.StreamWriter,
+        packet: Packet
+    ) -> None:
         pass
