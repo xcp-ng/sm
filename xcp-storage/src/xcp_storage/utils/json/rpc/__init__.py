@@ -62,7 +62,7 @@ class JsonRpcRequestError(JsonRpcError):
 # ------------------------------------------------------------------------------
 
 class JsonRpcResponseError(JsonRpcError):
-    def __init__(self, code: int, message: str, data: Optional[JsonDict] = None) -> None:
+    def __init__(self, code: int, message: str, data: JsonValue = None) -> None:
         super().__init__(message)
         self._payload: Optional[JsonDict] = None
         self.code = code
@@ -80,30 +80,56 @@ class JsonRpcResponseError(JsonRpcError):
                 self._payload["data"] = self.data
         return self._payload
 
+    @classmethod
+    def from_payload(cls, payload: JsonValue) -> "JsonRpcResponseError":
+        if not isinstance(payload, dict):
+            raise JsonRpcResponseClientError("Invalid response error, not a dict.")
+
+        try:
+            code = payload["code"]
+            if not isinstance(code, int):
+                raise JsonRpcResponseClientError("Invalid response error. `code` is not an integer.")
+
+            message = payload["message"]
+            if not isinstance(message, str):
+                raise JsonRpcResponseClientError("Invalid response error. `message` is not a string.")
+
+            data = payload.get("data")
+        except ValueError as e:
+            raise JsonRpcResponseClientError(f"Invalid response error. Missing member: `{e}`.") from None
+
+        error_type = _CODE_TO_ERROR_TYPE.get(code)
+        if not error_type:
+            return JsonRpcResponseError(code, message, data)
+
+        error = error_type(data)
+        error.message = message
+        return error
+
 # ------------------------------------------------------------------------------
 
 class JsonRpcResponseParseError(JsonRpcResponseError):
-    def __init__(self, data: Optional[JsonDict] = None) -> None:
+    def __init__(self, data: JsonValue = None) -> None:
         super().__init__(-32700, "Parse error", data)
 
 class JsonRpcResponseInvalidRequestError(JsonRpcResponseError):
-    def __init__(self, data: Optional[JsonDict] = None) -> None:
+    def __init__(self, data: JsonValue = None) -> None:
         super().__init__(-32600, "Invalid Request", data)
 
 class JsonRpcResponseMethodNotFoundError(JsonRpcResponseError):
-    def __init__(self, data: Optional[JsonDict] = None) -> None:
+    def __init__(self, data: JsonValue = None) -> None:
         super().__init__(-32601, "Method not found", data)
 
 class JsonRpcResponseInvalidParamsError(JsonRpcResponseError):
-    def __init__(self, data: Optional[JsonDict] = None) -> None:
+    def __init__(self, data: JsonValue = None) -> None:
         super().__init__(-32602, "Invalid params", data)
 
 class JsonRpcResponseInternalError(JsonRpcResponseError):
-    def __init__(self, data: Optional[JsonDict] = None) -> None:
+    def __init__(self, data: JsonValue = None) -> None:
         super().__init__(-32603, "Internal error", data)
 
 class JsonRpcResponseServerError(JsonRpcResponseError):
-    def __init__(self, data: Optional[JsonDict] = None) -> None:
+    def __init__(self, data: JsonValue = None) -> None:
         super().__init__(-32000, "Server error", data)
 
 # ------------------------------------------------------------------------------
@@ -111,6 +137,17 @@ class JsonRpcResponseServerError(JsonRpcResponseError):
 class JsonRpcResponseClientError(JsonRpcResponseError):
     def __init__(self, message: str) -> None:
         super().__init__(-33000, message)
+
+# ------------------------------------------------------------------------------
+
+_CODE_TO_ERROR_TYPE = {
+  -32700: JsonRpcResponseParseError,
+  -32600: JsonRpcResponseInvalidRequestError,
+  -32601: JsonRpcResponseMethodNotFoundError,
+  -32602: JsonRpcResponseInvalidParamsError,
+  -32603: JsonRpcResponseInternalError,
+  -32000: JsonRpcResponseServerError
+}
 
 # ------------------------------------------------------------------------------
 # Base Response/Request object.
@@ -486,6 +523,8 @@ class JsonRpcDispatcher:
         if self._use_module_name:
             name = PurePath(inspect.getfile(func)).stem + "." + name
         self._name_to_method[name] = func
+
+        cast(Any, func)._rpc_name = name # noqa: SLF001
         return func
 
 # ------------------------------------------------------------------------------

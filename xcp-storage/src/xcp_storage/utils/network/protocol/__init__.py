@@ -15,6 +15,7 @@
 from abc import ABC, abstractmethod
 import asyncio
 from enum import IntEnum
+import socket
 
 from xcp_storage.typing import Optional, Sequence
 
@@ -54,7 +55,15 @@ class Protocol(ABC):
             pass
 
     @abstractmethod
-    def create_packet(self, message_type: MessageType, seq: int, payload: Optional[bytes]) -> Packet:
+    def create_packet(self, message_type: MessageType, seq: int, payload: Optional[bytes] = None) -> Packet:
+        pass
+
+    @abstractmethod
+    def receive_packet(self, sock: socket.socket, message_types: Sequence[MessageType]) -> Packet:
+        pass
+
+    @abstractmethod
+    def send_packet(self, sock: socket.socket, packet: Packet) -> None:
         pass
 
     @abstractmethod

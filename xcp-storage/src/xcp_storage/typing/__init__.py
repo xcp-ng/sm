@@ -21,7 +21,7 @@ from typing import *  # noqa: F403
 # TODO: Remove all hacks for python 3.11.
 
 if not hasattr(typing, "override"):
-    def override(method): # type: ignore
+    def override(method): # type: ignore # noqa: ANN001, ANN201
         with contextlib.suppress(AttributeError, TypeError):
             # Set internal attr `__override__` like described in PEP 698.
             method.__override__ = True
@@ -35,11 +35,11 @@ if not hasattr(typing, "Literal"):
 
 if not hasattr(typing, "ParamSpec"):
     class _SubscriptableListMock(list):
-        def __getitem__(self, _): # type: ignore
+        def __getitem__(self, _): # type: ignore # noqa: ANN001, ANN204
             return self
-        def __getattr__(self, _): # type: ignore
+        def __getattr__(self, _): # type: ignore # noqa: ANN001, ANN204
             return self
-        def __call__(self, *_args, **_kwargs): # type: ignore
+        def __call__(self, *_args, **_kwargs): # type: ignore # noqa: ANN002, ANN003, ANN204
             return self
 
     ParamSpec = _SubscriptableListMock() # type: ignore

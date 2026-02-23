@@ -15,7 +15,11 @@
 import ssl
 from types import TracebackType
 
-from xcp_storage.utils.network.socket import create_client_sock, Socket
+from xcp_storage.utils.network.socket import (
+    create_client_sock,
+    Socket,
+    SocketDisconnectedError,
+)
 from xcp_storage.utils.sync import wait_for_condition
 
 from xcp_storage.typing import (
@@ -66,6 +70,14 @@ class TcpClient:
         if self._entered_count == 0:
             self.disconnect()
 
+    @property
+    def socket(self) -> Optional[Socket]:
+        return self._socket
+
+    @property
+    def connected(self) -> bool:
+        return self._socket is not None
+
     def connect(self, timeout: float = 120) -> None:
         if self._socket:
             return
@@ -96,7 +108,21 @@ class TcpClient:
         self._socket = None
 
     def send(self, buffer: bytes, size: Optional[int] = None) -> None:
-        self._socket.send(buffer, size)
+        if self._socket:
+            try:
+                self._socket.send(buffer, size)
+            except SocketDisconnectedError:
+                self.disconnect()
+                raise
+        else:
+            TcpClientError("Cannot send. Not connected.")
 
     def receive(self, buffer: bytearray, size: Optional[int] = None) -> None:
-        self._socket.receive(buffer, size)
+        if self._socket:
+            try:
+                self._socket.receive(buffer, size)
+            except SocketDisconnectedError:
+                self.disconnect()
+                raise
+        else:
+            TcpClientError("Cannot receive. Not connected.")

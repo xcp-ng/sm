@@ -17,7 +17,7 @@
 from dataclasses import asdict
 
 from xcp_storage.backends.drbd import get_drbd_local_openers
-from xcp_storage.rpc.api import ApiDispatcher
+from xcp_storage.rpc.dispatcher import ApiDispatcher
 from xcp_storage.utils.json import JsonDict
 
 from xcp_storage.typing import List

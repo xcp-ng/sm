@@ -14,8 +14,10 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-from xcp_storage.utils.json.rpc import JsonRpcDispatcher
+import xcp_storage.rpc.api.drbd as api_drbd
 
 # ==============================================================================
 
-ApiDispatcher = JsonRpcDispatcher()
+__all__ = [
+    "api_drbd"
+]

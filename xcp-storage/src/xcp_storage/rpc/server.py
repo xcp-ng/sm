@@ -12,23 +12,19 @@
 # GNU General Public License for more details.
 #
 # You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-from setuptools import find_packages, setup
+import ssl
+
+# Import API to ensure ApiDispatcher is exported with all public methods.
+import xcp_storage.rpc.api  # noqa: F401
+from xcp_storage.rpc.dispatcher import ApiDispatcher
+from xcp_storage.utils.json.rpc.server import JsonRpcServer
+
+from xcp_storage.typing import Optional
 
 # ==============================================================================
 
-setup(
-    name="xcp-storage",
-    version="1.0.0",
-    description="XCP storage layer, scripts and drivers",
-    author="Ronan Abhamon <ronan.abhamon@vates.tech>",
-    author_email="ronan.abhamon@vates.tech",
-    url="https://vates.tech",
-    license="GPLv3",
-    packages=find_packages(
-        where="src",
-    ),
-    python_requires=">=3.6",
-    package_dir={"": "src"},
-    scripts=[]
-)
+class RpcApiServer(JsonRpcServer):
+    def __init__(self, hostname: str, port: int, ssl_context: Optional[ssl.SSLContext] = None) -> None:
+        super().__init__(ApiDispatcher, hostname, port, ssl_context)

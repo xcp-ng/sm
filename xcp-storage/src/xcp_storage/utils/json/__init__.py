@@ -21,7 +21,11 @@ from xcp_storage.typing import (
 # ==============================================================================
 
 JsonValue = Union[
-    str, int, float, bool, None,
+    str,
+    int,
+    float,
+    bool,
+    None,
     List["JsonValue"],
     Dict[str, "JsonValue"]
 ]
