@@ -256,7 +256,7 @@ class LinstorManagerBase:
         self._linstor: Optional[linstor.Linstor] = None
         self._uri = uri
 
-    def connect(self) -> None:
+    def connect(self, timeout: float = 120) -> None:
         if self._linstor:
             return
 
@@ -283,7 +283,7 @@ class LinstorManagerBase:
                 log.error(f"Unable to connect to LINSTOR: `{e}`.")
             return False
 
-        if wait_for_condition(connect_impl, timeout=120, interval=1):
+        if wait_for_condition(connect_impl, timeout=timeout, interval=1):
             return
 
         self._uri = None

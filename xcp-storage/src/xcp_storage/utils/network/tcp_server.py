@@ -51,12 +51,7 @@ class TcpServer(ABC):
         def __str__(self) -> str:
             return str(self.peername)
 
-    def __init__(
-        self,
-        hostname: str,
-        port: int,
-        ssl_context: Optional[ssl.SSLContext] = None
-    ) -> None:
+    def __init__(self, hostname: str, port: int, ssl_context: Optional[ssl.SSLContext] = None) -> None:
         self._hostname = hostname
         self._port = port
         self._ssl_context = ssl_context
