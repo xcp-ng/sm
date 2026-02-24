@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-#
 # Copyright (C) 2026  Vates SAS
 #
 # This program is free software: you can redistribute it and/or modify
@@ -14,17 +12,23 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-import ssl
-
-# Import API mods to ensure ApiDispatcher is exported with all public methods.
-import xcp_storage.rpc.api  # noqa: F401
-from xcp_storage.rpc.dispatcher import ApiDispatcher
-from xcp_storage.utils.json.rpc.server import JsonRpcServer
-
-from xcp_storage.typing import Optional
+cmake_minimum_required(VERSION 3.13.1)
 
 # ==============================================================================
 
-class RpcApiServer(JsonRpcServer):
-    def __init__(self, address: str, port: int, ssl_context: Optional[ssl.SSLContext] = None) -> None:
-        super().__init__(ApiDispatcher, address, port, ssl_context)
+project(xcp-storage VERSION 1.0.0 LANGUAGES C)
+
+include(GNUInstallDirs)
+
+install(PROGRAMS daemons/xcp-storage-rpc
+  DESTINATION ${CMAKE_INSTALL_LIBEXECDIR}/${PROJECT_NAME}
+  PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
+              GROUP_READ GROUP_EXECUTE
+              WORLD_READ WORLD_EXECUTE
+)
+
+install(FILES config/rpc.conf
+  DESTINATION ${CMAKE_INSTALL_SYSCONFDIR}/${PROJECT_NAME}
+  PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ
+)
+

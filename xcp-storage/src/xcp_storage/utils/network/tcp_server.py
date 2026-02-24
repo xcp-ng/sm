@@ -51,8 +51,8 @@ class TcpServer(ABC):
         def __str__(self) -> str:
             return str(self.peername)
 
-    def __init__(self, hostname: str, port: int, ssl_context: Optional[ssl.SSLContext] = None) -> None:
-        self._hostname = hostname
+    def __init__(self, address: str, port: int, ssl_context: Optional[ssl.SSLContext] = None) -> None:
+        self._address = address
         self._port = port
         self._ssl_context = ssl_context
 
@@ -72,9 +72,9 @@ class TcpServer(ABC):
         self._running = True
 
         try:
-            log.info(f"Running TCP server on `{self._hostname}:{self._port}`...")
+            log.info(f"Running TCP server on `{self._address}:{self._port}`...")
             self._server_socket = Socket(create_server_sock(
-                self._hostname,
+                self._address,
                 self._port,
                 reuse_address=True,
                 keep_alive=True,

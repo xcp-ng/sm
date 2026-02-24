@@ -38,12 +38,12 @@ class TcpClientError(Exception):
 class TcpClient:
     def __init__(
         self,
-        hostname: str,
+        address: str,
         port: int,
         ssl_context: Optional[ssl.SSLContext] = None,
         client_timeout: float = 120
     ) -> None:
-        self._hostname = hostname
+        self._address = address
         self._port = port
         self._ssl_context = ssl_context
         self._client_timeout = client_timeout
@@ -87,7 +87,7 @@ class TcpClient:
             nonlocal error_message
             try:
                 self._socket = Socket(create_client_sock(
-                    self._hostname,
+                    self._address,
                     self._port,
                     reuse_address=True,
                     keep_alive=True,

@@ -61,16 +61,17 @@ class SocketDisconnectedError(SocketError):
 
 # ------------------------------------------------------------------------------
 
-def get_ip_address(hostname: str, ip_version: int = 0) -> Union[ipaddress.IPv4Address, ipaddress.IPv6Address]:
+def get_ip_address(address: str, ip_version: int = 0) -> Union[ipaddress.IPv4Address, ipaddress.IPv6Address]:
+    # Note: `address` can be a hostname or IP.
     with contextlib.suppress(ValueError):
-        return ipaddress.ip_address(hostname)
+        return ipaddress.ip_address(address)
 
     family = _IP_VERSION_TO_FAMILY.get(ip_version)
     if family is None:
         raise SocketError("Unknown IP version.")
 
     try:
-        info = socket.getaddrinfo(hostname or socket.gethostname(), 80, family, socket.SOCK_STREAM, socket.SOL_TCP)
+        info = socket.getaddrinfo(address or socket.gethostname(), 80, family, socket.SOCK_STREAM, socket.SOL_TCP)
         return ipaddress.ip_address(info[0][4][0])
     except socket.gaierror as e:
         raise SocketError(f"Cannot resolve IP: `{e}`.") from None
@@ -79,14 +80,14 @@ def get_ip_address(hostname: str, ip_version: int = 0) -> Union[ipaddress.IPv4Ad
 
 # ------------------------------------------------------------------------------
 
-def format_address(hostname: str, port: int) -> Tuple[socket.AddressFamily, Union[
+def format_address(address: str, port: int) -> Tuple[socket.AddressFamily, Union[
     Tuple[str, int],
     Tuple[str, int, int, int]
 ]]:
-    if not hostname:
+    if not address:
         raise SocketError("No hostname/IP.")
 
-    ip_address = get_ip_address(hostname)
+    ip_address = get_ip_address(address)
     if ip_address.version == 4:
         family = socket.AF_INET
         return (family, (str(ip_address), port))
@@ -99,7 +100,7 @@ def format_address(hostname: str, port: int) -> Tuple[socket.AddressFamily, Unio
 # ------------------------------------------------------------------------------
 
 def _create_stream_sock(
-    hostname: str,
+    address: str,
     family: socket.AddressFamily,
     *,
     bind: bool,
@@ -111,7 +112,7 @@ def _create_stream_sock(
         if bind:
             sock = ssl_context.wrap_socket(sock, server_side=True)
         else:
-            sock = ssl_context.wrap_socket(sock, server_side=False, server_hostname=hostname or None)
+            sock = ssl_context.wrap_socket(sock, server_side=False, server_hostname=address or None)
 
     if reuse_address:
         set_socket_reuseaddr(sock)
@@ -126,7 +127,7 @@ def _normalize_timeout(timeout: Optional[float]) -> Optional[float]:
 # ------------------------------------------------------------------------------
 
 def create_server_sock(
-    hostname: str,
+    address: str,
     port: int,
     *,
     reuse_address: bool = True,
@@ -134,8 +135,8 @@ def create_server_sock(
     timeout: Optional[float] = None,
     ssl_context: Optional[ssl.SSLContext] = None
 ) -> socket.socket:
-    family, bind = format_address(hostname, port)
-    sock = _create_stream_sock(hostname, family, bind=True, reuse_address=reuse_address, ssl_context=ssl_context)
+    family, bind = format_address(address, port)
+    sock = _create_stream_sock(address, family, bind=True, reuse_address=reuse_address, ssl_context=ssl_context)
 
     timeout = _normalize_timeout(timeout)
     if timeout:
@@ -155,7 +156,7 @@ def create_server_sock(
     return sock
 
 def create_client_sock(
-    hostname: str,
+    address: str,
     port: int,
     *,
     reuse_address: bool = True,
@@ -163,8 +164,8 @@ def create_client_sock(
     timeout: Optional[float] = None,
     ssl_context: Optional[ssl.SSLContext] = None
 ) -> socket.socket:
-    family, connect = format_address(hostname, port)
-    sock = _create_stream_sock(hostname, family, bind=False, reuse_address=reuse_address, ssl_context=ssl_context)
+    family, connect = format_address(address, port)
+    sock = _create_stream_sock(address, family, bind=False, reuse_address=reuse_address, ssl_context=ssl_context)
 
     timeout = _normalize_timeout(timeout)
     if timeout:

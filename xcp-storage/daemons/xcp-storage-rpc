@@ -14,10 +14,24 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-import xcp_storage.rpc.api.drbd as api_drbd
+import configparser
+
+from xcp_storage.rpc.server import RpcApiServer
 
 # ==============================================================================
 
-__all__ = [
-    "api_drbd"
-]
+DEFAULT_ADDRESS = "0.0.0.0"
+DEFAULT_PORT = 3630
+
+# ------------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    config = configparser.ConfigParser()
+    config.read("/etc/xcp-storage/rpc.conf")
+
+    address = config.get("network", "address", fallback=DEFAULT_ADDRESS)
+    port = config.getint("network", "port", fallback=DEFAULT_PORT)
+
+    # TODO: Use SSL context.
+    api_server = RpcApiServer(address, port, ssl_context=None)
+    api_server.run()

@@ -18,4 +18,4 @@ from xcp_storage.utils.json.rpc import JsonRpcDispatcher
 
 # ==============================================================================
 
-ApiDispatcher = JsonRpcDispatcher()
+ApiDispatcher = JsonRpcDispatcher(use_module_name=True)

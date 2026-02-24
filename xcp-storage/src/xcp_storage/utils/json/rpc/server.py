@@ -38,12 +38,12 @@ class JsonRpcServer(TcpServer):
     def __init__(
         self,
         dispatcher: JsonRpcDispatcher,
-        hostname: str,
+        address: str,
         port: int,
         ssl_context: Optional[ssl.SSLContext] = None,
         protocol: Optional[Protocol] = None
     ) -> None:
-        super().__init__(hostname, port, ssl_context)
+        super().__init__(address, port, ssl_context)
         self._dispatcher = dispatcher
         self._protocol = protocol or XcpProtocol()
 

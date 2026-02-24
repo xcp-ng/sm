@@ -1,5 +1,10 @@
 [tool.mypy]
 mypy_path = "stubs"
+files = [
+    "daemons/*",
+    "src",
+    "tests"
+]
 
 disallow_untyped_defs = true
 enable_error_code = ["explicit-override"]
@@ -28,6 +33,11 @@ disable_error_code = [
 ]
 
 [tool.ruff]
+include = [
+  "daemons/*",
+  "src/**/*.py",
+  "tests/**/*.py"
+]
 line-length = 120
 
 [tool.ruff.lint]

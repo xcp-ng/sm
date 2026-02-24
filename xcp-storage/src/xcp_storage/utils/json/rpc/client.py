@@ -47,14 +47,14 @@ JSON_RPC_CLIENT_TIMEOUT = 120.0
 class JsonRpcClient:
     def __init__(
         self,
-        hostname: str,
+        address: str,
         port: int,
         ssl_context: Optional[ssl.SSLContext] = None,
         client_timeout: float = JSON_RPC_CLIENT_TIMEOUT,
         protocol: Optional[Protocol] = None
     ) -> None:
         super().__init__()
-        self._tcp_client = TcpClient(hostname, port, ssl_context, client_timeout)
+        self._tcp_client = TcpClient(address, port, ssl_context, client_timeout)
         self._protocol = protocol or XcpProtocol()
         self._seq = 0
 

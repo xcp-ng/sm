@@ -46,12 +46,12 @@ JsonValueT = TypeVar(
 class RpcApiClient(JsonRpcClient):
     def __init__(
         self,
-        hostname: str,
+        address: str,
         port: int,
         ssl_context: Optional[ssl.SSLContext] = None,
         client_timeout: float = JSON_RPC_CLIENT_TIMEOUT
     ) -> None:
-        super().__init__(hostname, port, ssl_context, client_timeout)
+        super().__init__(address, port, ssl_context, client_timeout)
 
     def call_api(
         self,

@@ -14,17 +14,10 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-import ssl
-
-# Import API mods to ensure ApiDispatcher is exported with all public methods.
-import xcp_storage.rpc.api  # noqa: F401
-from xcp_storage.rpc.dispatcher import ApiDispatcher
-from xcp_storage.utils.json.rpc.server import JsonRpcServer
-
-from xcp_storage.typing import Optional
+import xcp_storage.rpc.modules.drbd as drbd
 
 # ==============================================================================
 
-class RpcApiServer(JsonRpcServer):
-    def __init__(self, address: str, port: int, ssl_context: Optional[ssl.SSLContext] = None) -> None:
-        super().__init__(ApiDispatcher, address, port, ssl_context)
+__all__ = [
+    "drbd"
+]
