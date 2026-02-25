@@ -16,6 +16,7 @@ import ssl
 import time
 from types import TracebackType
 
+import xcp_storage.log as log
 from xcp_storage.utils.json import JsonDict, JsonList
 from xcp_storage.utils.json.rpc import (
     JsonRpcRequest,
@@ -35,6 +36,10 @@ from xcp_storage.typing import (
 )
 
 # ==============================================================================
+
+_DEBUG_CLIENT = True
+
+# ------------------------------------------------------------------------------
 
 # Timeout for connect/call.
 JSON_RPC_DEFAULT_TIMEOUT = 120.0
@@ -138,10 +143,14 @@ class JsonRpcClient:
             # 1. Send request.
             payload = JsonRpcRequest(self._seq, method, params).to_json().encode("utf-8")
             request = self._protocol.create_packet(Protocol.MessageType.REQUEST, self._seq, payload)
+            if _DEBUG_CLIENT:
+                log.debug(f"Send client request: {request} with payload: `{request.payload!r}`.")
             self._protocol.send_packet(sock, request)
 
             # 2. Receive response.
             response = self._protocol.receive_packet(sock, (Protocol.MessageType.RESPONSE, ))
+            if _DEBUG_CLIENT:
+                log.debug(f"Handle server response: {response} with payload: `{response.payload!r}`.")
             self._verify_sequence(response.seq)
 
             # 3. Return result.

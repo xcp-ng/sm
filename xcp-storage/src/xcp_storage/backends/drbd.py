@@ -29,7 +29,6 @@ from xcp_storage.typing import (
     Dict,
     Iterator,
     List,
-    override,
 )
 
 # ==============================================================================
@@ -133,16 +132,11 @@ def get_drbd_primary_address(resource_name: str) -> str:
 
 @dataclass
 class DrbdOpeners:
+    pid: int
+    process_name: str
+    cmdline: List[str]
     # The duration is expressed in milliseconds.
-    def __init__(self, pid: int, process_name: str, cmdline: List[str], open_duration: int) -> None:
-        self.pid = pid
-        self.process_name = process_name
-        self.cmdline = cmdline
-        self.open_duration = open_duration
-
-    @override
-    def __repr__(self) -> str:
-        return f"DrbdOpeners({self.pid}, {self.process_name}, {self.cmdline}, {self.open_duration})"
+    open_duration: int
 
 def get_drbd_local_openers(resource_name: str, volume_number: int) -> List[DrbdOpeners]:
     assert resource_name, "Cannot get DRBD openers without resource name."

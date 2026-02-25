@@ -34,6 +34,10 @@ from xcp_storage.typing import (
 
 # ==============================================================================
 
+_DEBUG_SERVER = True
+
+# ------------------------------------------------------------------------------
+
 class JsonRpcServer(TcpServer):
     def __init__(
         self,
@@ -63,7 +67,7 @@ class JsonRpcServer(TcpServer):
         except Exception as e:
             error_message = str(e)
 
-        log.error(f"Client error of {client} before request processing: `{error_message}`.")
+        log.error(f"Error on client {client} before request processing: `{error_message}`.")
         await self._send_parse_error(client, self.normalize_seq(seq), error_message)
         return False
 
@@ -79,10 +83,13 @@ class JsonRpcServer(TcpServer):
         try:
             # 1. Get request.
             request = await self._protocol.receive_packet_async(client.reader, (Protocol.MessageType.REQUEST, ))
+            if _DEBUG_SERVER:
+                log.debug(f"Handle client request of {client}: {request} with payload: `{request.payload!r}`.")
             seq = request.seq
 
             # 2. Execute request.
-            payload = await asyncio.get_running_loop().run_in_executor(
+            # TODO: Replace with get_running_loop in python 3.7.
+            payload = await asyncio.get_event_loop().run_in_executor(
                 None,
                 self._process_packet_request,
                 self._dispatcher,
@@ -101,9 +108,11 @@ class JsonRpcServer(TcpServer):
         seq = self.normalize_seq(seq)
         if payload is not None:
             response = self._protocol.create_packet(Protocol.MessageType.RESPONSE, seq, payload)
+            if _DEBUG_SERVER:
+                log.debug(f"Send client response to {client}: {response} with payload: `{response.payload!r}`.")
             await self._protocol.send_packet_async(client.writer, response)
         else:
-            log.error(f"Client error of {client} during request processing: `{error_message}`.")
+            log.error(f"Error on client {client} during request processing: `{error_message}`.")
             await self._send_parse_error(client, seq, error_message)
 
         return True
@@ -120,9 +129,7 @@ class JsonRpcServer(TcpServer):
 
     @staticmethod
     def _process_packet_request(dispatcher: JsonRpcDispatcher, packet: Protocol.Packet) -> bytes:
-        response = JsonRpcRequestProcessor(dispatcher).process(
-            packet.payload.decode("utf-8")
-        )
+        response = JsonRpcRequestProcessor(dispatcher).process(packet.payload.decode("utf-8"))
         if response:
             return response.to_json().encode("utf-8")
         return b""

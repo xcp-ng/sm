@@ -65,9 +65,18 @@ class XcpProtocol(Protocol):
             self._seq = seq
             self._payload_size = len(self._payload)
 
-            self.total_size = XcpProtocol.HEADER_SIZE + self._payload_size
-            if self.total_size > XcpProtocol.MAX_PACKET_SIZE:
-                self._raise_too_large_packet(self.total_size, self._seq)
+            self._total_size = XcpProtocol.HEADER_SIZE + self._payload_size
+            if self._total_size > XcpProtocol.MAX_PACKET_SIZE:
+                self._raise_too_large_packet(self._total_size, self._seq)
+
+        @override
+        def __repr__(self) -> str:
+            return ("XcpProtocol.Packet("
+                f"type={self._message_type.name}, "
+                f"flags={self._message_flags:#X}, "
+                f"seq={self._seq}, "
+                f"payload_size={self._payload_size}"
+            ")")
 
         @override
         def encode(self) -> bytes:
@@ -104,6 +113,7 @@ class XcpProtocol(Protocol):
         def set_payload(self, payload: bytes) -> None:
             if len(payload) != self._payload_size:
                 raise ProtocolError("Incompatible payload size.", self._seq)
+            self._payload = payload
 
         @classmethod
         def from_header(cls, header: bytes) -> "XcpProtocol.Packet":
@@ -115,19 +125,26 @@ class XcpProtocol(Protocol):
             payload_size, _ = struct.unpack(XcpProtocol.HEADER_FORMAT, header)
 
             if header_magic != XcpProtocol.HEADER_MAGIC:
-               raise ProtocolError("Invalid magic value!", seq)
+                raise ProtocolError(
+                    f"Invalid magic value! Packet={header_magic!r}. Expected={XcpProtocol.HEADER_MAGIC!r}", seq
+                )
             if protocol_version != XcpProtocol.VERSION:
                 raise ProtocolError(
-                    f"Invalid protocol version! Packet={protocol_version}. Expected={XcpProtocol.VERSION}.",
-                    seq
+                    f"Invalid protocol version! Packet={protocol_version}. Expected={XcpProtocol.VERSION}.", seq
                 )
+
+            try:
+                message_type = Protocol.MessageType(message_type)
+            except ValueError:
+                raise ProtocolError(f"Invalid message type:`{message_type}`.", seq) from None
 
             total_size = XcpProtocol.HEADER_SIZE + payload_size
             if total_size > XcpProtocol.MAX_PACKET_SIZE:
                 cls._raise_too_large_packet(total_size, seq)
 
             packet = cls(message_type, message_flags, seq, None)
-            packet.total_size = total_size
+            packet._payload_size = payload_size
+            packet._total_size = total_size
             return packet
 
         @staticmethod
@@ -147,16 +164,11 @@ class XcpProtocol(Protocol):
 
     @override
     def receive_packet(self, sock: socket.socket, message_types: Sequence[Protocol.MessageType]) -> Protocol.Packet:
-        if self.MessageType.CONNECT in message_types:
-            return self.Packet(self.MessageType.CONNECT, self.MessageFlags.NONE, -1, None)
-
-        self._assert_supported_message_types(message_types)
-
         header = bytearray(self.HEADER_SIZE)
         socket_receive(sock, header)
         packet = self.Packet.from_header(header)
 
-        self._assert_request_packet(packet)
+        self._check_packet_message_type(packet, message_types)
         payload = bytearray(packet.payload_size)
         socket_receive(sock, payload)
         packet.set_payload(payload)
@@ -165,8 +177,7 @@ class XcpProtocol(Protocol):
 
     @override
     def send_packet(self, sock: socket.socket, packet: Protocol.Packet) -> None:
-        if packet.message_type != self.MessageType.CONNECT: # We don't use CONNECT feature in this protocol.
-            socket_send(sock, packet.encode())
+        socket_send(sock, packet.encode())
 
     @override
     async def receive_packet_async(
@@ -174,15 +185,10 @@ class XcpProtocol(Protocol):
         stream_reader: asyncio.StreamReader,
         message_types: Sequence[Protocol.MessageType]
     ) -> Packet:
-        if self.MessageType.CONNECT in message_types:
-            return self.Packet(self.MessageType.CONNECT, self.MessageFlags.NONE, -1, None)
-
-        self._assert_supported_message_types(message_types)
-
         header = await stream_reader.readexactly(self.HEADER_SIZE)
         packet = self.Packet.from_header(header)
 
-        self._assert_request_packet(packet)
+        self._check_packet_message_type(packet, message_types)
         payload = await stream_reader.readexactly(packet.payload_size)
         packet.set_payload(payload)
 
@@ -194,16 +200,16 @@ class XcpProtocol(Protocol):
         stream_writer: asyncio.StreamWriter,
         packet: Protocol.Packet
     ) -> None:
-        if packet.message_type != self.MessageType.CONNECT:
-            stream_writer.write(packet.encode())
-            await stream_writer.drain()
+        stream_writer.write(packet.encode())
+        await stream_writer.drain()
 
     @classmethod
-    def _assert_request_packet(cls, packet: Protocol.Packet) -> None:
-        if packet.message_type != cls.MessageType.REQUEST:
-            raise ProtocolError(f"Unexpected message type: {packet.message_type}. Expected: REQUEST.", packet.seq)
-
-    @classmethod
-    def _assert_supported_message_types(cls, message_types: Sequence[Protocol.MessageType]) -> None:
-        if cls.MessageType.REQUEST not in message_types:
-            raise ProtocolError("Only CONNECT and REQUEST are supported by XCP protocol.")
+    def _check_packet_message_type(
+        cls, packet: Protocol.Packet, message_types: Sequence[Protocol.MessageType]
+    ) -> None:
+        if packet.message_type not in message_types:
+            raise ProtocolError(
+                f"Unexpected message type: {packet.message_type.name}. "
+                f"Expected: {[message_type.name for message_type in message_types]}.",
+                packet.seq
+            )
