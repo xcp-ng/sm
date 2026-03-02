@@ -3502,7 +3502,7 @@ class LinstorSR(SR):
         volumes_metadata = self._linstor.get_volumes_with_metadata()
 
         all_vdi_info = {}
-        pending_vdi_uuids = []
+        pending_vdis = []
 
         def handle_fail(vdi_uuid, e):
             Util.log(f" [VDI {vdi_uuid}: failed to load VDI info]: {e}")
@@ -3539,7 +3539,7 @@ class LinstorSR(SR):
 
                 vdi_type = volume_metadata.get(VDI_TYPE_TAG)
                 if VdiType.isCowImage(vdi_type):
-                    pending_vdi_uuids.append(vdi_uuid)
+                    pending_vdis.append((vdi_uuid, vdi_type))
                 else:
                     all_vdi_info[vdi_uuid] = None
             except Exception as e:
@@ -3547,17 +3547,17 @@ class LinstorSR(SR):
 
         multi_cowutil = MultiLinstorCowUtil(self._linstor.uri, self._linstor.group_name)
 
-        def load_info(vdi_uuid, cowutil_instance):
+        def load_info(vdi, multi_cowutil):
+            vdi_uuid, vdi_type = vdi
             try:
-                vdiInfo = cowutil_instance.get_info(vdi_uuid)
+                vdiInfo = multi_cowutil.get_local_cowutil(vdi_type).get_info(vdi_uuid)
             except Exception as e:
                 vdiInfo = handle_fail(vdi_uuid, e)
-            # FIXME: Must support RAW and other types.
-            vdiInfo.vdiType = VdiType.VHD
+            vdiInfo.vdiType = vdi_type
             return vdiInfo
 
         try:
-            for vdiInfo in multi_cowutil.run(load_info, pending_vdi_uuids):
+            for vdiInfo in multi_cowutil.run(load_info, pending_vdis):
                 all_vdi_info[vdiInfo.uuid] = vdiInfo
         finally:
             del multi_cowutil
