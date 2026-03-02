@@ -1222,10 +1222,11 @@ class LinstorSR(SR.SR):
         # 5. Create VDIs.
         self._multi_cowutil = MultiLinstorCowUtil(self._linstor.uri, self._group_name)
 
-        def load_vdi(vdi_uuid, cowutil_instance):
+        def load_vdi(vdi_uuid, multi_cowutil):
             vdi = self.vdi(vdi_uuid)
 
             if USE_KEY_HASH and VdiType.isCowImage(vdi.vdi_type):
+                cowutil_instance = multi_cowutil.get_local_cowutil(vdi.vdi_type)
                 vdi.sm_config_override['key_hash'] = cowutil_instance.get_key_hash(vdi_uuid)
 
             return vdi
@@ -2144,7 +2145,7 @@ class LinstorVDI(VDI.VDI):
             self.parent = ''
         else:
             if self.sr._multi_cowutil:
-                cowutil_instance = self.sr._multi_cowutil.local_cowutil
+                cowutil_instance = self.sr._multi_cowutil.get_local_cowutil(self.vdi_type)
             else:
                 cowutil_instance = self.sr._cowutil
 
