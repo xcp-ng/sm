@@ -605,7 +605,7 @@ class MultiLinstorCowUtil:
         def clear(self):
             self.session = None
             self.linstor = None
-            self.cowutil = None
+            self.vdi_type_to_cowutil = {}
 
     class Load:
         def __init__(self, session):
@@ -625,18 +625,25 @@ class MultiLinstorCowUtil:
     def __del__(self):
         self._cleanup()
 
-    def run(self, func, vdi_uuids):
-        def wrapper(func, vdi_uuid):
+    def run(self, func, user_data_list):
+        def wrapper(func, user_data):
             if not self._executor_data.session:
                 self._init_executor_thread()
-            return func(vdi_uuid, self._executor_data.cowutil)
+            return func(user_data, self)
 
         with ThreadPoolExecutor(thread_name_prefix="CowUtil") as executor:
-            return executor.map(lambda vdi_uuid: wrapper(func, vdi_uuid), vdi_uuids)
+            return executor.map(lambda user_data: wrapper(func, user_data), user_data_list)
 
-    @property
-    def local_cowutil(self):
-        return self._executor_data.cowutil
+    def get_local_cowutil(self, vdi_type):
+        instance = self._executor_data.vdi_type_to_cowutil.get(vdi_type)
+        if not instance:
+            instance = LinstorCowUtil(
+                self._executor_data.session,
+                self._executor_data.linstor,
+                vdi_type
+            )
+            self._executor_data.vdi_type_to_cowutil[vdi_type] = instance
+        return instance
 
     def _init_executor_thread(self):
         session = util.get_localAPI_session()
@@ -649,8 +656,6 @@ class MultiLinstorCowUtil:
                 logger=util.SMlog
             )
             self._executor_data.linstor = linstor
-            # FIXME: Must support RAW and other types.
-            self._executor_data.cowutil = LinstorCowUtil(session, linstor, VdiType.VHD)
             self._executor_data.session = session
         except:
             self._executor_data.clear()
