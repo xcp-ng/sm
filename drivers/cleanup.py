@@ -3553,9 +3553,11 @@ class LinstorSR(SR):
         def load_info(vdi, multi_cowutil):
             vdi_uuid, vdi_type = vdi
             try:
-                return multi_cowutil.get_local_cowutil(vdi_type).get_info(vdi_uuid)
+                vdiInfo = multi_cowutil.get_local_cowutil(vdi_type).get_info(vdi_uuid)
             except Exception as e:
-                return handle_fail(vdi_uuid, e)
+                vdiInfo = handle_fail(vdi_uuid, e)
+            vdiInfo.vdiType = vdi_type
+            return vdiInfo
 
         try:
             for vdiInfo in multi_cowutil.run(load_info, pending_vdis):
