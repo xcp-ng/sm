@@ -35,8 +35,11 @@ except ImportError:
     LINSTOR_AVAILABLE = False
 
 from lock import Lock
+from datetime import datetime
+from glob import glob
 import blktap2
 import cleanup
+import contextlib
 import errno
 import functools
 import lvutil
@@ -133,6 +136,12 @@ OPS_EXCLUSIVE = [
     'sr_update', 'sr_probe', 'vdi_init', 'vdi_create', 'vdi_delete',
     'vdi_attach', 'vdi_detach', 'vdi_clone', 'vdi_snapshot',
 ]
+
+BACKUPDB_NAME_FORMAT = "backupdb-{}-{}"
+BACKUPDB_PATH_FORMAT = "/var/lib/linstor/{}.zip"
+BACKUPDB_PATH_LATEST = BACKUPDB_PATH_FORMAT.format("backupdb-latest")
+BACKUPDB_RETENTION = 10
+BACKUPDB_DATE_FORMAT = "%Y%m%d_%H%M%S"
 
 # ==============================================================================
 # Misc helpers used by LinstorSR and linstor-thin plugin.
@@ -808,6 +817,11 @@ class LinstorSR(SR.SR):
                 self._is_master = self.dconf['SRmaster'] == 'true'
 
         return self._is_master
+
+    @override
+    def check_sr(self, sr_uuid) -> None:
+        self._make_backupdb("auto", delay=3600)
+
 
     @override
     @_locked_load
@@ -1558,6 +1572,37 @@ class LinstorSR(SR.SR):
         util.SMlog('Kicking GC')
         cleanup.start_gc_service(self.uuid)
 
+    def _backup_db_search(self, name="*"):
+        return sorted(glob(
+            BACKUPDB_PATH_FORMAT.format(BACKUPDB_NAME_FORMAT).format("*", name)
+        ))
+
+    def _make_backupdb(self, name, delay=None):
+        if not self._linstor:
+            self._reconnect()
+
+        now = datetime.now()
+        # Throttling to avoid too many backups of the same kind on a short period
+        if delay:
+            latest_named_backupdb = self._backup_db_search(name)
+            if latest_named_backupdb:
+                backupdb_date = datetime.strptime(
+                    latest_named_backupdb[-1].split("-")[1],
+                    BACKUPDB_DATE_FORMAT,
+                )
+                if (now - backupdb_date).seconds < delay:
+                    return  # No backup for now
+
+        backupdb_name = BACKUPDB_NAME_FORMAT.format(now.strftime(BACKUPDB_DATE_FORMAT), name)
+        self._linstor._linstor.controller_backupdb(backupdb_name)
+        with contextlib.suppress(OSError):
+            os.unlink(BACKUPDB_PATH_LATEST)
+            os.link(BACKUPDB_PATH_FORMAT.format(backupdb_name), BACKUPDB_PATH_LATEST)
+
+        # And keep only 10 named backups
+        for old_backupdb_file in self._backup_db_search()[:-BACKUPDB_RETENTION]:
+            os.unlink(old_backupdb_file)
+
 # ==============================================================================
 # LinstorSr VDI
 # ==============================================================================
@@ -1757,6 +1802,8 @@ class LinstorVDI(VDI.VDI):
         self.ref = self._db_introduce()
         self.sr._update_stats(self.size)
 
+        self.sr._make_backupdb("create")
+
         return VDI.VDI.get_params(self)
 
     @override
@@ -1804,7 +1851,8 @@ class LinstorVDI(VDI.VDI):
         # TODO: Check size after delete.
         self.sr._update_stats(-self.size)
         self.sr._kick_gc()
-        return super(LinstorVDI, self).delete(sr_uuid, vdi_uuid, data_only)
+        super(LinstorVDI, self).delete(sr_uuid, vdi_uuid, data_only)
+        self.sr._make_backupdb("delete")
 
     @override
     def attach(self, sr_uuid, vdi_uuid) -> str:
@@ -2375,7 +2423,9 @@ class LinstorVDI(VDI.VDI):
         if not blktap2.VDI.tap_pause(self.session, sr_uuid, vdi_uuid):
             raise util.SMException('Failed to pause VDI {}'.format(vdi_uuid))
         try:
-            return self._snapshot(snapType, cbtlog, consistency_state)
+            r = self._snapshot(snapType, cbtlog, consistency_state)
+            self.sr._make_backupdb("snapshot")
+            return r
         finally:
             self.disable_leaf_on_secondary(vdi_uuid, secondary=secondary)
             blktap2.VDI.tap_unpause(self.session, sr_uuid, vdi_uuid, secondary)
