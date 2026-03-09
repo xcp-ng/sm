@@ -15,9 +15,12 @@
 #
 # VDI: Base class for virtual disk instances
 #
+import time
+from contextlib import contextmanager
 
 from sm_typing import Dict, Optional
 
+import blktap2
 import cleanup
 import SR
 import xmlrpc.client
@@ -37,6 +40,7 @@ SM_CONFIG_PASS_THROUGH_FIELDS = ["base_mirror", "key_hash"]
 SNAPSHOT_SINGLE = 1  # true snapshot: 1 leaf, 1 read-only parent
 SNAPSHOT_DOUBLE = 2  # regular snapshot/clone that creates 2 leaves
 SNAPSHOT_INTERNAL = 3  # SNAPSHOT_SINGLE but don't update SR's virtual allocation
+LONG_PAUSE_TIME = 60
 
 
 class VDI(object):
@@ -314,7 +318,6 @@ class VDI(object):
         prior to deletion, otherwise the delete() will fail if the
         disk is still attached.
         """
-        import blktap2
         from lock import Lock
 
         if data_only == False and self._get_blocktracking_status():
@@ -471,6 +474,19 @@ class VDI(object):
             finally:
                 lock.release()
 
+    @contextmanager
+    def tap_pause(self, secondary=None):
+        start = time.monotonic()
+        if not blktap2.VDI.tap_pause(self.session, self.sr.uuid, self.uuid):
+            raise util.SMException(f"Could not pause disk {self.uuid} on sr {self.sr.uuid}")
+        try:
+            yield
+        finally:
+            blktap2.VDI.tap_unpause(self.session, self.sr.uuid, self.uuid, secondary)
+            pause_time = time.monotonic() - start
+            if pause_time > LONG_PAUSE_TIME:
+                util.SMlog(f"WARNING: vdi {self.uuid} was paused for {pause_time} seconds")
+
     def get_params(self) -> str:
         """
         Returns:
@@ -592,7 +608,6 @@ class VDI(object):
 
     def configure_blocktracking(self, sr_uuid, vdi_uuid, enable):
         """Function for configuring blocktracking"""
-        import blktap2
         vdi_ref = self.sr.srcmd.params['vdi_ref']
 
         # Check if raw VDI or snapshot

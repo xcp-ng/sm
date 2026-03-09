@@ -19,12 +19,10 @@
 from pathlib import Path
 import json
 import contextlib
-from contextlib import contextmanager
 
 from sm_typing import Dict, Optional, List, override, Tuple, Collection, Union, Any, TypeVar, Type
 
 import abc
-import cbtutil
 import SR
 import VDI
 import SRCommand
@@ -40,7 +38,11 @@ import time
 import glob
 import fjournaler
 from uuid import uuid4
-from cowutil import getCowUtil, getImageStringFromVdiType, getVdiTypeFromImageFormat
+from cowutil import (
+    getCowUtil,
+    getImageStringFromVdiType,
+    getVdiTypeFromImageFormat,
+)
 from vditype import VdiType, VdiTypeExtension, VDI_COW_TYPES, VDI_TYPE_TO_EXTENSION
 import xmlrpc.client
 import XenAPI # pylint: disable=import-error
@@ -81,6 +83,7 @@ OPS_EXCLUSIVE = [
 DRIVER_CONFIG = {"ATTACH_FROM_CONFIG_WITH_TAPDISK": True}
 
 class VDILogEntry:
+    """Serialization class for FileVDI intended to log operations on the SR"""
     def __init__(self, uuid: str, path: Union[str, Path], parent: str, is_raw: bool):
         self.uuid = uuid
         self.path = Path(path)
@@ -122,6 +125,7 @@ class VDILogEntry:
 LogEntry = TypeVar("LogEntry", bound="BaseLogEntry")
 
 class BaseLogEntry(abc.ABC):
+    """Base class for serializing journal based entries inteded to rollback failed operations"""
 
     @property # type: ignore # Only way to simulate an abstract class variable
     @classmethod
@@ -144,27 +148,30 @@ class BaseLogEntry(abc.ABC):
     def to_dict(self) -> Dict[str, Collection[Any]]:
         ...
 
+    @staticmethod
+    def _get_version_from_journal_id(journal_id: str) -> str:
+        _, version = journal_id.split("+")
+        return version.replace("-", ".")
+
     @classmethod
-    def from_journal(cls: Type[LogEntry], uuid: str, value: str) -> LogEntry:
-        def version_from_uuid(uuid: str):
-            _, version = uuid.split("+")
-            return version.replace("-", ".")
-        version = version_from_uuid(uuid)
+    def from_journal(cls: Type[LogEntry], journal_id: str, value: str) -> LogEntry:
+        version = cls._get_version_from_journal_id(journal_id)
         if version != cls.CURRENT_VERSION:
-            raise xs_errors.SRException(f"Could not revert operation {uuid} with mismatched log versions {version} != {cls.CURRENT_VERSION}")
+            raise xs_errors.SRException(f"Could not revert operation {journal_id} with mismatched log versions {version} != {cls.CURRENT_VERSION}")
         return cls.from_dict(json.loads(value))
 
     def to_journal(self) -> Tuple[str, str]:
         # We use + as a version delimiter to not clash with journaler file name parsing
-        uuid = f"{util.gen_uuid()}+{self.CURRENT_VERSION.replace('.', '-')}"
+        journal_id = f"{util.gen_uuid()}+{self.CURRENT_VERSION.replace('.', '-')}"
         value = json.dumps(self.to_dict())
-        return uuid, value
+        return journal_id, value
 
     @override
     def __str__(self) -> str:
         return str(self.to_dict())
 
 class RevertLogEntry(BaseLogEntry):
+    """Journal entry used to rollback failed revert operations"""
 
     CURRENT_VERSION = "1.0"
     JRN_KEY = "revert"
@@ -197,6 +204,7 @@ class RevertLogEntry(BaseLogEntry):
         )
 
 class InsertCloneLogEntry(BaseLogEntry):
+    """Journal entry used to rollback failed clone insertions, part of revert operations"""
 
     CURRENT_VERSION = "1.0"
     JRN_KEY = "insert-clone"
@@ -1007,20 +1015,12 @@ class FileVDI(VDI.VDI):
     def clone(self, sr_uuid, vdi_uuid) -> str:
         return self._do_snapshot(sr_uuid, vdi_uuid, VDI.SNAPSHOT_DOUBLE)
 
-    @contextmanager
-    def tap_pause(self, secondary=None):
-        if not blktap2.VDI.tap_pause(self.session, self.sr.uuid, self.uuid):
-            raise util.SMException(f"Could not pause disk {self.uuid} on sr {self.sr.uuid}")
-        try:
-            yield
-        finally:
-            blktap2.VDI.tap_unpause(self.session, self.sr.uuid, self.uuid, secondary)
-
     @override
-    def _do_revert(self,
-            dest: "FileVDI", # type: ignore # self and dest are the same type
-            cbtlog: Optional[str] = None
-        ):
+    def _do_revert(
+        self,
+        dest: "FileVDI",  # type: ignore # self and dest are the same type
+        cbtlog: Optional[str] = None,
+    ):
         # Sanity checks
         if not self._checkpath(self.path):
             raise xs_errors.XenError(f"Could not find {self.path}")
@@ -1038,22 +1038,31 @@ class FileVDI(VDI.VDI):
                        (cbt_consistency_state, self.uuid))
             raise xs_errors.XenError("Not implemented yet")
 
-        # Get downward child
+        # Get sibling of the restored snapshot
+        # If it exists, it will be used to reconnect the rest of
+        # the snapshot tree when we'll introduce a clone of the
+        # snapshot's parent
         if self.parent == dest.parent:
-            downward_child = None
+            snap_sibling = None
         else:
             children = [child for child in self.sr.get_children_of(self.parent) if child != self.uuid]
             if not children:
-                downward_child = None
+                snap_sibling = None
             elif len(children) > 1:
                 raise xs_errors.SRException(f"Too many children for {self.parent}. Expected 1, found {len(children) + 1}")
             else:
-                downward_child = VDI.VDI.from_uuid(self.sr.session, children[0])
+                snap_sibling = VDI.VDI.from_uuid(self.sr.session, children[0])
 
         with self.tap_pause(), dest.tap_pause():
-            self._revert(dest, downward_child, cbtlog, cbt_consistency_state)
+            self._revert(dest, snap_sibling, cbtlog, cbt_consistency_state)
 
-    def _revert(self, dest: "FileVDI", downward_child: Optional["FileVDI"], cbtlog: Optional[str], cbt_consistency_state: bool):
+    def _revert(
+        self,
+        dest: "FileVDI",
+        snap_sibling: Optional["FileVDI"],
+        cbtlog: Optional[str],
+        cbt_consistency_state: bool,
+    ):
         """This assumes that self and dest VDIs has been paused"""
         dest_tmp_uuid = util.gen_uuid() # Will be replaced by dest.uuid at the end
         dest_tmp_path = os.path.join(dest.sr.path, "%s%s" % (dest_tmp_uuid, VDI_TYPE_TO_EXTENSION[dest.vdi_type]))
@@ -1062,8 +1071,8 @@ class FileVDI(VDI.VDI):
 
         src_parent = VDI.VDI.from_uuid(self.sr.session, self.parent)
 
-        if downward_child:
-            self._insert_clone_below(src_parent, cbtlog, self, downward_child)
+        if snap_sibling:
+            self._insert_clone_below(src_parent, cbtlog, self, snap_sibling)
 
         log_entry = RevertLogEntry(
             vdi=VDILogEntry.from_file_vdi(dest),
