@@ -37,7 +37,7 @@ from xcp_storage.typing import (
 
 # ==============================================================================
 
-_DEBUG_CLIENT = True
+_DEBUG_CLIENT = False
 
 # ------------------------------------------------------------------------------
 
@@ -122,8 +122,8 @@ class JsonRpcClient:
         while True:
             try:
                 return self._call(remaining_time, method, params)
-            except SocketDisconnectedError:
-                remaining_time -= time.monotonic() - start_time
+            except SocketDisconnectedError: # noqa: PERF203
+                remaining_time = timeout - (time.monotonic() - start_time)
                 if remaining_time <= 0:
                     raise
 
@@ -156,7 +156,9 @@ class JsonRpcClient:
             # 3. Return result.
             json_response = JsonRpcResponse.from_json(response.payload.decode("utf-8"))
             if not isinstance(json_response, JsonRpcResponse):
-                raise ProtocolError(f"Invalid JSON payload. Not a JsonRpcResponse. Got: `{type(json_response)}`.")
+                raise ProtocolError(
+                    f"Invalid JSON payload. Not a JsonRpcResponse. Got: `{type(json_response)}`."
+                )
 
             if json_response.error is None:
                 return json_response.result

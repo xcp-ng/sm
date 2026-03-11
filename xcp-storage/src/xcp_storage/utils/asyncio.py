@@ -21,7 +21,7 @@ def cancel_event_loop_tasks(event_loop: asyncio.AbstractEventLoop) -> None:
     try:
         tasks = asyncio.all_tasks(event_loop)
     except AttributeError:
-        # Workaround for python 3.6.
+        # TODO(XCPNG-3032): Workaround for python 3.6. Remove me later.
         tasks = asyncio.Task.all_tasks(event_loop) # type: ignore
 
     for task in tasks:

@@ -20,7 +20,7 @@ from xcp_storage.rpc.server import RpcApiServer
 
 # ==============================================================================
 
-DEFAULT_ADDRESS = "0.0.0.0"
+DEFAULT_ADDRESS = "0.0.0.0" # noqa: S104
 DEFAULT_PORT = 3630
 
 # ------------------------------------------------------------------------------
@@ -32,6 +32,6 @@ if __name__ == "__main__":
     address = config.get("network", "address", fallback=DEFAULT_ADDRESS)
     port = config.getint("network", "port", fallback=DEFAULT_PORT)
 
-    # TODO: Use SSL context.
+    # TODO(XCPNG-3037): Use SSL context.
     api_server = RpcApiServer(address, port, ssl_context=None)
     api_server.run()

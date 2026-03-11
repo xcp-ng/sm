@@ -126,11 +126,15 @@ class XcpProtocol(Protocol):
 
             if header_magic != XcpProtocol.HEADER_MAGIC:
                 raise ProtocolError(
-                    f"Invalid magic value! Packet={header_magic!r}. Expected={XcpProtocol.HEADER_MAGIC!r}", seq
+                    f"Invalid magic value! Packet={header_magic!r}. "
+                    f"Expected={XcpProtocol.HEADER_MAGIC!r}",
+                    seq
                 )
             if protocol_version != XcpProtocol.VERSION:
                 raise ProtocolError(
-                    f"Invalid protocol version! Packet={protocol_version}. Expected={XcpProtocol.VERSION}.", seq
+                    f"Invalid protocol version! Packet={protocol_version}. "
+                    f"Expected={XcpProtocol.VERSION}.",
+                    seq
                 )
 
             try:

@@ -82,9 +82,9 @@ class TcpClient:
         if self._socket:
             return
 
-        error_message = ""
+        error: Optional[Exception] = None
         def connect_impl() -> bool:
-            nonlocal error_message
+            nonlocal error
             try:
                 self._socket = Socket(create_client_sock(
                     self._address,
@@ -95,12 +95,12 @@ class TcpClient:
                     ssl_context=self._ssl_context
                 ))
             except Exception as e:
-                error_message = str(e)
+                error = e
                 return False
             return True
 
         if not wait_for_condition(connect_impl, timeout=timeout, interval=1):
-            raise TcpClientError(f"Unable to connect to server: `{error_message}`.")
+            raise TcpClientError("Unable to connect to server.") from error
 
     def disconnect(self) -> None:
         if self._socket:

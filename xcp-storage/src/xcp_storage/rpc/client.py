@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-#
 # Copyright (C) 2026  Vates SAS
 #
 # This program is free software: you can redistribute it and/or modify
@@ -37,8 +35,8 @@ from xcp_storage.typing import (
 P = ParamSpec("P")
 JsonValueT = TypeVar(
     "JsonValueT",
-    # TODO: Should be uncommented once mypy/python better supports recursive types.
-    # bound=JsonValue
+    # TODO(XCPNG-3036): Should be uncommented once mypy/python better supports recursive types.
+    # bound=JsonValue # noqa: ERA001
 )
 
 # ==============================================================================

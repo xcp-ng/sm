@@ -95,7 +95,7 @@ class JsonRpcResponseError(JsonRpcError):
                 raise JsonRpcResponseClientError("Invalid response error. `message` is not a string.")
 
             data = payload.get("data")
-        except ValueError as e:
+        except KeyError as e:
             raise JsonRpcResponseClientError(f"Invalid response error. Missing member: `{e}`.") from None
 
         error_type = _CODE_TO_ERROR_TYPE.get(code)
@@ -308,7 +308,7 @@ class JsonRpcRequest(JsonRpcObject):
             request.identifier = identifier
             request.method = method
             request.params = params
-        except ValueError as e:
+        except KeyError as e:
             raise JsonRpcRequestError(f"Invalid request. Missing member: `{e}`.") from None
 
         request._modified = False
@@ -403,7 +403,6 @@ class JsonRpcResponse(JsonRpcObject):
     @override
     def to_json(self) -> str:
         if self._json_payload is None:
-            # TODO: Detect a `to_json` method on `result` or use a specific encoder.
             self._json_payload = json.dumps(self.payload)
         return self._json_payload
 
@@ -462,7 +461,7 @@ class JsonRpcResponse(JsonRpcObject):
             response.identifier = identifier
             response.error = cast(JsonDict, error)
             response.result = result
-        except ValueError as e:
+        except KeyError as e:
             raise JsonRpcResponseClientError(f"Invalid response. Missing member: `{e}`.") from None
 
         response._modified = False
@@ -495,7 +494,7 @@ class JsonRpcCallResult:
         return self.error is None
 
 class JsonRpcDispatcher:
-    def __init__(self, use_module_name: bool = False) -> None:
+    def __init__(self, *, use_module_name: bool = False) -> None:
         self._name_to_method: Dict[str, JsonRpcCallable] = {}
         self._use_module_name = use_module_name
 
@@ -510,11 +509,9 @@ class JsonRpcDispatcher:
         except Exception as e:
             data: JsonDict = {"message": stringify_exception(e)}
 
-            # TODO: Use verify_call from pydantic to check JSON arguments.
             if isinstance(e, TypeError) and not is_callable_with(target, *args, **kwargs):
                 return JsonRpcCallResult(error=JsonRpcResponseInvalidParamsError(data=data))
-            else:
-                return JsonRpcCallResult(error=JsonRpcResponseServerError(data=data))
+            return JsonRpcCallResult(error=JsonRpcResponseServerError(data=data))
 
         return JsonRpcCallResult(result=result)
 

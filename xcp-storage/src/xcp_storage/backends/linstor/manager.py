@@ -305,16 +305,18 @@ class LinstorManagerBase:
     def _exec_query(self, query: Callable[Concatenate[linstor.Linstor, P], T], *args: P.args, **kwargs: P.kwargs) -> T:
         while True:
             self.connect()
-            assert self._linstor, "Linstor instance must exist."
+            assert self._linstor, "LINSTOR instance must exist."
             try:
                 return query(self._linstor, *args, **kwargs)
             except (linstor.errors.LinstorNetworkError, linstor.errors.LinstorTimeoutError):
                 self._linstor = None
             except Exception as e:
-                raise LinstorManagerError(f"LINSTOR query exception: `{e}`.") from e
+                raise LinstorManagerError("LINSTOR query error.") from e
 
     @staticmethod
-    def _filter_errors(result: Sequence[linstor.responses.RESTMessageResponse]) -> List[linstor.responses.ApiCallResponse]:
+    def _filter_errors(
+        result: Sequence[linstor.responses.RESTMessageResponse]
+    ) -> List[linstor.responses.ApiCallResponse]:
         return [
             cast(linstor.responses.ApiCallResponse, err) for err in result
             if hasattr(err, "is_error") and err.is_error()
@@ -387,6 +389,7 @@ class LinstorManager(LinstorManagerBase):
     def get_controller_resource_names(
         self,
         group_names: Optional[Set[str]] = None,
+        *,
         ignore_deleted: bool = True
     ) -> Set[str]:
         resource_definitions = self._fetch_resource_definitions()
@@ -546,12 +549,12 @@ class LinstorManager(LinstorManagerBase):
 
         # 1. Get available nodes. So take only ONLINE nodes without evacuating or error flags.
         class NodeState:
-            def __init__(self, node: linstor.responses.Node, auto_place_target: bool) -> None:
+            def __init__(self, node: linstor.responses.Node, *, auto_place_target: bool) -> None:
                 self.node = node
                 self.auto_place_target = auto_place_target
 
         node_states = {
-            node.name: NodeState(node, self._has_node_auto_place_target(node))
+            node.name: NodeState(node, auto_place_target=self._has_node_auto_place_target(node))
             for node in self._fetch_nodes().values()
             if node.connection_status == "ONLINE"
         }
@@ -685,9 +688,9 @@ class LinstorManager(LinstorManagerBase):
             for resource in skip_disk_resources.values():
                 try:
                     if self._is_diskless_resource(resource):
-                        self.toggle_resource(resource.name, resource.node_name, True)
+                        self.toggle_resource(resource.name, resource.node_name, diskless=True)
                     self.remove_resource_skip_disk_flag(resource.name, resource.node_name)
-                except LinstorManagerError as e:
+                except LinstorManagerError as e: # noqa: PERF203
                     if e.flags & LinstorManagerError.ERR_NETWORK:
                         raise
                     log.warning(
@@ -767,7 +770,8 @@ class LinstorManager(LinstorManagerBase):
         node = self._fetch_one_node(node_name)
         if not node:
             raise LinstorManagerError(
-                f"Failed to get preferred interface on node `{node_name}`: `{self._ERR_MSG_NODE_NOT_EXISTS}`.",
+                f"Failed to get preferred interface on node `{node_name}`: "
+                f"`{self._ERR_MSG_NODE_NOT_EXISTS}`.",
                 LinstorManagerError.ERR_NODE_NOT_EXISTS
             )
 
@@ -785,7 +789,8 @@ class LinstorManager(LinstorManagerBase):
 
         def raise_error(reason: str, flags: int = 0) -> Never:
             raise LinstorManagerError(
-                f"Failed to set node preferred interface `{interface_name}` on node `{node_name}`: `{reason}`.",
+                f"Failed to set node preferred interface `{interface_name}` "
+                f"on node `{node_name}`: `{reason}`.",
                 LinstorManagerError.ERR_NODE_INTERFACE_MODIFY | flags
             )
 
@@ -885,6 +890,7 @@ class LinstorManager(LinstorManagerBase):
         storage_pool_name: str,
         node_name: str,
         backing_device_path: str,
+        *,
         thin_provisioning: bool
     ) -> None:
         if thin_provisioning:
@@ -908,7 +914,8 @@ class LinstorManager(LinstorManagerBase):
 
             def raise_error(reason: str, flags: int = 0) -> Never:
                 raise LinstorManagerError(
-                    f"Failed to create storage pool `{storage_pool_name}` on node `{node_name}`: `{reason}`.",
+                    f"Failed to create storage pool `{storage_pool_name}` "
+                    f"on node `{node_name}`: `{reason}`.",
                     LinstorManagerError.ERR_STORAGE_POOL_CREATE | flags
                 )
 
@@ -945,8 +952,8 @@ class LinstorManager(LinstorManagerBase):
         # "can not be deleted as volumes / snapshot-volumes are still using it".
         if not wait_for_condition(destroy_impl, timeout=30, interval=1):
             raise LinstorManagerError(
-                f"Failed to destroy storage pool `{storage_pool_name}` on node `{node_name}`: "
-                f"`{self._get_error_str(errors)}`.",
+                f"Failed to destroy storage pool `{storage_pool_name}` "
+                f"on node `{node_name}`: `{self._get_error_str(errors)}`.",
                 LinstorManagerError.ERR_STORAGE_POOL_DESTROY
             )
 
@@ -959,6 +966,7 @@ class LinstorManager(LinstorManagerBase):
         group_name: str,
         storage_pool_names: List[str],
         place_count: int,
+        *,
         destroy_old_group: bool = False
     ) -> None:
         # 1. Create resource group.
@@ -1101,7 +1109,8 @@ class LinstorManager(LinstorManagerBase):
 
         def raise_error(reason: str, flags: int = 0) -> Never:
             raise LinstorManagerError(
-                f"Failed to create resource definition `{resource_name}` on group `{group_name}`: `{reason}`.",
+                f"Failed to create resource definition `{resource_name}` "
+                f"on group `{group_name}`: `{reason}`.",
                 LinstorManagerError.ERR_RESOURCE_DEFINITION_CREATE | flags
             )
 
@@ -1299,7 +1308,7 @@ class LinstorManager(LinstorManagerBase):
                 LinstorManagerError.ERR_RESOURCE_DESTROY
             )
 
-    def toggle_resource(self, resource_name: str, node_name: str, diskless: bool) -> None:
+    def toggle_resource(self, resource_name: str, node_name: str, *, diskless: bool) -> None:
         self.invalidate_storage_pool_cache()
         self.invalidate_resource_cache()
         errors = self._filter_errors(self._exec_query(
@@ -1314,7 +1323,8 @@ class LinstorManager(LinstorManagerBase):
         def raise_error(reason: str, flags: int = 0) -> Never:
             state = "Diskless" if diskless else "Diskful"
             raise LinstorManagerError(
-                f"Could not toggle resource `{resource_name}` on node `{node_name}` to {state}: `{reason}`.",
+                f"Could not toggle resource `{resource_name}` "
+                f"on node `{node_name}` to {state}: `{reason}`.",
                 LinstorManagerError.ERR_RESOURCE_TOGGLE | flags
             )
 
@@ -1352,11 +1362,11 @@ class LinstorManager(LinstorManagerBase):
     def remove_resource_skip_disk_flag(self, resource_name: str, node_name: str) -> None:
         return self._delete_resource_properties(resource_name, node_name, ["DrbdOptions/SkipDisk"])
 
-    def resources_evacuate(
-        self, node_name: str, group_names: Optional[Set[str]] = None, keep_diskless: bool = True
+    def resources_evacuate_diskful(
+        self, node_name: str, group_names: Optional[Set[str]] = None, *, keep_diskless: bool = True
     ) -> None:
         all_resource_replicas = self.get_controller_resource_replicas(
-            group_names, {node_name}, self.ResourceReplicasMode.STRICT_DATA_INTEGRITY
+            group_names, {node_name}, ResourceReplicasMode.STRICT_DATA_INTEGRITY
         )
         if not all_resource_replicas:
             return
@@ -1535,10 +1545,10 @@ class LinstorManager(LinstorManagerBase):
 
     @functools.lru_cache(maxsize=1)
     def _fetch_resource_groups_impl(self) -> Dict[str, linstor.responses.ResourceGroup]:
-        # There is no `resource_group_list` method, so find LINSTOR API call exception...
         try:
             result = self._exec_query(linstor.Linstor.resource_group_list_raise)
-        except Exception as e:
+        except LinstorManagerError as e:
+            # There is no `resource_group_list` method, so find LINSTOR exception cause...
             cause = e.__cause__
             if not cause:
                 raise
@@ -1753,7 +1763,8 @@ class LinstorManager(LinstorManagerBase):
 
         def raise_error(reason: str, flags: int = 0) -> Never:
             raise LinstorManagerError(
-                f"Failed to delete resource properties of `{resource_name}` on node `{node_name}`: `{reason}`.",
+                f"Failed to delete resource properties of `{resource_name}` "
+                f"on node `{node_name}`: `{reason}`.",
                 LinstorManagerError.ERR_RESOURCE_PROP_UPDATE | flags
             )
 

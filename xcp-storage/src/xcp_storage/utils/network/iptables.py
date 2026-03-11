@@ -56,7 +56,7 @@ def has_iptables_rule(rule: List[str]) -> bool:
 
 # ------------------------------------------------------------------------------
 
-def _update_iptables_ports(protocol: str, str_ports: str, open_ports: bool, stateful: bool, chain: str) -> None:
+def _update_iptables_ports(protocol: str, str_ports: str, *, open_ports: bool, stateful: bool, chain: str) -> None:
     # 1. Check if the rule is present.
     rule = [chain, "-p", protocol]
     if stateful:
@@ -77,12 +77,16 @@ def _update_iptables_ports(protocol: str, str_ports: str, open_ports: bool, stat
             # Create rule.
             run_command([_EXEC_PATH_IPTABLES, "-I"] + rule, expected_ret_code=0)
         except CommandError as e:
-            raise IptablesError(f"Failed to open {protocol.upper()} port(s): `{e.reason}`.", e.code) from None
+            raise IptablesError(
+                f"Failed to open {protocol.upper()} port(s): `{e.reason}`.", e.code
+            ) from None
     else:
         try:
             run_command([_EXEC_PATH_IPTABLES, "-D"] + rule, expected_ret_code=0)
         except CommandError as e:
-            raise IptablesError(f"Failed to close {protocol.upper()} port(s): `{e.reason}`.", e.code) from None
+            raise IptablesError(
+                f"Failed to close {protocol.upper()} port(s): `{e.reason}`.", e.code
+            ) from None
 
     # 3. Save.
     _save_iptables_changes()
@@ -114,7 +118,13 @@ def update_iptables_tcp_port(
     stateful: bool = True,
     chain: str = DEFAULT_FIREWALL_INPUT_CHAIN
 ) -> None:
-    _update_iptables_ports(_PROTOCOL_TCP, str(port), open_port, stateful, chain)
+    _update_iptables_ports(
+        _PROTOCOL_TCP,
+        str(port),
+        open_port=open_port,
+        stateful=stateful,
+        chain=chain
+    )
 
 def update_iptables_tcp_port_range(
     ports: Tuple[int, int],
@@ -123,4 +133,10 @@ def update_iptables_tcp_port_range(
     stateful: bool = True,
     chain: str = DEFAULT_FIREWALL_INPUT_CHAIN
 ) -> None:
-    _update_iptables_ports(_PROTOCOL_TCP, f"{ports[0]}:{ports[1]}", open_ports, stateful, chain)
+    _update_iptables_ports(
+        _PROTOCOL_TCP,
+        f"{ports[0]}:{ports[1]}",
+        open_port=open_ports,
+        stateful=stateful,
+        chain=chain
+    )

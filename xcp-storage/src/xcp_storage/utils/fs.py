@@ -20,4 +20,4 @@ from xcp_storage.utils.sync import wait_for_condition
 
 def wait_for_path(path: str, timeout: float = 10.0, interval: float = 0.5) -> bool:
     monitored_path = Path(path)
-    return wait_for_condition(lambda: monitored_path.exists(), timeout, interval)
+    return wait_for_condition(monitored_path.exists, timeout, interval)

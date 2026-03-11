@@ -15,14 +15,13 @@ implicit_optional = false
 module = "setuptools.*"
 ignore_missing_imports = true
 
-# To generate stubs, run the following commands in the linstor source folder:
+# To generate LINSTOR stubs, run the following commands in the LINSTOR source folder:
 # ./setup.py build
 # stubgen --include-private build/lib/linstor/ -o <XCP_STORAGE_PATH>/stubs/
 # echo "from . import sharedconsts as consts" >> <XCP_STORAGE_PATH>/stubs/linstor/__init__.pyi
 [[tool.mypy.overrides]]
 module = "linstor.*"
 
-disallow_untyped_defs = false
 disable_error_code = [
     "arg-type",
     "attr-defined",
@@ -31,42 +30,68 @@ disable_error_code = [
     "no-redef",
     "override"
 ]
+disallow_untyped_defs = false
 
 [tool.ruff]
 include = [
-  "daemons/*",
-  "src/**/*.py",
-  "tests/**/*.py"
+    "daemons/*",
+    "src/**/*.py",
+    "tests/**/*.py"
 ]
 line-length = 120
 
 [tool.ruff.lint]
 exclude = ["stubs/*"]
 ignore = [
-    "B019",  # flake8-bugbear: cached-instance-method
-    "UP006", # pyupgrade: non-pep585-annotation
-    "UP007", # pyupgrade: non-pep604-annotation-union
-    "UP045"  # pyupgrade: non-pep604-annotation-optional
+    "B019",   # flake8-bugbear: cached-instance-method
+    "EM101",  # flake8-errmsg: raw-string-in-exception
+    "EM102",  # flake8-errmsg: f-string-in-exception
+    "S101",   # flake8-bandit: assert
+    "S603",   # flake8-bandit: subprocess-without-shell-equals-true
+    "TD003",  # flake8-todos: missing-todo-link
+    "UP006",  # pyupgrade: non-pep585-annotation
+    "UP007",  # pyupgrade: non-pep604-annotation-union
+    "UP045",  # pyupgrade: non-pep604-annotation-optional
 ]
 select = [
+    "A",      # flake8-builtins
     "ANN",    # flake8-annotations
     "ARG",    # flake8-unused-arguments
     "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
     "C90",    # mccabe
+    "DTZ",    # flake8-datetimez
+    "E",      # pycodestyle: error
+    "EM",     # flake8-errmsg
+    "ERA",    # eradicate
+    "EXE",    # flake8-executable
     "F",      # Pyflakes
+    "FBT",    # flake8-boolean-trap
+    "FLY",    # flynt
+    "FURB",   # refurb
+    "G",      # flake8-logging-format
     "I",      # isort
     "ICN",    # flake8-import-conventions
+    "INT",    # flake8-gettext
+    "LOG",    # flake8-logging
     "N",      # pep8-naming
+    "PERF",   # perflint
     "PIE",    # flake8-pie
+    "PLW",    # pylint: warning
     "PTH",    # flake8-use-pathlib
     "Q",      # flake8-quotes
+    "RET",    # flake8-return
     "RUF013", # ruff: implicit-optional
     "RUF059", # ruff: unused-unpacked-variable
+    "S",      # flake8-bandit
     "SIM",    # flake8-simplify
     "SLF",    # flake8-self
+    "T100",   # flake8-debugger
     "T20",    # flake8-print
+    "TD",     # flake8-todos
     "TID",    # flake8-tidy-imports
-    "UP"      # pyupgrade
+    "UP",     # pyupgrade
+    "W",      # pycodestyle: warning
 ]
 typing-modules = ["xcp_storage.typing"]
 

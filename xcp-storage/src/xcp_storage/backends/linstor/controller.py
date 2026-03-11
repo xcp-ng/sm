@@ -45,7 +45,7 @@ def get_controller_addresses() -> List[str]:
     ]
 
 def get_controller_uri() -> str:
-    # TODO: On caller side, check that an IP address from the current pool is returned.
+    # TODO(XCPNG-3033): On caller side, check that an IP address from the current pool is returned.
     addresses = get_controller_addresses()
     return "linstor://" + addresses[0] if addresses else ""
 

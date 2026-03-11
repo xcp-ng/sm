@@ -74,9 +74,9 @@ def get_ip_address(address: str, ip_version: int = 0) -> Union[ipaddress.IPv4Add
         info = socket.getaddrinfo(address or socket.gethostname(), 80, family, socket.SOCK_STREAM, socket.SOL_TCP)
         return ipaddress.ip_address(info[0][4][0])
     except socket.gaierror as e:
-        raise SocketError(f"Cannot resolve IP: `{e}`.") from None
+        raise SocketError("Cannot resolve IP.") from e
     except IndexError:
-        raise SocketError("Cannot resolve IP.") from None
+        raise SocketError("Cannot resolve IP: no valid address.") from None
 
 # ------------------------------------------------------------------------------
 
@@ -91,7 +91,7 @@ def format_address(address: str, port: int) -> Tuple[socket.AddressFamily, Union
     if ip_address.version == 4:
         family = socket.AF_INET
         return (family, (str(ip_address), port))
-    elif ip_address.version == 6:
+    if ip_address.version == 6:
         family = socket.AF_INET6
         return (family, (str(ip_address), port, 0, 0))
 
@@ -148,7 +148,7 @@ def create_server_sock(
     except OSError as e:
         with contextlib.suppress(Exception):
             sock.close()
-        raise SocketError(f"Failed to bind server sock: `{e}`.") from None
+        raise SocketError("Failed to bind server sock.") from e
 
     if keep_alive:
         set_socket_keepalive(sock)
@@ -228,7 +228,7 @@ def socket_send(sock: socket.socket, buffer: bytes, size: Optional[int] = None) 
             if e.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
                 select.select([], [sock], [])
                 continue
-            raise SocketDisconnectedError(f"Unable to send data: `{e}`.") from None
+            raise SocketDisconnectedError("Unable to send data.") from e
 
     if pos != size:
         raise SocketDisconnectedError("Not enough data sent.") from None
@@ -252,7 +252,7 @@ def socket_receive(sock: socket.socket, buffer: bytearray, size: Optional[int] =
             if e.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
                 select.select([sock], [], [])
                 continue
-            raise SocketDisconnectedError(f"Unable to receive data: `{e}`.") from None
+            raise SocketDisconnectedError("Unable to receive data.") from e
 
     if pos != size:
         raise SocketDisconnectedError("Not enough data received.") from None
@@ -265,7 +265,7 @@ def get_socket_family_str(sock: socket.socket) -> str:
 # ------------------------------------------------------------------------------
 
 class Socket:
-    def __init__(self, sock: socket.socket, keep_open: bool = False) -> None:
+    def __init__(self, sock: socket.socket, *, keep_open: bool = False) -> None:
         self.sock = sock
         self.keep_open = keep_open
 

@@ -133,12 +133,12 @@ class ThreadPool:
         for worker in workers:
             worker.join(timeout=2.0)
 
-    def add_task(self, task: Callable[[], Any], wait: bool = True) -> None:
+    def add_task(self, task: Callable[[], Any], *, wait: bool = True) -> None:
         while True:
             try:
                 self._add_task(task)
                 return
-            except ThreadPoolNoWorkerError:
+            except ThreadPoolNoWorkerError: # noqa: PERF203
                 if not wait:
                     raise
                 self._free_workers_changed.wait()

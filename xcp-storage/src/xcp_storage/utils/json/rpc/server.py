@@ -34,7 +34,7 @@ from xcp_storage.typing import (
 
 # ==============================================================================
 
-_DEBUG_SERVER = True
+_DEBUG_SERVER = False
 
 # ------------------------------------------------------------------------------
 
@@ -88,7 +88,7 @@ class JsonRpcServer(TcpServer):
             seq = request.seq
 
             # 2. Execute request.
-            # TODO: Replace with get_running_loop in python 3.7.
+            # TODO(XCPNG-3032): Replace with get_running_loop in python 3.7.
             payload = await asyncio.get_event_loop().run_in_executor(
                 None,
                 self._process_packet_request,
