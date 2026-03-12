@@ -32,6 +32,9 @@ import stat
 import time
 import util
 import uuid
+from datetime import datetime
+from pathlib import Path
+import contextlib
 
 # Persistent prefix to add to RAW persistent volumes.
 PERSISTENT_PREFIX = 'xcp-persistent-'
@@ -310,6 +313,15 @@ class LinstorVolumeManager(object):
     # Limit request number when storage pool info is asked, we fetch
     # the current pool status after N elapsed seconds.
     STORAGE_POOLS_FETCH_INTERVAL = 15
+
+    # linstordb backup parameters
+    BACKUPDB_PATH = Path("/var/lib/linstor")
+    BACKUPDB_PATH_FORMAT = str(BACKUPDB_PATH / "{}.zip")
+    BACKUPDB_NAME_FORMAT = "backupdb-{}-{}"
+    BACKUPDB_PATH_LATEST = BACKUPDB_PATH / "backupdb-latest.zip"
+    BACKUPDB_RETENTION = 10
+    BACKUPDB_DATE_FORMAT = "%Y%m%d_%H%M%S"
+    BACKUPDB_DATE_GLOB = "20[0-9][0-9][01][0-9][0-3][0-9]_[0-2][0-9][0-5][0-9][0-5][0-9]"
 
     @staticmethod
     def default_logger(*args):
@@ -1758,6 +1770,29 @@ class LinstorVolumeManager(object):
         """
         return self._request_database_path(self._linstor, activate=True)
 
+    def backupdb(self, name, delay=0):
+        now = datetime.now()
+        # Throttling to avoid too many backups of the same kind on a short period
+        if delay:
+            latest_named_backupdb = self._latest_backupdb(name)
+            if latest_named_backupdb:
+                if (now - latest_named_backupdb[1]).total_seconds() < delay:
+                    util.SMlog("[backupdb] Throttling enabled: {}".format(latest_named_backupdb[0].name))
+                    return  # No backup for now
+
+        # Create new backup with link to latest
+        backupdb_name = self.BACKUPDB_NAME_FORMAT.format(now.strftime(self.BACKUPDB_DATE_FORMAT), name)
+        self._linstor.controller_backupdb(backupdb_name)
+        with contextlib.suppress(OSError):
+            self.BACKUPDB_PATH_LATEST.unlink()
+            self.BACKUPDB_PATH_LATEST.hardlink_to((self.BACKUPDB_PATH / backupdb_name).with_suffix(".zip"))
+        util.SMlog("[backupdb] Created: {}".format(backupdb_name))
+
+        # And keep only 10 named backups
+        for old_backupdb_file, _ in self._sorted_backupdb_list()[self.BACKUPDB_RETENTION:]:
+            os.unlink(old_backupdb_file)
+            util.SMlog("[backupdb] Retention policy, removed: {}".format(old_backupdb_file.name))
+
     @classmethod
     def get_all_group_names(cls, base_name):
         """
@@ -2613,6 +2648,20 @@ class LinstorVolumeManager(object):
         properties = self._get_kv_cache()
         properties.namespace = self._build_volume_namespace(volume_uuid)
         return properties
+
+    def _list_backupdb(self, name="*"):
+        for path in self.BACKUPDB_PATH.glob(self.BACKUPDB_NAME_FORMAT.format(
+                self.BACKUPDB_DATE_GLOB, name) + ".zip"):
+            try:
+                yield path, datetime.strptime(path.name.split("-")[1], self.BACKUPDB_DATE_FORMAT)
+            except (ValueError, IndexError):
+                continue
+
+    def _sorted_backupdb_list(self, name="*"):
+        return sorted(self._list_backupdb(name), reverse=True, key=lambda p: p[0].stat().st_mtime)
+
+    def _latest_backupdb(self, name="*"):
+        return max(self._list_backupdb(name), default=None, key=lambda p: p[0].stat().st_mtime)
 
     @classmethod
     def _build_sr_namespace(cls):
