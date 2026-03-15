@@ -355,6 +355,7 @@ class TestLVMVDI(unittest.TestCase, Stubs):
         sr_util_patcher = mock.patch('LVMSR.util')
         self.mock_sr_util = sr_util_patcher.start()
         self.mock_sr_util.gen_uuid.side_effect = str(uuid.uuid4())
+        self.mock_sr_util.roundup.return_value = 4 * 1024 * 1024
         xmlrpclib_patcher = mock.patch('VDI.xmlrpc.client', autospec=True)
         self.mock_xmlrpclib = xmlrpclib_patcher.start()
         cbtutil_patcher = mock.patch('VDI.cbtutil', autospec=True)
