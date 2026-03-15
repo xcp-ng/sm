@@ -39,7 +39,7 @@ import blktap2
 from journaler import Journaler
 from refcounter import RefCounter
 from ipc import IPCFlag
-from constants import NS_PREFIX_LVM, VG_LOCATION, VG_PREFIX
+from constants import NS_PREFIX_LVM, VG_LOCATION, VG_PREFIX, CBT_BLOCK_SIZE
 from cowutil import CowUtil, getCowUtil, getImageStringFromVdiType, getVdiTypeFromImageFormat
 from lvmcowutil import LV_PREFIX, LvmCowUtil
 from lvmanager import LVActivator
@@ -1321,9 +1321,10 @@ class LVMSR(SR.SR):
         util.SMlog("Kicking GC")
         cleanup.start_gc_service(self.uuid)
 
-    def ensureCBTSpace(self):
+    def ensureCBTSpace(self, virtual_size=0):
         # Ensure we have space for at least one LV
-        self._ensureSpaceAvailable(self.journaler.LV_SIZE)
+        size = max(util.roundup(CBT_BLOCK_SIZE, virtual_size//CBT_BLOCK_SIZE), self.journaler.LV_SIZE)
+        self._ensureSpaceAvailable(size)
 
 
 class LVMVDI(VDI.VDI):
@@ -2248,12 +2249,16 @@ class LVMVDI(VDI.VDI):
 
     @override
     def _ensure_cbt_space(self) -> None:
-        self.sr.ensureCBTSpace()
+        # We need virtual_size to compute the size in case of a bigger VDI
+        self.sr.ensureCBTSpace(self.size)
 
     @override
     def _create_cbt_log(self) -> str:
         logname = self._get_cbt_logname(self.uuid)
-        self.sr.lvmCache.create(logname, self.sr.journaler.LV_SIZE, CBTLOG_TAG)
+        logsize = max(util.roundup(CBT_BLOCK_SIZE, self.size//CBT_BLOCK_SIZE), self.sr.journaler.LV_SIZE)
+        # We choose 4MiB as the minimum for the log size to maintain the old behavior and compute the correct amount
+        # if we need a bigger LV for the CBT (can happen with big QCOW2)
+        self.sr.lvmCache.create(logname, logsize, CBTLOG_TAG)
         logpath = super(LVMVDI, self)._create_cbt_log()
         self.sr.lvmCache.deactivateNoRefcount(logname)
         return logpath

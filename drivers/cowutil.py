@@ -229,7 +229,7 @@ class CowUtil(ABC):
         parent: str,
         parentRaw: bool,
         msize: int = 0,
-        checkEmpty: Optional[bool] = True
+        checkEmpty: bool = True
     ) -> None:
         pass
 
@@ -241,8 +241,8 @@ class CowUtil(ABC):
     def check(
         self,
         path: str,
-        ignoreMissingFooter: Optional[bool] = False,
-        fast: Optional[bool] = False
+        ignoreMissingFooter: bool = False,
+        fast: bool = False
     ) -> 'CowUtil.CheckResult':
         pass
 
