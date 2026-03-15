@@ -30,14 +30,13 @@ from constants import CBTLOG_TAG
 from bitarray import bitarray
 from vditype import VdiType
 import uuid
-
+from constants import CBT_BLOCK_SIZE
 
 SM_CONFIG_PASS_THROUGH_FIELDS = ["base_mirror", "key_hash"]
 
 SNAPSHOT_SINGLE = 1  # true snapshot: 1 leaf, 1 read-only parent
 SNAPSHOT_DOUBLE = 2  # regular snapshot/clone that creates 2 leaves
 SNAPSHOT_INTERNAL = 3  # SNAPSHOT_SINGLE but don't update SR's virtual allocation
-CBT_BLOCK_SIZE = (64 * 1024)
 
 
 class VDI(object):
@@ -581,6 +580,9 @@ class VDI(object):
             error = "Failed to pause VDI %s" % vdi_uuid
             raise xs_errors.XenError('CBTActivateFailed', opterr=error)
         logfile = None
+
+        self.size = int(self.session.xenapi.VDI.get_virtual_size(vdi_ref))
+        # We need virtual_size to compute the CBT volume size in case of a bigger VDI (e.g. for creating LV) but it's not already available
 
         try:
             if enable:
