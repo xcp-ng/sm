@@ -47,6 +47,7 @@ from vditype import VdiType, VdiTypeExtension, VDI_COW_TYPES, VDI_TYPE_TO_EXTENS
 import xmlrpc.client
 import XenAPI # pylint: disable=import-error
 from constants import CBTLOG_TAG
+import cbtutil
 
 geneology: Dict[str, List[str]] = {}
 CAPABILITIES = ["SR_PROBE", "SR_UPDATE",
@@ -181,26 +182,32 @@ class RevertLogEntry(BaseLogEntry):
         vdi: VDILogEntry,
         backup_path: Union[Path, str],
         tmp_path: Union[Path, str],
+        cbtlog_backup_path: Optional[Union[Path, str]] = None,
     ):
         self.vdi = vdi
         self.backup_path = Path(backup_path)
         self.tmp_path = Path(tmp_path)
+        self.cbtlog_backup_path = Path(cbtlog_backup_path) if cbtlog_backup_path else None
 
     @override
     def to_dict(self) -> Dict[str, Collection[str]]:
-        return {
+        d: Dict[str, Any] = {
             "vdi": self.vdi.to_dict(),
             "backup_path": str(self.backup_path),
             "tmp_path": str(self.tmp_path),
         }
+        if self.cbtlog_backup_path:
+            d["cbtlog_backup_path"] = str(self.cbtlog_backup_path)
+        return d
 
     @override
     @classmethod
     def from_dict(cls, data: Dict[str, Union[Dict[str, str], str]]) -> "RevertLogEntry":
         return cls(
-            vdi=VDILogEntry.from_dict(data["vdi"]), # type: ignore # Version checked
-            backup_path=data["backup_path"], # type: ignore # Version checked
-            tmp_path=data["tmp_path"], # type: ignore # Version checked
+            vdi=VDILogEntry.from_dict(data["vdi"]),                          # type: ignore # Version checked
+            backup_path=data["backup_path"],                                  # type: ignore # Version checked
+            tmp_path=data["tmp_path"],                                        # type: ignore # Version checked
+            cbtlog_backup_path=data.get("cbtlog_backup_path"),               # type: ignore # Version checked
         )
 
 class InsertCloneLogEntry(BaseLogEntry):
@@ -553,7 +560,13 @@ class FileSR(SR.SR):
                 util.SMlog("Scan found hidden leaf (%s), ignoring" % uuid)
                 del self.vdis[uuid]
 
-    def _rollback_revert_vdi(self, vdi: "FileVDI", backup: Union[str, Path], tmp_path: Union[str, Path]):
+    def _rollback_revert_vdi(
+        self,
+        vdi: "FileVDI",
+        backup: Union[str, Path],
+        tmp_path: Union[str, Path],
+        cbtlog_backup_path: Optional[Union[str, Path]] = None,
+    ):
         util.SMlog(f"Removing temporary file {tmp_path}")
         self._unlink_paths(tmp_path)
 
@@ -569,6 +582,10 @@ class FileSR(SR.SR):
 
         vdi.load_from_file(vdi.path)
         vdi._db_update()
+
+        if cbtlog_backup_path and util.ioretry(lambda: util.pathexists(str(cbtlog_backup_path))):
+            cbtlog_path = vdi._get_cbt_logpath(vdi.uuid)
+            util.ioretry(lambda: os.rename(str(cbtlog_backup_path), cbtlog_path))
 
     def _rollback_insert_clone_journals(self, entry: InsertCloneLogEntry):
         # Revert parents on children
@@ -624,7 +641,7 @@ class FileSR(SR.SR):
             vdi = VDI.VDI.from_uuid(self.session, entry.vdi.uuid)
 
             with vdi.tap_pause():
-                self._rollback_revert_vdi(vdi, entry.backup_path, entry.tmp_path)
+                self._rollback_revert_vdi(vdi, entry.backup_path, entry.tmp_path, entry.cbtlog_backup_path)
 
             self.journaler.remove(RevertLogEntry.JRN_KEY, uuid)
 
@@ -1033,7 +1050,6 @@ class FileVDI(VDI.VDI):
             cbt_consistency_state = blktap2.VDI.tap_status(self.session, self.uuid)
             util.SMlog("Saving log consistency state of %s for vdi: %s" %
                        (cbt_consistency_state, self.uuid))
-            raise xs_errors.XenError("Not implemented yet")
 
         # Get sibling of the restored snapshot
         # If it exists, it will be used to reconnect the rest of
@@ -1060,11 +1076,24 @@ class FileVDI(VDI.VDI):
         cbtlog: Optional[str],
         cbt_consistency_state: bool,
     ):
-        """This assumes that self and dest VDIs has been paused"""
-        dest_tmp_uuid = util.gen_uuid() # Will be replaced by dest.uuid at the end
-        dest_tmp_path = os.path.join(dest.sr.path, "%s%s" % (dest_tmp_uuid, VDI_TYPE_TO_EXTENSION[dest.vdi_type]))
+        """This assumes that self and dest VDIs have been paused."""
 
-        dest_backup_path = os.path.join(dest.sr.path, "%s%s" % (util.gen_uuid(), VDI_TYPE_TO_EXTENSION[dest.vdi_type]))
+        def tmp_path(ext: str) -> str:
+            return os.path.join(dest.sr.path, "%s%s" % (util.gen_uuid(), ext))
+
+        ext = VDI_TYPE_TO_EXTENSION[dest.vdi_type]
+        dest_tmp_path    = tmp_path(ext)
+        dest_backup_path = tmp_path(ext)
+
+        # Pre-compute the cbtlog backup path if CBT is enabled on dest.
+        # The file is NOT moved yet — the journal must exist first so that
+        # any crash after this point is recoverable via _rollback_revert_vdi.
+        dest_cbtlog_path   = dest._get_cbt_logpath(dest.uuid) if cbtlog else None
+        cbtlog_backup_path = (
+            tmp_path(f".{CBTLOG_TAG}")
+            if dest_cbtlog_path and util.pathexists(dest_cbtlog_path)
+            else None
+        )
 
         src_parent = VDI.VDI.from_uuid(self.sr.session, self.parent)
 
@@ -1075,31 +1104,44 @@ class FileVDI(VDI.VDI):
             vdi=VDILogEntry.from_file_vdi(dest),
             backup_path=dest_backup_path,
             tmp_path=dest_tmp_path,
+            cbtlog_backup_path=cbtlog_backup_path,
         )
         journal_id, journal_content = log_entry.to_journal()
         self.sr.journaler.create(log_entry.JRN_KEY, journal_id, journal_content)
 
-        # First move the old vdi to a backup location to allow rolling back
+        # Journal exists — any crash from here is recoverable
         util.ioretry(lambda: self._rename(dest.path, dest_backup_path),
                      errlist=[errno.EIO, errno.EACCES])
-
-        # Create snapshot
-        util.fistpoint.activate_custom_fn(
-            "FileSR_fail_revert",
-            self.__fist_enospace)
+        if cbtlog_backup_path and dest_cbtlog_path:
+            src, dst = dest_cbtlog_path, str(cbtlog_backup_path)
+            util.ioretry(lambda: os.rename(src, dst))
+        
+        # Create new leaf from snapshot parent
+        util.fistpoint.activate_custom_fn("FileSR_fail_revert", self.__fist_enospace)
         util.ioretry(lambda: self._snap(dest_tmp_path, src_parent.path, False))
         self.cowutil.setHidden(dest_tmp_path, False)
 
         dest.sm_config = dest.session.xenapi.VDI.get_sm_config(dest.sr.srcmd.params['vdi_ref'])
 
-        # Apply snapshot
         util.ioretry(lambda: self._rename(dest_tmp_path, dest.path),
                      errlist=[errno.EIO, errno.EACCES])
         dest.load_from_file(dest.path)
         dest._db_update()
 
-        # Cleanup
-        self.sr._unlink_paths(dest_tmp_path, dest_backup_path)
+        if cbtlog:
+            # On revert, the dest cbtlog has been backed up and must be
+            # re-created from scratch, linked to the snapshot's cbtlog.
+            dest._create_cbt_log()
+            dest_logpath = dest._get_cbt_logpath(dest.uuid)
+            self_logpath = self._get_cbt_logpath(self.uuid)
+            dest._cbt_op(dest.uuid, cbtutil.set_cbt_parent,      dest_logpath, self.uuid)
+            dest._cbt_op(dest.uuid, cbtutil.set_cbt_consistency,  dest_logpath, cbt_consistency_state)
+            dest._cbt_op(self.uuid, cbtutil.set_cbt_child,        self_logpath, dest.uuid)
+
+        # Cleanup — all backups and journal
+        self.sr._unlink_paths(dest_tmp_path, dest_backup_path, *(
+            [cbtlog_backup_path] if cbtlog_backup_path else []
+        ))
         self.sr.journaler.remove(log_entry.JRN_KEY, journal_id)
 
     def _insert_clone_below(self, to_clone: "FileVDI", cbtlog: Optional[str], *children: "FileVDI") -> "FileVDI":
