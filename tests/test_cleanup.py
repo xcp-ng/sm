@@ -1908,7 +1908,7 @@ class TestSR(unittest.TestCase):
         mock_vdi.getSizePhys.return_value = 10 * MEGA
         mock_vdi.parent = mock_parent
 
-        sr._doCoalesceLeaf(mock_vdi)
+        sr._doCoalesceLeaf(mock_vdi, False)
 
         mock_parent.delConfig.assert_called_with("vhd-parent")
 
@@ -1930,7 +1930,7 @@ class TestSR(unittest.TestCase):
         mock_vdi.getSizePhys.return_value = 10 * MEGA
         mock_vdi.parent = mock_parent
 
-        sr._doCoalesceLeaf(mock_vdi)
+        sr._doCoalesceLeaf(mock_vdi, False)
 
         self.assertNotIn('vhd-parent', mock_parent.delConfig.call_args)
 
