@@ -696,12 +696,20 @@ class LVHDSR(SR.SR):
                             vdiToSnaps[Dict[vdi][SNAPSHOT_OF_TAG]] = [vdi_uuid]
 
                     if vdi_uuid not in vdi_uuids:
-                        util.SMlog("Introduce VDI %s as it is present in " \
-                                   "metadata and not in XAPI." % vdi_uuid)
                         sm_config = {}
                         sm_config['vdi_type'] = Dict[vdi][VDI_TYPE_TAG]
                         lvname = "%s%s" % \
                             (lvhdutil.LV_PREFIX[sm_config['vdi_type']], vdi_uuid)
+                        if not self.lvmCache.checkLV(lvname):
+                            util.SMlog("VDI %s is present in metadata but "
+                                       "its LV %s does not exist in the VG; "
+                                       "removing from metadata." %
+                                       (vdi_uuid, lvname))
+                            LVMMetadataHandler(self.mdpath). \
+                                deleteVdiFromMetadata(vdi_uuid)
+                            continue
+                        util.SMlog("Introduce VDI %s as it is present in " \
+                                   "metadata and not in XAPI." % vdi_uuid)
                         self.lvActivator.activate(
                             vdi_uuid, lvname, LVActivator.NORMAL)
                         activated_lvs.add(vdi_uuid)

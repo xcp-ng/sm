@@ -303,6 +303,151 @@ class TestLVHDSR(unittest.TestCase, Stubs):
         return metadata
 
 
+    def _setup_scan_sr(self, sr_uuid, mock_xenapi, mock_lvm_cache,
+                        mock_get_vg_stats, mock_scsi_get_size,
+                        xapi_vdi_uuids):
+        device_size = 100 * 1024 * 1024
+        mock_get_vg_stats.return_value = {
+            'physical_size': device_size,
+            'physical_utilisation': 10 * 1024 * 1024}
+        mock_scsi_get_size.return_value = device_size
+
+        mock_session = mock_xenapi.xapi_local.return_value
+        mock_session.xenapi.SR.get_sm_config.return_value = {
+            'allocation': 'thick',
+            'use_vhd': 'true'
+        }
+
+        vdi_refs = ['vdi_ref_%s' % u for u in xapi_vdi_uuids]
+        mock_session.xenapi.SR.get_VDIs.return_value = vdi_refs
+        uuid_map = {ref: u for ref, u in zip(vdi_refs, xapi_vdi_uuids)}
+        mock_session.xenapi.VDI.get_uuid.side_effect = uuid_map.get
+
+        sr = self.create_LVHDSR(master=True, command='sr_scan',
+                                sr_uuid=sr_uuid)
+        sr.mdexists = True
+        return sr, mock_session
+
+    @mock.patch('LVHDSR.cleanup', autospec=True)
+    @mock.patch('LVHDSR.IPCFlag', autospec=True)
+    @mock.patch('LVHDSR.Lock', autospec=True)
+    @mock.patch('LVHDSR.SR.XenAPI')
+    @testlib.with_context
+    def test_scan_stale_metadata_lv_missing_removes_from_metadata(
+            self,
+            context,
+            mock_xenapi,
+            mock_lock,
+            mock_ipc,
+            mock_cleanup):
+        sr_uuid = str(uuid.uuid4())
+        self.stubout('LVHDSR.lvutil._checkVG')
+        mock_lvm_cache = self.stubout('LVHDSR.lvmcache.LVMCache')
+        mock_get_vg_stats = self.stubout('LVHDSR.lvutil._getVGstats')
+        mock_scsi_get_size = self.stubout('LVHDSR.scsiutil.getsize')
+        self.stubout('LVHDSR.lvutil.cmd_lvm')
+        mock_cleanup.SR.TMP_RENAME_PREFIX = cleanup.SR.TMP_RENAME_PREFIX
+
+        stale_vdi_uuid = str(uuid.uuid4())
+        xapi_vdi_uuids = []
+
+        sr, mock_session = self._setup_scan_sr(
+            sr_uuid, mock_xenapi, mock_lvm_cache,
+            mock_get_vg_stats, mock_scsi_get_size, xapi_vdi_uuids)
+
+        mock_lvm_cache.return_value.checkLV.return_value = None
+
+        stale_meta = {
+            'vdi_key_0': {
+                'uuid': stale_vdi_uuid,
+                'is_a_snapshot': 0,
+                'snapshot_of': '',
+                'vdi_type': vhdutil.VDI_TYPE_VHD,
+                'name_label': 'StaleVDI',
+                'name_description': 'stale',
+                'type': 'User',
+                'read_only': False,
+                'managed': True,
+            }
+        }
+
+        with mock.patch('LVHDSR.LVMMetadataHandler',
+                        autospec=True) as mock_meta, \
+             mock.patch('LVHDSR.lvhdutil.getVDIInfo',
+                        return_value={}), \
+             mock.patch('LVHDSR.lvutil._getVGstats',
+                        return_value={'physical_size': 100 * 1024 * 1024,
+                                      'physical_utilisation': 0}):
+            mock_meta.return_value.getMetadata.return_value = [
+                None, stale_meta]
+            sr.scan(sr_uuid)
+
+            mock_meta.return_value.deleteVdiFromMetadata.assert_called_once_with(
+                stale_vdi_uuid)
+            mock_session.xenapi.VDI.db_introduce.assert_not_called()
+
+    @mock.patch('LVHDSR.cleanup', autospec=True)
+    @mock.patch('LVHDSR.IPCFlag', autospec=True)
+    @mock.patch('LVHDSR.Lock', autospec=True)
+    @mock.patch('LVHDSR.SR.XenAPI')
+    @testlib.with_context
+    def test_scan_metadata_vdi_not_in_xapi_lv_exists(
+            self,
+            context,
+            mock_xenapi,
+            mock_lock,
+            mock_ipc,
+            mock_cleanup):
+        sr_uuid = str(uuid.uuid4())
+        self.stubout('LVHDSR.lvutil._checkVG')
+        mock_lvm_cache = self.stubout('LVHDSR.lvmcache.LVMCache')
+        mock_get_vg_stats = self.stubout('LVHDSR.lvutil._getVGstats')
+        mock_scsi_get_size = self.stubout('LVHDSR.scsiutil.getsize')
+        self.stubout('LVHDSR.lvutil.cmd_lvm')
+        mock_cleanup.SR.TMP_RENAME_PREFIX = cleanup.SR.TMP_RENAME_PREFIX
+
+        new_vdi_uuid = str(uuid.uuid4())
+        xapi_vdi_uuids = []
+
+        sr, mock_session = self._setup_scan_sr(
+            sr_uuid, mock_xenapi, mock_lvm_cache,
+            mock_get_vg_stats, mock_scsi_get_size, xapi_vdi_uuids)
+
+        mock_lvm_cache.return_value.checkLV.return_value = True
+        mock_lvm_cache.return_value.getSize.return_value = 10240
+        mock_session.xenapi.VDI.db_introduce.return_value = 'new_vdi_ref'
+
+        new_vdi_meta = {
+            'vdi_key_0': {
+                'uuid': new_vdi_uuid,
+                'is_a_snapshot': 0,
+                'snapshot_of': '',
+                'vdi_type': vhdutil.VDI_TYPE_RAW,
+                'name_label': 'NewVDI',
+                'name_description': 'new',
+                'type': 'User',
+                'read_only': False,
+                'managed': True,
+            }
+        }
+
+        with mock.patch('LVHDSR.LVMMetadataHandler',
+                        autospec=True) as mock_meta, \
+             mock.patch('LVHDSR.lvhdutil.getVDIInfo',
+                        return_value={}), \
+             mock.patch('LVHDSR.lvutil._getVGstats',
+                        return_value={'physical_size': 100 * 1024 * 1024,
+                                      'physical_utilisation': 0}):
+            mock_meta.return_value.getMetadata.return_value = [
+                None, new_vdi_meta]
+            sr.scan(sr_uuid)
+
+            mock_meta.return_value.deleteVdiFromMetadata.assert_not_called()
+            mock_session.xenapi.VDI.db_introduce.assert_called_once()
+            call_args = mock_session.xenapi.VDI.db_introduce.call_args
+            self.assertEqual(call_args[0][0], new_vdi_uuid)
+
+
 class TestLVHDVDI(unittest.TestCase, Stubs):
 
     def setUp(self):
