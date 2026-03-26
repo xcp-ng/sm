@@ -648,19 +648,10 @@ class MultiLinstorCowUtil:
             self.linstor = None
             self.vdi_type_to_cowutil = {}
 
-    class Load:
-        def __init__(self, session):
-            self.session = session
-
-        def cleanup(self):
-            if self.session:
-                self.session.xenapi.session.logout()
-                self.session = None
-
     def __init__(self, uri, group_name) -> None:
         self._uri = uri
         self._group_name = group_name
-        self._loads: List[MultiLinstorCowUtil.Load] = []
+        self._loads: List[util.APISession] = []
         self._executor_data = self.ExecutorData()
 
     def __del__(self):
@@ -687,8 +678,8 @@ class MultiLinstorCowUtil:
         return instance
 
     def _init_executor_thread(self):
-        session = util.get_localAPI_session()
-        load = self.Load(session)
+        apisession = util.APISession("SM-linstorvhdutil")
+        session = apisession.session
         try:
             linstor = LinstorVolumeManager(
                 self._uri,
@@ -700,15 +691,13 @@ class MultiLinstorCowUtil:
             self._executor_data.session = session
         except:
             self._executor_data.clear()
-            load.cleanup()
             raise
-
-        self._loads.append(load)
+        self._loads.append(apisession)
 
     def _cleanup(self):
         for load in self._loads:
             try:
-                load.cleanup()
+                load.logout()
             except Exception as e:
                 util.SMlog(f"Failed to clean load executor: {e}")
         self._loads.clear()

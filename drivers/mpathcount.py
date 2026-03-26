@@ -53,15 +53,6 @@ def get_dm_major():
     return cached_DM_maj
 
 
-def mpc_exit(session, code):
-    if session is not None:
-        try:
-            session.xenapi.session.logout()
-        except:
-            pass
-    sys.exit(code)
-
-
 def match_host_id(s):
     regex = re.compile("^INSTALLATION_UUID")
     return regex.search(s, 0)
@@ -231,9 +222,9 @@ def check_xapi_is_enabled():
 
 if __name__ == '__main__':
     try:
-        session = util.get_localAPI_session()
-    except:
-        print("Unable to open local XAPI session")
+        apisession = util.APISession("SM-mpathcount")
+        session = apisession.session
+    except xs_errors.XenError:
         sys.exit(-1)
 
     localhost = session.xenapi.host.get_by_uuid(get_localhost_uuid())
@@ -252,7 +243,6 @@ if __name__ == '__main__':
         def _remove(key):
             session.xenapi.host.remove_from_other_config(localhost, key)
 
-
         def _add(key, val):
             session.xenapi.host.add_to_other_config(localhost, key, val)
         config = session.xenapi.host.get_other_config(localhost)
@@ -261,19 +251,18 @@ if __name__ == '__main__':
 
     except:
         util.SMlog("MPATH: Failure updating Host.other-config:mpath-boot db")
-        mpc_exit(session, -1)
+        sys.exit(-1)
 
     try:
         pbds = session.xenapi.PBD.get_all_records_where("field \"host\" = \"%s\"" % localhost)
     except:
-        mpc_exit(session, -1)
+        sys.exit(-1)
 
     try:
         mpath_status: Dict[str, str] = {}
         for pbd in pbds:
             def remove(key):
                 session.xenapi.PBD.remove_from_other_config(pbd, key)
-
 
             def add(key, val):
                 session.xenapi.PBD.add_to_other_config(pbd, key, val)
@@ -290,8 +279,8 @@ if __name__ == '__main__':
         os.chmod(MPATH_FILE_NAME, 0o0644)
     except:
         util.SMlog("MPATH: Failure updating db. %s" % str(sys.exc_info()))
-        mpc_exit(session, -1)
+        sys.exit(-1)
 
     util.SMlog("MPATH: Update done")
 
-    mpc_exit(session, 0)
+    sys.exit(0)

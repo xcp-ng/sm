@@ -1152,14 +1152,9 @@ class VDI(object):
 
     @classmethod
     def from_cli(cls, uuid):
-        session = XenAPI.xapi_local()
-        session.xenapi.login_with_password('root', '', '', 'SM')
-
-        target = sm.VDI.from_uuid(session, uuid)
-        driver_info = target.sr.srcmd.driver_info
-
-        session.xenapi.session.logout()
-
+        with util.APISession("SM-blktap2") as session:
+            target = sm.VDI.from_uuid(session, uuid)
+            driver_info = target.sr.srcmd.driver_info
         return cls(uuid, target, driver_info)
 
     @staticmethod

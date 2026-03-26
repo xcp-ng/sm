@@ -60,7 +60,6 @@ class TestRelease(object):
 class IrrelevantLock(object):
     pass
 
-
 def create_cleanup_sr(xapi, uuid=None):
     return cleanup.SR(uuid=uuid, xapi=xapi, createLock=False, force=False)
 
@@ -85,7 +84,10 @@ class TestSR(unittest.TestCase):
         self.xapi_mock.isPluggedHere.return_value = True
         self.xapi_mock.isMaster.return_value = True
         self.mock_xapi_session = mock.MagicMock(name="MockSession")
-        self.xapi_mock.getSession.return_value = self.mock_xapi_session
+
+        util_apisession_patcher = mock.patch('cleanup.util.APISession.login')
+        self.mock_util_apisession_patcher = util_apisession_patcher.start()
+        self.mock_util_apisession_patcher.return_value = self.mock_xapi_session
 
         self.addCleanup(mock.patch.stopall)
 

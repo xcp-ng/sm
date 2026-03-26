@@ -2585,7 +2585,9 @@ class LinstorVDI(VDI.VDI):
                 # Use a timeout call because XAPI may be unusable on startup
                 # or if the host has been ejected. So in this case the call can
                 # block indefinitely.
-                session = util.timeout(5, util.get_localAPI_session)
+                apisession = util.timeout(
+                    5, util.APISession, "SM-LinstorSR-http")
+                session = apisession.session
                 host_ip = util.get_this_host_address(session)
             except:
                 # Fallback using the XHA file if session not available.
@@ -2669,7 +2671,9 @@ class LinstorVDI(VDI.VDI):
                 device_size = 256 * 1024 * 1024
 
             try:
-                session = util.timeout(5, util.get_localAPI_session)
+                apisession = util.timeout(
+                    5, util.APISession, "SM-LinstorSR-nbd")
+                session = apisession.session
                 ips = util.get_host_addresses(session)
             except Exception as e:
                 _, ips = get_ips_from_xha_config_file()

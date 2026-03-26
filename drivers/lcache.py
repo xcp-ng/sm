@@ -221,12 +221,9 @@ class CacheFileSR(object):
 
     @classmethod
     def from_cli(cls):
-        import XenAPI # pylint: disable=import-error
-
-        session = XenAPI.xapi_local()
-        session.xenapi.login_with_password('root', '', '', 'SM')
-
-        return cls.from_session(session)
+        import util
+        with util.APISession("SM-lcache-CacheFileSR") as session:
+            return cls.from_session(session)
 
     def statvfs(self):
         return os.statvfs(self.sr_path)

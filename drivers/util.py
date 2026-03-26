@@ -19,6 +19,7 @@
 from sm_typing import Any, List, Optional, override
 
 import contextlib
+import atexit
 import os
 import re
 import sys
@@ -467,25 +468,19 @@ def ioretry_stat(path, maxretry=IORETRY_MAX):
 
 def sr_get_capability(sr_uuid, session=None):
     result = []
-    local_session = None
     if session is None:
-        local_session = get_localAPI_session()
-        session = local_session
+        apisession = APISession("SM-util-sr_get_capability")
+        session = apisession.session
+    sr_ref = session.xenapi.SR.get_by_uuid(sr_uuid)
+    sm_type = session.xenapi.SR.get_record(sr_ref)['type']
+    sm_rec = session.xenapi.SM.get_all_records_where(
+        "field \"type\" = \"%s\"" % sm_type)
 
-    try:
-        sr_ref = session.xenapi.SR.get_by_uuid(sr_uuid)
-        sm_type = session.xenapi.SR.get_record(sr_ref)['type']
-        sm_rec = session.xenapi.SM.get_all_records_where(
-            "field \"type\" = \"%s\"" % sm_type)
+    # SM expects at least one entry of any SR type
+    if len(sm_rec) > 0:
+        result = list(sm_rec.values())[0]['capabilities']
 
-        # SM expects at least one entry of any SR type
-        if len(sm_rec) > 0:
-            result = list(sm_rec.values())[0]['capabilities']
-
-        return result
-    finally:
-        if local_session:
-            local_session.xenapi.session.logout()
+    return result
 
 def sr_get_driver_info(driver_info):
     results = {}
@@ -774,14 +769,45 @@ def getrootdevID():
     return rootdevID
 
 
-def get_localAPI_session():
-    # First acquire a valid session
-    session = XenAPI.xapi_local()
-    try:
-        session.xenapi.login_with_password('root', '', '', 'SM')
-    except:
-        raise xs_errors.XenError('APISession')
-    return session
+class APISession:
+    def __init__(self, originator="SM"):
+        self.originator = originator
+        self.session = self.login()
+        SMlog("APISession [{}] login".format(self.originator))
+        atexit.register(self.atexit)
+
+    def login(self):
+        # First acquire a valid session
+        session = XenAPI.xapi_local()
+        try:
+            session.xenapi.login_with_password('root', '', '', self.originator)
+        except Exception as exc:
+            msg = f"APISession [{self.originator}] Unable to open local XAPI session"
+            SMlog(msg)
+            raise xs_errors.XenError(msg) from exc
+        return session
+
+    def logout(self, log="logout"):
+        if self.session is None:
+            SMlog("APISession [{}] session is None {}".format(self.originator, log))
+            return
+        self.session.xenapi.session.logout()
+        SMlog("APISession [{}] {}".format(self.originator, log))
+        self.session = None
+
+    def __del__(self):
+        """Closes an API session"""
+        atexit.unregister(self.atexit)
+        self.logout(log="logout del")
+
+    def atexit(self):
+        self.logout(log="logout atexit")
+
+    def __enter__(self):
+        return self.session
+
+    def __exit__(self, _type, _value, _traceback):
+        self.logout(log=f"logout exception[{_type}] {_value}" if _type else "logout context")
 
 
 def xapi_safe_call(function):
@@ -1453,16 +1479,12 @@ class FistPoint:
         return os.path.exists("/tmp/fist_%s" % name)
 
     def mark_sr(self, name, sruuid, started):
-        session = get_localAPI_session()
-        try:
+        with APISession("SM-util-FistPoint-mark_sr") as session:
             sr = session.xenapi.SR.get_by_uuid(sruuid)
-
             if started:
                 session.xenapi.SR.add_to_other_config(sr, name, "active")
             else:
                 session.xenapi.SR.remove_from_other_config(sr, name)
-        finally:
-            session.xenapi.session.logout()
 
     def activate(self, name, sruuid):
         if name in self.points:
