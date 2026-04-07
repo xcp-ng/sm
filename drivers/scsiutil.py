@@ -702,7 +702,8 @@ def sg_readcap(device):
         # retry one time for "Capacity data has changed"
         (rc, stdout, stderr) = util.doexec(readcapcommand)
     if rc != 0:
-        raise util.SMException("scsiutil.sg_readcap(%s) failed" % (device))
+        util.SMlog(f"scsiutil.sg_readcap({device}) failed.\n{stdout}\n{stderr}")
+        raise util.SMException(f"scsiutil.sg_readcap({device}) failed.")
     match = re.search('(^|.*\n)(0x[0-9a-fA-F]+) (0x[0-9a-fA-F]+)\n$', stdout)
     if not match:
         raise util.SMException("scsiutil.sg_readcap(%s) failed to parse: %s"
