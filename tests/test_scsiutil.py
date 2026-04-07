@@ -40,3 +40,55 @@ class Test_sg_readcap(unittest.TestCase):
         adapter.add_disk()
 
         scsiutil.refreshdev(["/dev/sda"])
+
+
+class TestGetDevicesByScsciId(unittest.TestCase):
+
+    def setUp(self):
+        self.addCleanup(mock.patch.stopall)
+
+        listdir_patcher = mock.patch('os.listdir')
+        self.mock_listdir = listdir_patcher.start()
+        realpath_patcher = mock.patch('os.path.realpath')
+        self.mock_realpath = realpath_patcher.start()
+
+    def test_get_devices_by_SCSIid_no_devices(self):
+        self.mock_listdir.return_value = []
+
+        # Act
+        paths = scsiutil.get_devices_by_SCSIid("scsiid")
+
+        # Assert
+        self.assertListEqual([], paths)
+
+    def test_get_devices_by_SCSIid_devices(self):
+        self.mock_listdir.return_value = ['sda', 'sdc', 'sday']
+        path_map = {
+            '/dev/disk/by-scsid/scsiid/sda': '/dev/sda',
+            '/dev/disk/by-scsid/scsiid/sdc': '/dev/sdc',
+            '/dev/disk/by-scsid/scsiid/sday': '/dev/sday'
+        }
+        self.mock_realpath.side_effect = path_map.get
+
+        # Act
+        paths = scsiutil.get_devices_by_SCSIid("scsiid")
+
+        # Assert
+        print(paths)
+        self.assertListEqual(list(path_map.values()), paths)
+
+    def test_get_devices_by_SCSIid_different_target(self):
+        self.mock_listdir.return_value = ['1', '2', '3']
+        path_map = {
+            '/dev/disk/by-scsid/scsiid/1': '/dev/sda',
+            '/dev/disk/by-scsid/scsiid/2': '/dev/sdc',
+            '/dev/disk/by-scsid/scsiid/3': '/dev/sday'
+        }
+        self.mock_realpath.side_effect = path_map.get
+
+        # Act
+        paths = scsiutil.get_devices_by_SCSIid("scsiid")
+
+        # Assert
+        print(paths)
+        self.assertListEqual(list(path_map.values()), paths)

@@ -209,10 +209,20 @@ def getdev(path):
 
 
 def get_devices_by_SCSIid(SCSIid):
-    devices = os.listdir(os.path.join('/dev/disk/by-scsid', SCSIid))
+    """
+    Return the canonical device path(s) for a given SCSI ID
+    Args:
+        SCSIid: The SCSI ID of the devices to return
+
+    Returns:
+        List of canonicalised devices
+    """
+    scsid_path = os.path.join('/dev/disk/by-scsid', SCSIid)
+    devices = os.listdir(scsid_path)
     if 'mapper' in devices:
         devices.remove('mapper')
-    return devices
+    return [os.path.realpath(os.path.join(scsid_path, d)) for
+            d in devices]
 
 
 def rawdev(dev):
