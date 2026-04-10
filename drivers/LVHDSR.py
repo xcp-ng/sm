@@ -1283,6 +1283,10 @@ class LVHDSR(SR.SR):
             if not rv:
                 raise Exception('plugin %s failed' % self.PLUGIN_ON_SLAVE)
 
+    def _deactivateOnSlave(self, hostRefs, lvname):
+        """Tell the slave we need to deactivate the base image"""
+        self._updateSlavesPreClone(hostRefs, lvname)
+
     def _cleanup(self, skipLockCleanup=False):
         """delete stale refcounter, flag, and lock files"""
         RefCounter.resetAll(lvhdutil.NS_PREFIX_LVM + self.uuid)
@@ -1871,6 +1875,10 @@ class LVHDVDI(VDI.VDI):
             util.SMlog("%s != %s != %s => deleting unused base %s" % \
                     (snapParent, self.uuid, snap2Parent, self.lvname))
             RefCounter.put(self.uuid, False, lvhdutil.NS_PREFIX_LVM + self.sr.uuid)
+
+            if hostRefs:
+                self.sr._deactivateOnSlave(hostRefs, self.lvname)
+
             self.sr.lvmCache.remove(self.lvname)
             self.sr.lvActivator.remove(self.uuid, False)
             if hostRefs:
