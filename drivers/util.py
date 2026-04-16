@@ -787,7 +787,8 @@ class APISession:
             raise xs_errors.XenError(msg) from exc
         return session
 
-    def logout(self, log="logout"):
+    def _logout(self, log):
+        """Closes an API session"""
         if self.session is None:
             SMlog("APISession [{}] session is None {}".format(self.originator, log))
             return
@@ -795,13 +796,16 @@ class APISession:
         SMlog("APISession [{}] {}".format(self.originator, log))
         self.session = None
 
-    def __del__(self):
-        """Closes an API session"""
+    def logout(self, log="logout"):
         atexit.unregister(self.atexit)
-        self.logout(log="logout del")
+        self._logout(log=log)
+
+    def __del__(self):
+        if self.session:
+            self.logout(log="logout del")
 
     def atexit(self):
-        self.logout(log="logout atexit")
+        self._logout(log="logout atexit")
 
     def __enter__(self):
         return self.session
