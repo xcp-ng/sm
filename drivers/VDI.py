@@ -802,7 +802,7 @@ class VDI(object):
         """ Get blocktracking status """
         if not uuid:
             uuid = self.uuid
-        if not VdiType.isCowImage(self.vdi_type):
+        if self.vdi_type == VdiType.RAW:
             return False
         elif 'VDI_CONFIG_CBT' not in util.sr_get_capability(
                 self.sr.uuid, session=self.sr.session):
