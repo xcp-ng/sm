@@ -1240,13 +1240,6 @@ class LVHDSR(SR.SR):
             if not rv:
                 raise Exception('plugin %s failed' % self.PLUGIN_ON_SLAVE)
 
-    def _updateSlavesPreClone(self, hostRefs, origOldLV):
-        args = {"vgName": self.vgname,
-                "action1": "deactivateNoRefcount",
-                "lvName1": origOldLV}
-        message = "Deactivate VDI"
-        self.call_on_slave(args, hostRefs, message)
-
     def _updateSlavesOnClone(self, hostRefs, origOldLV, origLV,
             baseUuid, baseLV):
         """We need to reactivate the original LV on each slave (note that the
@@ -1282,6 +1275,16 @@ class LVHDSR(SR.SR):
                 "ns1": lvhdutil.NS_PREFIX_LVM + self.uuid}
 
         message = f"Cleaning locks for {baseLV}"
+        self.call_on_slave(args, hostRefs, message)
+
+    def _deactivateOnSlave(self, hostRefs, lvname):
+        """Tell the slave we need to deactivate the base image"""
+        args = {
+            "vgName": self.vgname,
+            "action1": "deactivateNoRefcount",
+            "lvName1": lvname}
+
+        message = f"Deactivating {lvname}"
         self.call_on_slave(args, hostRefs, message)
 
     def _cleanup(self, skipLockCleanup=False):
@@ -1752,7 +1755,7 @@ class LVHDVDI(VDI.VDI):
         self.sr._ensureSpaceAvailable(size_req)
 
         if hostRefs:
-            self.sr._updateSlavesPreClone(hostRefs, self.lvname)
+            self.sr._deactivateOnSlave(hostRefs, self.lvname)
 
         baseUuid = util.gen_uuid()
         origUuid = self.uuid
@@ -1882,6 +1885,13 @@ class LVHDVDI(VDI.VDI):
             util.SMlog("%s != %s != %s => deleting unused base %s" % \
                     (snapParent, self.uuid, snap2Parent, self.lvname))
             RefCounter.put(self.uuid, False, lvhdutil.NS_PREFIX_LVM + self.sr.uuid)
+
+            # The removed LV could still be activated on a slave host if it's
+            # part of a VM currently running there, we need to deactivate it
+            # before it gets removed to avoid a LV leak.
+            if hostRefs:
+                self.sr._deactivateOnSlave(hostRefs, self.lvname)
+
             self.sr.lvmCache.remove(self.lvname)
             self.sr.lvActivator.remove(self.uuid, False)
             if hostRefs:
