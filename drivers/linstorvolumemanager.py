@@ -316,9 +316,9 @@ class LinstorVolumeManager(object):
 
     # linstordb backup parameters
     BACKUPDB_PATH = Path("/var/lib/linstor")
-    BACKUPDB_PATH_FORMAT = str(BACKUPDB_PATH / "{}.zip")
+    BACKUPDB_SECONDARY_PATH = Path("/var/lib/linstor.d/db-backups")
     BACKUPDB_NAME_FORMAT = "backupdb-{}-{}"
-    BACKUPDB_PATH_LATEST = BACKUPDB_PATH / "backupdb-latest.zip"
+    BACKUPDB_NAME_LATEST = "backupdb-latest.zip"
     BACKUPDB_RETENTION = 10
     BACKUPDB_DATE_FORMAT = "%Y%m%d_%H%M%S"
     BACKUPDB_DATE_GLOB = "20[0-9][0-9][01][0-9][0-3][0-9]_[0-2][0-9][0-5][0-9][0-5][0-9]"
@@ -1783,15 +1783,22 @@ class LinstorVolumeManager(object):
         # Create new backup with link to latest
         backupdb_name = self.BACKUPDB_NAME_FORMAT.format(now.strftime(self.BACKUPDB_DATE_FORMAT), name)
         self._linstor.controller_backupdb(backupdb_name)
+        backup_file = (self.BACKUPDB_PATH / backupdb_name).with_suffix(".zip")
+        # Copy to secondary backup location
         with contextlib.suppress(OSError):
-            self.BACKUPDB_PATH_LATEST.unlink()
-            self.BACKUPDB_PATH_LATEST.hardlink_to((self.BACKUPDB_PATH / backupdb_name).with_suffix(".zip"))
+            os.makedirs(self.BACKUPDB_SECONDARY_PATH, mode=0o755, exist_ok=True)
+            shutil.copy2(backup_file, self.BACKUPDB_SECONDARY_PATH)
+        for path in (self.BACKUPDB_PATH, self.BACKUPDB_SECONDARY_PATH):
+            with contextlib.suppress(OSError):
+                (path / self.BACKUPDB_NAME_LATEST).unlink()
+            os.link(str((path / backupdb_name).with_suffix(".zip")),
+                    str((path / self.BACKUPDB_NAME_LATEST)))
+            # Apply retention for named backups
+            for old_backupdb_file, _ in self._sorted_backupdb_list(path)[self.BACKUPDB_RETENTION:]:
+                os.unlink(old_backupdb_file)
+                # util.SMlog("[backupdb] Retention policy, removed: {}".format(old_backupdb_file.name))
         util.SMlog("[backupdb] Created: {}".format(backupdb_name))
 
-        # And keep only 10 named backups
-        for old_backupdb_file, _ in self._sorted_backupdb_list()[self.BACKUPDB_RETENTION:]:
-            os.unlink(old_backupdb_file)
-            util.SMlog("[backupdb] Retention policy, removed: {}".format(old_backupdb_file.name))
 
     @classmethod
     def get_all_group_names(cls, base_name):
@@ -2649,19 +2656,23 @@ class LinstorVolumeManager(object):
         properties.namespace = self._build_volume_namespace(volume_uuid)
         return properties
 
-    def _list_backupdb(self, name="*"):
-        for path in self.BACKUPDB_PATH.glob(self.BACKUPDB_NAME_FORMAT.format(
+    def _list_backupdb(self, backupdbpath, name="*"):
+        for path in backupdbpath.glob(self.BACKUPDB_NAME_FORMAT.format(
                 self.BACKUPDB_DATE_GLOB, name) + ".zip"):
             try:
                 yield path, datetime.strptime(path.name.split("-")[1], self.BACKUPDB_DATE_FORMAT)
             except (ValueError, IndexError):
                 continue
 
-    def _sorted_backupdb_list(self, name="*"):
-        return sorted(self._list_backupdb(name), reverse=True, key=lambda p: p[0].stat().st_mtime)
+    def _sorted_backupdb_list(self, path, name="*"):
+        return sorted(self._list_backupdb(path, name),
+                      reverse=True,
+                      key=lambda p: p[0].stat().st_mtime)
 
     def _latest_backupdb(self, name="*"):
-        return max(self._list_backupdb(name), default=None, key=lambda p: p[0].stat().st_mtime)
+        return max(self._list_backupdb(self.BACKUPDB_PATH, name),
+                   default=None,
+                   key=lambda p: p[0].stat().st_mtime)
 
     @classmethod
     def _build_sr_namespace(cls):
