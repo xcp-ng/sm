@@ -14,9 +14,12 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-from sm_typing import Any, Optional, override
+import contextlib
+from contextlib import suppress
+from sm_typing import Any, Optional, override, Dict, Union, Collection, List
 
 from constants import CBTLOG_TAG
+from jutils import BaseLogEntry
 
 try:
     from linstorcowutil import LinstorCowUtil, MultiLinstorCowUtil
@@ -106,7 +109,8 @@ CAPABILITIES = [
     'VDI_MIRROR',
     'VDI_RESIZE',
     'VDI_SNAPSHOT',
-    'VDI_GENERATE_CONFIG'
+    'VDI_GENERATE_CONFIG',
+    'VDI_REVERT'
 ]
 
 CONFIGURATION = [
@@ -132,7 +136,7 @@ DRIVER_CONFIG = {'ATTACH_FROM_CONFIG_WITH_TAPDISK': False}
 OPS_EXCLUSIVE = [
     'sr_create', 'sr_delete', 'sr_attach', 'sr_detach', 'sr_scan',
     'sr_update', 'sr_probe', 'vdi_init', 'vdi_create', 'vdi_delete',
-    'vdi_attach', 'vdi_detach', 'vdi_clone', 'vdi_snapshot',
+    'vdi_attach', 'vdi_detach', 'vdi_clone', 'vdi_snapshot', 'vdi_revert'
 ]
 
 # ==============================================================================
@@ -277,6 +281,76 @@ def activate_lvm_group(group_name):
         util.SMlog('Cannot active VG `{}`: {}'.format(path[0], e))
 
 # ==============================================================================
+# Journal related serialization classes.
+# ==============================================================================
+
+class RevertLogDestinationVDI:
+    def __init__(self, uuid: str, backup_uuid: str):
+        self.uuid = uuid
+        self.backup_uuid = backup_uuid
+
+    def to_dict(self) -> Dict[str, str]:
+        return {
+            "uuid": self.uuid,
+            "backup_uuid": self.backup_uuid,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, str]) -> "RevertLogDestinationVDI":
+        return cls(
+            uuid=data["uuid"],
+            backup_uuid=data["backup_uuid"],
+        )
+
+class RevertLogVDI:
+    def __init__(self, uuid: str):
+        self.uuid = uuid
+
+    def to_dict(self) -> Dict[str, str]:
+        return {
+            "uuid": self.uuid,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, str]) -> "RevertLogVDI":
+        return cls(
+            uuid=data["uuid"],
+        )
+
+class RevertLogEntry(BaseLogEntry):
+    """Journal entry used to rollback failed revert operations"""
+
+    CURRENT_VERSION = "1.0"
+    JRN_KEY = LinstorJournaler.REVERT
+
+    def __init__(
+        self,
+        dest: RevertLogDestinationVDI,
+        src: RevertLogVDI,
+        inserted: RevertLogVDI,
+    ):
+        self.dest = dest
+        self.src = src
+        self.inserted = inserted
+
+    @override
+    def to_dict(self) -> Dict[str, Collection[str]]:
+        return {
+            "dest": self.dest.to_dict(),
+            "src": self.src.to_dict(),
+            "inserted": self.inserted.to_dict(),
+        }
+
+    @override
+    @classmethod
+    def from_dict(cls, data: Dict[str, Union[Dict[str, str], str]]) -> "RevertLogEntry":
+        return cls(
+            dest=RevertLogDestinationVDI.from_dict(data["dest"]),  # type: ignore # Version checked
+            src=RevertLogVDI.from_dict(data["src"]),  # type: ignore # Version checked
+            inserted=RevertLogVDI.from_dict(data["inserted"]) #type: ignore # Version checked
+        )
+
+# ==============================================================================
 
 # Usage example:
 # xe sr-create type=linstor name-label=linstor-sr
@@ -296,6 +370,11 @@ class LinstorSR(SR.SR):
     INIT_STATUS_IN_PROGRESS = 1
     INIT_STATUS_OK = 2
     INIT_STATUS_FAIL = 3
+
+    # Journals that should prevent VMs from booting while pending
+    _CRITICAL_JOURNALS = [
+        RevertLogEntry.JRN_KEY,
+    ]
 
     # --------------------------------------------------------------------------
     # SR methods.
@@ -463,7 +542,24 @@ class LinstorSR(SR.SR):
                 # bad read. The lock is also necessary to avoid strange
                 # behaviors if the GC is executed during an action on a slave.
                 if self.cmd.startswith('vdi_'):
-                    self._shared_lock_vdi(self.srcmd.params['vdi_uuid'])
+                    try:
+                        self._shared_lock_vdi(self.srcmd.params['vdi_uuid'])
+                    except xs_errors.SROSError as e:
+                        # If we can't lock a VDI, it might be that in fact a critical journal is pending
+                        # In this case we don't care about the cache anyway so we connect if necessary
+                        # and check the journal.
+                        # If it wasn't the issue, we just raise the original error.
+                        if not self._linstor:
+                            try:
+                                self._reconnect()
+                            except Exception:
+                                raise e
+                        journaler = self._get_journaler()
+                        if self._has_critical_journals(journaler):
+                            raise xs_errors.XenError(
+                                "SRUnavailable", opterr="Critical journals are pending. A scan is required."
+                            )
+                        raise e
                     self._vdi_shared_time = time.time()
 
             if self.srcmd.cmd != 'sr_create' and self.srcmd.cmd != 'sr_detach':
@@ -480,6 +576,16 @@ class LinstorSR(SR.SR):
 
                 if hosts:
                     util.SMlog('Failed to join node(s): {}'.format(hosts))
+
+                journaler = self._get_journaler()
+
+                if self._has_critical_journals(journaler):
+                    if self.is_master():
+                        self._load_vdis()
+                    else:
+                        raise xs_errors.XenError(
+                            "SRUnavailable", opterr="Critical journals are pending. A scan is required."
+                        )
 
                 # Ensure we use a non-locked volume when cowutil is called.
                 if (
@@ -505,14 +611,13 @@ class LinstorSR(SR.SR):
                         'vdi_update', 'vdi_destroy',
                         'nop' # Deal with `SR.from_uuid` that emits a fake `nop` command.
                     ]:
-                        journaler = self._get_journaler()
                         load_vdis = (
                             self.cmd == 'sr_scan' or
                             self.cmd == 'sr_attach'
                         ) or len(
                             journaler.get_all(LinstorJournaler.INFLATE)
                         ) or len(
-                            journaler.get_all(LinstorJournaler.CLONE)
+                            self._journaler.get_all(LinstorJournaler.CLONE)
                         )
 
                         if load_vdis:
@@ -825,6 +930,12 @@ class LinstorSR(SR.SR):
     # To remove in python 3.10
     # See: https://stackoverflow.com/questions/12718187/python-version-3-9-calling-class-staticmethod-within-the-class-body
     _locked_load = staticmethod(_locked_load)
+
+    def _has_critical_journals(self, journaler) -> bool:
+        for key in self._CRITICAL_JOURNALS:
+            if any(journaler.getAll(key)):
+                return True
+        return False
 
     # --------------------------------------------------------------------------
     # Lock.
@@ -1343,10 +1454,69 @@ class LinstorSR(SR.SR):
             # Ensure journaler cache is clean. We MUST not rollback from invalid cache.
             self._journaler = None
             journaler = self._get_journaler()
+            self._handle_revert_journals(journaler)
             self._handle_interrupted_inflate_ops(journaler)
             self._handle_interrupted_clone_ops(journaler)
         finally:
             self.lock.release()
+
+    def _handle_revert_journals(self, journaler):
+        for journal_id, content in journaler.get_all(RevertLogEntry.JRN_KEY).items():
+            entry = RevertLogEntry.from_journal(journal_id, content)
+            util.SMlog(f"Reverting {entry.dest.uuid}")
+            self._rollback_revert_vdi(entry)
+
+            journaler.remove(RevertLogEntry.JRN_KEY, journal_id)
+
+    def _rollback_revert_vdi(self, entry: RevertLogEntry):
+        assert self._linstor
+
+        util.SMlog(f"Reverting vdi {entry.dest.uuid} from backup {entry.dest.backup_uuid}")
+        if not self._linstor.check_volume_exists(entry.dest.backup_uuid):
+            util.SMlog(f"No backup {entry.dest.backup_uuid} found for vdi {entry.dest.uuid}")
+            return
+
+        util.SMlog(f"Restoring src vdi {entry.src.uuid}")
+        if not self._linstor.check_volume_exists(entry.src.uuid):
+            util.SMlog(f"Restoring src vdi {entry.src.uuid} from {entry.inserted.uuid}")
+            self._linstor.update_volume_uuid(entry.inserted.uuid, entry.src.uuid)
+
+        src = self.vdi(entry.src.uuid)
+        src.linstorcowutil.set_hidden(src.path, False)
+        src.update_from_disk()
+        src._db_update_or_introduce()
+        src.disable_leaf_on_secondary(src.uuid)
+
+        # Add vdi to scanned vdis so it doesn't get forgotten in further steps
+        self.vdis[src.uuid] = src
+
+        util.SMlog(f"Unprotect inserted vdi {entry.inserted.uuid}")
+        if self._linstor.check_volume_exists(entry.inserted.uuid):
+            inserted = self.vdi(entry.inserted.uuid)
+            inserted.linstorcowutil.set_hidden(inserted.path, True)
+            inserted.update_from_disk()
+            inserted_ref = inserted._db_update_or_introduce()
+            inserted.session.xenapi.VDI.set_managed(inserted_ref, False)
+            inserted.disable_leaf_on_secondary(inserted.uuid)
+            self.vdis[inserted.uuid] = inserted
+
+        # Remove any potentially existing vdi with the same uuid
+        # This can happen if the snapshot was applied but data couldn't
+        # be updated before the crash
+        if self._linstor.check_volume_exists(entry.dest.uuid):
+            self._linstor.destroy_volume(entry.dest.uuid)
+
+        # Restore the backup
+        # Once we move the backup to it's old name, the journal can't be run again
+        # If something fails from now, we might lose some info, most of them
+        # will be back from a simple scan
+        self._linstor.update_volume_uuid(entry.dest.backup_uuid, entry.dest.uuid)
+        dest = self.vdi(entry.dest.uuid)
+
+        dest.update_from_disk()
+        dest._db_update()
+        # Add vdi to scanned vdis so it doesn't get forgotten in further steps
+        self.vdis[dest.uuid] = dest
 
     def _handle_interrupted_inflate_ops(self, journaler):
         transactions = journaler.get_all(LinstorJournaler.INFLATE)
@@ -1756,7 +1926,7 @@ class LinstorVDI(VDI.VDI):
         return VDI.VDI.get_params(self)
 
     @override
-    def delete(self, sr_uuid, vdi_uuid, data_only=False) -> None:
+    def delete(self, sr_uuid: str, vdi_uuid: str, data_only: bool = False, vdi_ref: Optional[str] = None) -> None:
         util.SMlog('LinstorVDI.delete for {}'.format(self.uuid))
         if self.attached:
             raise xs_errors.XenError('VDIInUse')
@@ -1766,7 +1936,8 @@ class LinstorVDI(VDI.VDI):
                 sr_uuid, vdi_uuid, data_only
             )
 
-        vdi_ref = self.sr.srcmd.params['vdi_ref']
+        if not vdi_ref:
+            vdi_ref = self.sr.srcmd.params['vdi_ref']
         if not self.session.xenapi.VDI.get_managed(vdi_ref):
             raise xs_errors.XenError(
                 'VDIDelete',
@@ -2346,6 +2517,37 @@ class LinstorVDI(VDI.VDI):
 
         return snap_vdi
 
+    def _ensure_not_max_depth(self, additional_depth: int = 0):
+        if not VdiType.isCowImage(self.vdi_type):
+            return # There is no depth concept outside of cow images
+
+        depth = self.linstorcowutil.get_depth(self.uuid) + additional_depth
+        if depth == -1:
+            raise xs_errors.XenError(
+                'VDIUnavailable',
+                opterr='failed to get COW depth'
+            )
+        elif depth >= self.linstorcowutil.cowutil.getMaxChainLength():
+            raise xs_errors.XenError('SnapshotChainTooLong')
+
+        if not VdiType.isCowImage(self.vdi_type):
+            return # There is no depth concept outside of cow images
+
+    def update_from_disk(self):
+        """Update properties based on the disk content"""
+
+        if not hasattr(self, "sm_config"):
+            self.sm_config = self.session.xenapi.VDI.get_sm_config(self.session.xenapi.VDI.get_by_uuid(self.uuid))
+
+        image_info = self.linstorcowutil.get_info(self.uuid)
+        self.utilisation = image_info.sizePhys
+        self.size = image_info.sizeVirt
+        self.parent = image_info.parentUuid
+        self.hidden = image_info.hidden
+        self.read_only = self._linstor.get_volume_metadata(self.uuid)[READ_ONLY_TAG]
+        if self.parent:
+            self.sm_config['vhd-parent'] = self.parent
+
     # --------------------------------------------------------------------------
     # Implement specific SR methods.
     # --------------------------------------------------------------------------
@@ -2355,6 +2557,116 @@ class LinstorVDI(VDI.VDI):
         # TODO: I'm not sure... Used by CBT.
         volume_uuid = self._linstor.get_volume_uuid_from_device_path(oldpath)
         self._linstor.update_volume_name(volume_uuid, newpath)
+
+    @override
+    def _do_revert(
+        self,
+        dest: "LinstorVDI", # type: ignore # self and dest are the same type
+        src_cbtlog: Optional[str],
+        dest_cbtlog: Optional[str],
+    ):
+        # CBT isn't supported on linstor
+        if src_cbtlog or dest_cbtlog:
+            raise xs_errors.XenError('Unimplemented')
+
+        # Ensure that every involved VDIs aren't RAW
+        for vdi in [self, dest]:
+            # Ensure we have a valid path if we don't have a local diskful.
+            vdi.linstorcowutil.create_chain_paths(vdi.uuid, readonly=True)
+            vdi._load_this()
+
+        with self.tap_pause(), dest.tap_pause():
+            self._revert(dest)
+
+    def _revert(self, dest: "LinstorVDI"):
+        self._ensure_not_max_depth()
+
+        dest_backup_uuid = util.gen_uuid()
+
+        inserted_uuid = util.gen_uuid()
+
+        # Create journal
+        log_entry = RevertLogEntry(
+            dest=RevertLogDestinationVDI(
+                dest.uuid, dest_backup_uuid
+            ),
+            src=RevertLogVDI(self.uuid),
+            inserted=RevertLogVDI(inserted_uuid),
+        )
+        journal_id, journal_content = log_entry.to_journal()
+        self.sr._journaler.create(log_entry.JRN_KEY, journal_id, journal_content)
+
+        # Backup 
+        ## First move the old vdi to a backup location to allow rolling back
+        ## This has to be done first because it's used as a signal to the rollback
+        ## algorithm to know if there is cleanup work to do
+        dest._linstor.update_volume_uuid(dest.uuid, dest_backup_uuid)
+
+        # Protect src against coalesce
+        self.disable_leaf_on_secondary(self.uuid, True)
+
+        # Create the base copy by renaming the src snapshot
+        self._linstor.update_volume_uuid(self.uuid, inserted_uuid)
+
+        util.fistpoint.activate("LinstorSR_revert_create_insert", self.sr.uuid)
+
+        inserted = LinstorVDI(self.sr, inserted_uuid)
+        inserted.label = "base copy"
+        inserted.read_only = False
+        inserted.location = inserted_uuid
+        inserted.sm_config = {}
+        inserted.sm_config["image-format"] = getImageStringFromVdiType(self.vdi_type)
+        if "key_hash" in self.sm_config:
+            inserted.sm_config["key_hash"] = self.sm_config["key_hash"]
+        inserted.cbt_enabled = False
+
+        # Protect the new parent from being coalesced by the GC
+        inserted.linstorcowutil.set_hidden(inserted.path, False)
+        inserted_ref = inserted._db_introduce()
+
+        inserted.disable_leaf_on_secondary(inserted.uuid, True)
+
+        # Recreate src
+        inserted_vdi_type = inserted.sr._get_snap_vdi_type(inserted.vdi_type, inserted.size)
+        _ = inserted._create_snapshot(
+            inserted_vdi_type,
+            self.uuid,
+        )
+
+        util.fistpoint.activate("LinstorSR_revert_create_src", self.sr.uuid)
+
+        # Update src
+        self.update_from_disk()
+        self._db_update()
+
+        # Apply snapshot
+        dest = inserted._create_snapshot(
+            inserted_vdi_type,
+            dest.uuid,
+        )
+        self.linstorcowutil.set_hidden(dest.path, False)
+
+        util.fistpoint.activate("LinstorSR_revert_create_dest", self.sr.uuid)
+
+        # The new parent can now be set hidden and don't need to be protected by the GC
+        inserted.linstorcowutil.set_hidden(inserted.path, True)
+        inserted.session.xenapi.VDI.set_managed(inserted_ref, False)
+        inserted.update_from_disk()
+
+        # Unprotect SRC
+        self.disable_leaf_on_secondary(self.uuid, None)
+
+        inserted.disable_leaf_on_secondary(inserted.uuid, None)
+        inserted.read_only = True
+        inserted._db_update()
+
+        dest.update_from_disk()
+        dest._db_update()
+
+        # Cleanup
+        ## Remove backup and journal
+        dest._linstor.destroy_volume(dest_backup_uuid)
+        self.sr._journaler.remove(RevertLogEntry.JRN_KEY, journal_id)
 
     @override
     def _do_snapshot(self, sr_uuid, vdi_uuid, snapType,
@@ -2395,14 +2707,7 @@ class LinstorVDI(VDI.VDI):
 
         snap_vdi_type = self.sr._get_snap_vdi_type(self.vdi_type, self.size)
 
-        depth = self.linstorcowutil.get_depth(self.uuid)
-        if depth == -1:
-            raise xs_errors.XenError(
-                'VDIUnavailable',
-                opterr='failed to get COW depth'
-            )
-        elif depth >= self.linstorcowutil.cowutil.getMaxChainLength():
-            raise xs_errors.XenError('SnapshotChainTooLong')
+        self._ensure_not_max_depth()
 
         # Ensure we have a valid path if we don't have a local diskful.
         chain = self.linstorcowutil.create_chain_paths(

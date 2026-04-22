@@ -1556,7 +1556,10 @@ fistpoint = FistPoint(["LVHDRT_finding_a_suitable_pair",
                         "LVM_journaler_none",
                         "LVM_journaler_badname",
                         "LVM_journaler_readfail",
-                        "LVM_journaler_writefail"])
+                        "LVM_journaler_writefail",
+                        "LinstorSR_revert_create_insert",
+                        "LinstorSR_revert_create_src",
+                        "LinstorSR_revert_create_dest"])
 
 
 def set_dirty(session, sr):
