@@ -41,7 +41,7 @@ QCOW2_DEFAULT_CLUSTER_SIZE: Final = 64 * 1024 # 64 KiB
 
 MIN_QCOW_SIZE: Final = QCOW2_DEFAULT_CLUSTER_SIZE
 
-MAX_QCOW_SIZE: Final = 16 * 1024 * 1024 * 1024 * 1024
+MAX_QCOW_SIZE: Final = 17589500641280 # Max size so that the fully allocated size with metadata is under the max size of EXT4 (17592185061376 bytes fully allocated)
 
 QEMU_IMG: Final = "/usr/bin/qemu-img"
 QCOW2_HELPER = "/opt/xensource/libexec/qcow2_helper"
