@@ -1598,6 +1598,9 @@ class LVMVDI(VDI.VDI):
         else:
             if lvSizeNew != lvSizeOld:
                 self.lvmcowutil.inflate(self.sr.journaler, self.sr.uuid, self.uuid, self.vdi_type, lvSizeNew)
+            if self.vdi_type == VdiType.QCOW2:
+                # We only do this for QCOW2 since qemu-img need to read the chain to resize
+                self._chainSetActive(True, True)
             self.cowutil.setSizeVirtFast(self.path, size)
             self.size = self.cowutil.getSizeVirt(self.path)
             self.utilisation = self.sr.lvmCache.getSize(self.lvname)
@@ -1608,6 +1611,8 @@ class LVMVDI(VDI.VDI):
                 str(self.utilisation))
         self.sr._updateStats(self.sr.uuid, self.size - oldSize)
         super(LVMVDI, self).resize_cbt(self.sr.uuid, self.uuid, self.size)
+        if self.vdi_type == VdiType.QCOW2:
+            self._chainSetActive(False, True)
         return VDI.VDI.get_params(self)
 
     @override
