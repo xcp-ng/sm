@@ -36,7 +36,7 @@ NEEDS_VDI_OBJECT = [
         "vdi_activate", "vdi_deactivate", "vdi_attach_from_config", "vdi_detach_from_config",
         "vdi_generate_config", "vdi_compose", "vdi_epoch_begin",
         "vdi_epoch_end", "vdi_enable_cbt", "vdi_disable_cbt", "vdi_data_destroy",
-        "vdi_list_changed_blocks"]
+        "vdi_list_changed_blocks", "vdi_revert"]
 
 # don't log the commands that spam the log file too much
 NO_LOGGING = {
@@ -56,7 +56,8 @@ EXCEPTION_TYPE = {
         "vdi_resize": "VDIResize",
         "vdi_resize_online": "VDIResize",
         "vdi_snapshot": "VDISnapshot",
-        "vdi_clone": "VDIClone"
+        "vdi_clone": "VDIClone",
+        "vdi_revert": "VDIRevert",
 }
 
 
@@ -268,6 +269,17 @@ class SRCommand:
 
         elif self.cmd == 'vdi_clone':
             return target.clone(self.params['sr_uuid'], self.vdi_uuid)
+
+        elif self.cmd == 'vdi_revert':
+            dest_uuid = self.params['args'][0]
+            if dest_uuid.startswith("OpaqueRef:"):
+                # TODO: remove once xapi sends an uuid instead of an OpaqueRef
+                dest_uuid = sr.session.xenapi.VDI.get_record(dest_uuid)["uuid"]
+            return target.revert(
+                self.params['sr_uuid'],
+                self.vdi_uuid,
+                dest_uuid,
+            )
 
         elif self.cmd == 'vdi_resize':
             return target.resize(self.params['sr_uuid'], self.vdi_uuid, int(self.params['args'][0]))

@@ -216,6 +216,9 @@ class VDI(object):
                      cloneOp=False, secondary=None, cbtlog=None, is_mirror_destination=False) -> str:
         raise xs_errors.XenError('Unimplemented')
 
+    def _do_revert(self, dest: "VDI", cbtlog: Optional[str] = None) -> None:
+        raise xs_errors.XenError('Unimplemented')
+
     def _delete_cbt_log(self) -> None:
         raise xs_errors.XenError('Unimplemented')
 
@@ -247,6 +250,32 @@ class VDI(object):
         advance.
         """
         raise xs_errors.XenError('Unimplemented')
+
+    def revert(self, sr_uuid: str, vdi_uuid: str, target_uuid: str) -> None:
+        """Replaces the contents of the target_uuid VDI with the contents of the vdi_uuid
+        without changing the identitity of the target (i.e. name-label, uuid and location
+        are guaranteed to remain the same)..
+
+        This operation IS idempotent and the vdi pointed by vdi_uuid is preserved.
+        """
+        if not self.managed:
+            raise util.SMException(f"Source {self.uuid} is a base copy.")
+
+        dest = self.__class__.from_uuid(self.sr.session, target_uuid)
+
+        if not dest.managed:
+            raise util.SMException(f"Destination {self.uuid} is a base copy.")
+
+        if self.vdi_type != dest.vdi_type:
+            raise util.SMException(f"{self.uuid} and {dest.uuid} has incompatible types {self.vdi_type} != {dest.vdi_type}")
+
+        if self._get_blocktracking_status():
+            cbtlog = self._get_cbt_logpath(self.uuid)
+        else:
+            cbtlog = None
+
+        self._do_revert(dest, cbtlog=cbtlog)
+
 
     def resize_cbt(self, sr_uuid, vdi_uuid, size):
         """Resize the given VDI to size <size> MB. Size can
