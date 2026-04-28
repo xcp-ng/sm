@@ -755,7 +755,11 @@ class QCowUtil(CowUtil):
             # We need to wait for query to return concluded
             # We are technically ininterruptible since being interrupted will only stop checking if the job is done.
             # We need to call `tap-ctl cancel` if we are interrupted, it is done in cleanup.py code.
+        except TapCtl.CommandFailure:
+            util.SMlog(f"Commit command failed on tapdisk instance {pid} (m: {minor}). Raising...")
+            raise
 
+        try:
             status, nb, _ = TapCtl.query(pid, minor)
             if status == "undefined":
                 util.SMlog("Tapdisk {} (m: {}) coalesce status undefined for {}".format(pid, minor, path))
@@ -767,7 +771,7 @@ class QCowUtil(CowUtil):
                 logger.log("Got status {} for tapdisk {} (m: {})".format(status, pid, minor))
             return nb
         except TapCtl.CommandFailure:
-            util.SMlog("Query command failed on tapdisk instance {}. Raising...".format(pid))
+            util.SMlog(f"Query command failed on tapdisk instance {pid} (m: {minor}). Raising...")
             raise
 
     @override
