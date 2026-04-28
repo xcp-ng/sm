@@ -26,8 +26,12 @@ import xs_errors
 import lock
 import glob
 import tempfile
+import contextlib
 from configparser import RawConfigParser
 import io
+from functools import wraps
+from typing import Iterator
+
 
 # The 3.x kernel brings with it some iSCSI path changes in sysfs
 _KERNEL_VERSION = os.uname()[2]
@@ -49,17 +53,47 @@ _REPLACEMENT_TMO_STANDARD = 120
 _ISCSI_DB_PATH = '/var/lib/iscsi'
 
 
+@contextlib.contextmanager
+def iscsi_lock() -> Iterator[None]:
+    """Context manager to serialize iscsiadm calls. Blocks until lock is available."""
+    iscsiadm_lock = lock.Lock(lock.LOCK_TYPE_ISCSIADM_RUNNING, 'iscsiadm')
+    iscsiadm_lock.acquire()
+    try:
+        yield
+    finally:
+        iscsiadm_lock.release()
+
+
+@contextlib.contextmanager
+def iscsi_try_lock() -> Iterator[bool]:
+    """
+    Context manager to serialize iscsiadm calls.
+    Yields True if the lock was acquired, False immediately if unavailable.
+    """
+    iscsiadm_lock = lock.Lock(lock.LOCK_TYPE_ISCSIADM_RUNNING, 'iscsiadm')
+    acquired = iscsiadm_lock.acquireNoblock()
+    try:
+        yield acquired
+    finally:
+        if acquired:
+            iscsiadm_lock.release()
+
+
+def with_iscsi_lock(fn):
+    """Decorator to run a function whilst holding the iSCSI lock."""
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        with iscsi_lock():
+            return fn(*args, **kwargs)
+    return wrapper
+
+
 def doexec_locked(cmd):
     """Executes via util.doexec the command specified whilst holding lock"""
-    _lock = None
     if os.path.basename(cmd[0]) == 'iscsiadm':
-        _lock = lock.Lock(lock.LOCK_TYPE_ISCSIADM_RUNNING, 'iscsiadm')
-        _lock.acquire()
-    # util.SMlog("%s" % cmd)
-    (rc, stdout, stderr) = util.doexec(cmd)
-    if _lock is not None and _lock.held():
-        _lock.release()
-    return (rc, stdout, stderr)
+        with iscsi_lock():
+            return util.doexec(cmd)
+    return util.doexec(cmd)
 
 
 def noexn_on_failure(cmd):
@@ -182,8 +216,10 @@ def discovery(target, port, chapuser, chappass, targetIQN="any",
 def get_node_records(targetIQN="any"):
     """Return the node records that the iscsi daemon already knows about"""
     cmd = ["iscsiadm", "-m", "node"]
-    failuremessage = "Failed to obtain node records from iscsi daemon"
-    (stdout, stderr) = exn_on_failure(cmd, failuremessage)
+    (rc, stdout, stderr) = doexec_locked(cmd)
+    if rc != 0:
+        util.SMlog(f"get_node_records: iscsiadm rc={rc} stderr={stderr}")
+        return []
     return parse_node_output(stdout, targetIQN)
 
 
@@ -389,17 +425,13 @@ def stop_daemon():
         exn_on_failure(cmd, failuremessage)
 
 
+@with_iscsi_lock
 def restart_daemon():
     stop_daemon()
-    if os.path.exists(os.path.join(_ISCSI_DB_PATH, 'nodes')):
-        try:
-            shutil.rmtree(os.path.join(_ISCSI_DB_PATH, 'nodes'))
-        except:
-            pass
-        try:
-            shutil.rmtree(os.path.join(_ISCSI_DB_PATH, 'send_targets'))
-        except:
-            pass
+    with contextlib.suppress(OSError):
+        shutil.rmtree(os.path.join(_ISCSI_DB_PATH, 'nodes'))
+    with contextlib.suppress(OSError):
+        shutil.rmtree(os.path.join(_ISCSI_DB_PATH, 'send_targets'))
     cmd = ["/usr/bin/systemctl", "start", "iscsid.service"]
     failuremessage = "Failed to start iscsi daemon"
     exn_on_failure(cmd, failuremessage)
