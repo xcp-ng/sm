@@ -859,8 +859,6 @@ class VDI(object):
             raise
 
     def _doCoalesceOnHost(self, hostRef):
-        self.validate()
-        self.parent.validate(True)
         self.parent._increaseSizeVirt(self.sizeVirt)
         self.sr._updateSlavesOnResize(self.parent)
         #TODO: We might need to make the LV RW on the slave directly for coalesce?
@@ -884,7 +882,6 @@ class VDI(object):
         Util.runAbortable(lambda: self._call_plugin_coalesce(hostRef), \
                           None, self.sr.uuid, abortTest, VDI.POLL_INTERVAL, 0, prefSig=signal.SIGTERM)
 
-        self.parent.validate(True)
         #self._verifyContents(0)
         self.parent.updateBlockInfo()
 
@@ -1653,6 +1650,13 @@ class LVMVDI(VDI):
     def _queryCowBlocks(self) -> bytes:
         self._activate()
         return VDI._queryCowBlocks(self)
+
+    @override
+    def getParent(self) -> str:
+        self._activate()
+        parent = VDI.getParent(self)
+        self._deactivate()
+        return parent
 
     @override
     def _calcExtraSpaceForCoalescing(self) -> int:
