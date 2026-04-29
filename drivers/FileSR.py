@@ -34,7 +34,7 @@ import blktap2
 import time
 import glob
 from uuid import uuid4
-from cowutil import getCowUtil, getImageStringFromVdiType
+from cowutil import getCowUtil, getImageStringFromVdiType, getVdiTypeFromImageFormat
 from vditype import VdiType, VdiTypeExtension, VDI_COW_TYPES, VDI_TYPE_TO_EXTENSION
 import xmlrpc.client
 import XenAPI # pylint: disable=import-error
@@ -484,10 +484,22 @@ class FileVDI(VDI.VDI):
                 self.key_hash = vdi_sm_config.get("key_hash")
 
             if not image_format:
-                image_format = self.sr.preferred_image_formats[0]
+                size = int(self.sr.srcmd.params['args'][0])
+                # In the case of vdi_create, the first parameter is size.
+                # We need it to validate the vdi_type choice
+                for image_format in self.sr.preferred_image_formats:
+                    vdi_type = getVdiTypeFromImageFormat(image_format)
+                    cowutil = getCowUtil(vdi_type)
+                    try:
+                        cowutil.validateAndRoundImageSize(size)
+                        break
+                    except xs_errors.SROSError:
+                        util.SMlog(f"We won't be able to create the VDI with format {vdi_type}.")
+                        # If the last one also fail we still give the vdi_type and cowutil,
+                        # it will fail in the `create` function instead when re-running `validateAndRoundImageSize`
             self.vdi_type = self.sr._resolve_vdi_type_from_image_format(image_format)
-
             self.cowutil = getCowUtil(self.vdi_type)
+
             self.path = os.path.join(self.sr.path, "%s%s" %
                 (vdi_uuid, VDI_TYPE_TO_EXTENSION[self.vdi_type]))
         else:
