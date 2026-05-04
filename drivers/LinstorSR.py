@@ -57,7 +57,7 @@ import xml.etree.ElementTree as xml_parser
 import xmlrpc.client
 import xs_errors
 
-from cowutil import CowUtil, ImageFormat, getImageStringFromVdiType, getVdiTypeFromImageFormat
+from cowutil import CowUtil, ImageFormat, getImageStringFromVdiType
 from srmetadata import \
     NAME_LABEL_TAG, NAME_DESCRIPTION_TAG, IS_A_SNAPSHOT_TAG, SNAPSHOT_OF_TAG, \
     TYPE_TAG, VDI_TYPE_TAG, READ_ONLY_TAG, SNAPSHOT_TIME_TAG, \
@@ -86,15 +86,6 @@ USE_KEY_HASH = False
 # Special volumes.
 HA_VOLUME_NAME = PERSISTENT_PREFIX + 'ha-statefile'
 REDO_LOG_VOLUME_NAME = PERSISTENT_PREFIX + 'redo-log'
-
-# TODO: Simplify with File SR and LVM SR
-# Warning: Not the same values than VdiType.*.
-# These values represents the types given on the command line.
-CREATE_PARAM_TYPES = {
-    "raw": VdiType.RAW,
-    "vhd": VdiType.VHD,
-    "qcow2": VdiType.QCOW2
-}
 
 # ==============================================================================
 
@@ -319,7 +310,10 @@ class LinstorSR(SR.SR):
 
     def __init__(self, srcmd, sr_uuid):
         SR.SR.__init__(self, srcmd, sr_uuid)
-        self._init_preferred_image_formats([ImageFormat.VHD])
+        self._init_image_formats(
+            preferred_image_formats=[ImageFormat.VHD],
+            supported_image_formats=[ImageFormat.RAW, ImageFormat.VHD]
+        )
 
     @override
     def load(self, sr_uuid) -> None:
@@ -1636,20 +1630,17 @@ class LinstorVDI(VDI.VDI):
 
             # 2. Or maybe a creation.
             if self.sr.srcmd.cmd == 'vdi_create':
+                image_format = None
                 self._key_hash = None  # Only used in create.
 
                 self._exists = False
                 vdi_sm_config = self.sr.srcmd.params.get('vdi_sm_config')
                 if vdi_sm_config:
-                    image_format = vdi_sm_config.get('image-format') or vdi_sm_config.get('type')
-                    if image_format:
-                        try:
-                            self._set_type(CREATE_PARAM_TYPES[image_format])
-                        except:
-                            raise xs_errors.XenError('VDICreate', opterr='bad image format')
+                    image_format = self.sr.read_config_image_format(vdi_sm_config)
 
-                if not self.vdi_type:
-                    self._set_type(getVdiTypeFromImageFormat(self.sr.preferred_image_formats[0]))
+                if not image_format:
+                    image_format = self.sr.preferred_image_formats[0]
+                self._set_type(self.sr._resolve_vdi_type_from_image_format(image_format))
 
                 if VdiType.isCowImage(self.vdi_type):
                     self._key_hash = vdi_sm_config.get('key_hash')
