@@ -387,8 +387,7 @@ class FileSR(SR.SR):
         self._db_update()
 
     def get_children_of(self, uuid: str) -> List[str]:
-        if not self.vdis:
-            self._loadvdis()
+        self._loadvdis()
 
         children = []
 
@@ -524,14 +523,14 @@ class FileSR(SR.SR):
     def _rollback_insert_clone_journals(self, entry: InsertCloneLogEntry):
         # Revert parents on children
         for child in entry.children:
-            vdi = VDI.VDI.from_uuid(self.session, child.uuid)
-            vdi.sm_config = vdi.session.xenapi.VDI.get_sm_config(vdi.sr.srcmd.params['vdi_ref'])
+            vdi = self.vdi(child.uuid)
+            vdi.sm_config = vdi.session.xenapi.VDI.get_sm_config(vdi.session.xenapi.VDI.get_by_uuid(vdi.uuid))
 
             with vdi.tap_pause():
                 util.SMlog(f"Reverting parent of {vdi.uuid} to {child.parent}")
                 parent = child.parent
                 if child.parent:
-                    parent = VDI.VDI.from_uuid(self.session, child.parent).path
+                    parent = self.vdi(child.parent).path
 
                 vdi.cowutil.setParent(str(child.path), parent, child.is_raw)
 
@@ -543,7 +542,7 @@ class FileSR(SR.SR):
         util.SMlog(f"Try to delete {entry.clone.uuid} from the smapi")
         vdi = None
         with contextlib.suppress(Exception):
-            vdi = VDI.VDI.from_uuid(self.session, entry.clone.uuid)
+            vdi = self.vdi(entry.clone.uuid)
 
         if vdi:
             vdi.detach(vdi.sr.uuid, vdi.uuid)
@@ -572,7 +571,7 @@ class FileSR(SR.SR):
         for uuid, value in self.journaler.getAll(RevertLogEntry.JRN_KEY).items():
             entry = RevertLogEntry.from_journal(uuid, value)
             util.SMlog(f"Reverting {entry.vdi.uuid}")
-            vdi = VDI.VDI.from_uuid(self.session, entry.vdi.uuid)
+            vdi = self.vdi(entry.vdi.uuid)
 
             with vdi.tap_pause():
                 self._rollback_revert_vdi(vdi, entry.backup_path, entry.tmp_path)
@@ -1002,7 +1001,7 @@ class FileVDI(VDI.VDI):
             elif len(children) > 1:
                 raise xs_errors.SRException(f"Too many children for {self.parent}. Expected 1, found {len(children) + 1}")
             else:
-                snap_sibling = VDI.VDI.from_uuid(self.sr.session, children[0])
+                snap_sibling = self.sr.vdi(children[0])
 
         with self.tap_pause(), dest.tap_pause():
             self._revert(dest, snap_sibling, cbtlog, cbt_consistency_state)
@@ -1016,11 +1015,11 @@ class FileVDI(VDI.VDI):
     ):
         """This assumes that self and dest VDIs has been paused"""
         dest_tmp_uuid = util.gen_uuid() # Will be replaced by dest.uuid at the end
-        dest_tmp_path = os.path.join(dest.sr.path, "%s%s" % (dest_tmp_uuid, VDI_TYPE_TO_EXTENSION[dest.vdi_type]))
+        dest_tmp_path = os.path.join(dest.sr.path, f"TMP-{dest_tmp_uuid}{VDI_TYPE_TO_EXTENSION[dest.vdi_type]}")
 
-        dest_backup_path = os.path.join(dest.sr.path, "%s%s" % (util.gen_uuid(), VDI_TYPE_TO_EXTENSION[dest.vdi_type]))
+        dest_backup_path = os.path.join(dest.sr.path, f"BACK-{util.gen_uuid()}{VDI_TYPE_TO_EXTENSION[dest.vdi_type]}")
 
-        src_parent = VDI.VDI.from_uuid(self.sr.session, self.parent)
+        src_parent = self.sr.vdi(self.parent)
 
         if snap_sibling:
             self._insert_clone_below(src_parent, cbtlog, self, snap_sibling)
@@ -1044,7 +1043,7 @@ class FileVDI(VDI.VDI):
         util.ioretry(lambda: self._snap(dest_tmp_path, src_parent.path, False))
         self.cowutil.setHidden(dest_tmp_path, False)
 
-        dest.sm_config = dest.session.xenapi.VDI.get_sm_config(dest.sr.srcmd.params['vdi_ref'])
+        dest.sm_config = dest.session.xenapi.VDI.get_sm_config(dest.session.xenapi.VDI.get_by_uuid(dest.uuid))
 
         # Apply snapshot
         util.ioretry(lambda: self._rename(dest_tmp_path, dest.path),
@@ -1065,9 +1064,6 @@ class FileVDI(VDI.VDI):
             to_clone.sr.path,
             "%s%s" % (clone_uuid, VDI_TYPE_TO_EXTENSION[to_clone.vdi_type])
         )
-        # We do an sr_clone to avoid messing up with sr.srcmd.params['vdi_ref']
-        clone_sr = SR.SR.from_uuid(to_clone.sr.session, to_clone.sr.uuid)
-
 
         # Fetch sm_config. If it fails now, we don't need to cleanup
         for vdi in [to_clone] + list(children):
@@ -1096,7 +1092,7 @@ class FileVDI(VDI.VDI):
             child.cowutil.setParent(child.path, clone_path, is_raw)
 
         ## Introduce new readonly vdi to db
-        clone = FileVDI(clone_sr, clone_uuid)
+        clone = FileVDI(to_clone.sr, clone_uuid)
 
         clone.label = "base copy"
         clone.read_only = True
