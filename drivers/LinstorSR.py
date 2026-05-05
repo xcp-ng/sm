@@ -811,7 +811,7 @@ class LinstorSR(SR.SR):
 
     @override
     def check_sr(self, sr_uuid) -> None:
-        self.backupdb("auto", delay=3600)
+        self.database_backup("auto", delay=3600)
 
 
     @override
@@ -1563,10 +1563,10 @@ class LinstorSR(SR.SR):
         util.SMlog('Kicking GC')
         cleanup.start_gc_service(self.uuid)
 
-    def backupdb(self, name, delay=0):
+    def database_backup(self, name="", *, delay=0):
         if not self._linstor:
             self._reconnect()
-        self._linstor.backupdb(name, delay)
+        self._linstor.database_backup(name, delay=delay)
 
 # ==============================================================================
 # LinstorSr VDI
@@ -1767,7 +1767,7 @@ class LinstorVDI(VDI.VDI):
         self.ref = self._db_introduce()
         self.sr._update_stats(self.size)
 
-        self.sr.backupdb("create")
+        self.sr.database_backup("create")
 
         return VDI.VDI.get_params(self)
 
@@ -1817,7 +1817,7 @@ class LinstorVDI(VDI.VDI):
         self.sr._update_stats(-self.size)
         self.sr._kick_gc()
         super(LinstorVDI, self).delete(sr_uuid, vdi_uuid, data_only)
-        self.sr.backupdb("delete")
+        self.sr.database_backup("delete")
 
     @override
     def attach(self, sr_uuid, vdi_uuid) -> str:
@@ -2388,9 +2388,9 @@ class LinstorVDI(VDI.VDI):
         if not blktap2.VDI.tap_pause(self.session, sr_uuid, vdi_uuid):
             raise util.SMException('Failed to pause VDI {}'.format(vdi_uuid))
         try:
-            r = self._snapshot(snapType, cbtlog, consistency_state)
-            self.sr.backupdb("snapshot")
-            return r
+            result = self._snapshot(snapType, cbtlog, consistency_state)
+            self.sr.database_backup("snapshot")
+            return result
         finally:
             self.disable_leaf_on_secondary(vdi_uuid, secondary=secondary)
             blktap2.VDI.tap_unpause(self.session, sr_uuid, vdi_uuid, secondary)
