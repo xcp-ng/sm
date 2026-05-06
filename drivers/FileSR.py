@@ -17,12 +17,10 @@
 #
 # FileSR: local-file storage repository
 from pathlib import Path
-import json
 import contextlib
 
-from sm_typing import Dict, Optional, List, override, Tuple, Collection, Union, Any, TypeVar, Type
+from sm_typing import Dict, Optional, List, override, Tuple, Collection, Union, Any
 
-import abc
 import SR
 import VDI
 import SRCommand
@@ -37,6 +35,7 @@ import blktap2
 import time
 import glob
 import fjournaler
+from jutils import BaseLogEntry
 from uuid import uuid4
 from cowutil import (
     getCowUtil,
@@ -117,54 +116,6 @@ class VDILogEntry:
                 "is_raw": vdi.VDI_TYPE == VdiType.RAW,
             }
         )
-
-    @override
-    def __str__(self) -> str:
-        return str(self.to_dict())
-
-LogEntry = TypeVar("LogEntry", bound="BaseLogEntry")
-
-class BaseLogEntry(abc.ABC):
-    """Base class for serializing journal based entries inteded to rollback failed operations"""
-
-    @property # type: ignore # Only way to simulate an abstract class variable
-    @classmethod
-    @abc.abstractmethod
-    def CURRENT_VERSION(cls) -> str:
-        ...
-
-    @property # type: ignore # Only way to simulate an abstract class variable
-    @classmethod
-    @abc.abstractmethod
-    def JRN_KEY(cls) -> str:
-        ...
-
-    @classmethod
-    @abc.abstractmethod
-    def from_dict(cls: Type[LogEntry], data: Dict[str, Any]) -> LogEntry:
-        ...
-
-    @abc.abstractmethod
-    def to_dict(self) -> Dict[str, Collection[Any]]:
-        ...
-
-    @staticmethod
-    def _get_version_from_journal_id(journal_id: str) -> str:
-        _, version = journal_id.split("+")
-        return version.replace("-", ".")
-
-    @classmethod
-    def from_journal(cls: Type[LogEntry], journal_id: str, value: str) -> LogEntry:
-        version = cls._get_version_from_journal_id(journal_id)
-        if version != cls.CURRENT_VERSION:
-            raise xs_errors.SRException(f"Could not revert operation {journal_id} with mismatched log versions {version} != {cls.CURRENT_VERSION}")
-        return cls.from_dict(json.loads(value))
-
-    def to_journal(self) -> Tuple[str, str]:
-        # We use + as a version delimiter to not clash with journaler file name parsing
-        journal_id = f"{util.gen_uuid()}+{self.CURRENT_VERSION.replace('.', '-')}"
-        value = json.dumps(self.to_dict())
-        return journal_id, value
 
     @override
     def __str__(self) -> str:
