@@ -158,7 +158,6 @@ class FileSR(SR.SR):
         self.mountpoint = self.path
         self.attached = False
         self.driver_config = DRIVER_CONFIG
-        self.journaler = fjournaler.Journaler(self.path)
         self._undo_all_journals()
 
     @property
@@ -170,17 +169,19 @@ class FileSR(SR.SR):
 
     def _undo_all_journals(self):
         """Undo all interrupted journaled operations."""
+        self.journaler = fjournaler.Journaler(self.path)
 
-        if not self._has_journals:
-            return
-
-        # TODO: check master
         if self.cmd not in [
             'sr_scan', 'vdi_detach',
             'vdi_activate', 'vdi_deactivate',
             'vdi_epoch_begin', 'vdi_epoch_end',
             'vdi_update', 'vdi_destroy'
         ]:
+            return
+
+        # The SR might not have been created and the path to journals
+        # might not be available yet, we only check on compatible commands
+        if not self._has_journals:
             return
 
         self._check_o_direct()
