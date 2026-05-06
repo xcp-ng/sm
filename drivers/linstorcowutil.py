@@ -231,10 +231,25 @@ class LinstorCowUtil(object):
             'includeParent': include_parent,
             'resolveParent': False
         }
-        return self._get_info(vdi_uuid, self._extract_uuid, **kwargs)
+
+        try:
+            return self._get_info(vdi_uuid, self._extract_uuid, **kwargs)
+        except Exception as e:
+            # Backward compatibility with non-QCOW2 versions.
+            if str(e).startswith("['UNKNOWN_XENAPI_PLUGIN_FUNCTION', 'getInfo']"):
+                return self._get_vhd_info(vdi_uuid, self._extract_uuid, **kwargs)
+            raise
 
     @linstorhostcall('getInfo')
     def _get_info(self, vdi_uuid, response):
+        return self._get_info_impl(vdi_uuid, response)
+
+    # Backward compatibility with non-QCOW2 versions.
+    @linstorhostcall('getVHDInfo')
+    def _get_vhd_info(self, vdi_uuid, response):
+        return self._get_info_impl(vdi_uuid, response)
+
+    def _get_info_impl(self, vdi_uuid, response):
         obj = json.loads(response)
 
         image_info = CowImageInfo(vdi_uuid)
