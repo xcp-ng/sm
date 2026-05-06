@@ -44,8 +44,8 @@ DATABASE_VOLUME_NAME = PERSISTENT_PREFIX + 'database'
 DATABASE_SIZE = 1 << 30  # 1GB.
 DATABASE_PATH = '/var/lib/linstor'
 DATABASE_MKFS = 'mkfs.ext4'
-DATABASE_BACKUP_PATH_MAIN = Path(DATABASE_PATH)
-DATABASE_BACKUP_PATH_SPARE = Path('/var/lib/linstor.d/db-backups')
+DATABASE_BACKUP_DIR_MAIN = Path(DATABASE_PATH)
+DATABASE_BACKUP_DIR_SPARE = Path('/var/lib/linstor.d/db-backups')
 DATABASE_BACKUP_NAME_FORMAT = "linstor_database_backup-{}-{}"
 DATABASE_BACKUP_NAME_LATEST = "linstor_database_backup-latest.zip"
 DATABASE_BACKUP_RETENTION = 10
@@ -1779,19 +1779,19 @@ class LinstorVolumeManager(object):
         self._linstor.controller_backupdb(filename)
         # Copy to secondary backup location
         with contextlib.suppress(OSError):
-            os.makedirs(DATABASE_BACKUP_PATH_SPARE, mode=0o755, exist_ok=True)
+            os.makedirs(DATABASE_BACKUP_DIR_SPARE, mode=0o755, exist_ok=True)
             shutil.copy2(
-                (DATABASE_BACKUP_PATH_MAIN / filename).with_suffix(".zip"),
-                DATABASE_BACKUP_PATH_SPARE,
+                (DATABASE_BACKUP_DIR_MAIN / filename).with_suffix(".zip"),
+                DATABASE_BACKUP_DIR_SPARE,
             )
-        for path in (DATABASE_BACKUP_PATH_MAIN, DATABASE_BACKUP_PATH_SPARE):
+        for directory in (DATABASE_BACKUP_DIR_MAIN, DATABASE_BACKUP_DIR_SPARE):
             # Remove and set latest
             with contextlib.suppress(OSError):
-                (path / DATABASE_BACKUP_NAME_LATEST).unlink()
-            os.link(str((path / filename).with_suffix(".zip")),
-                    str((path / DATABASE_BACKUP_NAME_LATEST)))
+                (directory / DATABASE_BACKUP_NAME_LATEST).unlink()
+            os.link(str((directory / filename).with_suffix(".zip")),
+                    str((directory / DATABASE_BACKUP_NAME_LATEST)))
             # Apply retention
-            for old_file, _ in self._get_sorted_database_backup(path)[DATABASE_BACKUP_RETENTION:]:
+            for old_file, _ in self._get_sorted_database_backup(directory)[DATABASE_BACKUP_RETENTION:]:
                 os.unlink(old_file)
         util.SMlog("[database_backup] Created: {}".format(filename))
 
@@ -2651,21 +2651,21 @@ class LinstorVolumeManager(object):
         properties.namespace = self._build_volume_namespace(volume_uuid)
         return properties
 
-    def _list_database_backup(self, dbpath, name="*"):
-        for path in dbpath.glob(DATABASE_BACKUP_NAME_FORMAT.format(
+    def _list_database_backup(self, database_backup_dir, name="*"):
+        for path in database_backup_dir.glob(DATABASE_BACKUP_NAME_FORMAT.format(
                 "20[0-9][0-9][01][0-9][0-3][0-9]_[0-2][0-9][0-5][0-9][0-5][0-9]", name) + ".zip"):
             try:
                 yield path, datetime.strptime(path.name.split("-")[1], DATABASE_BACKUP_DATE_FORMAT)
             except (ValueError, IndexError):
                 continue
 
-    def _get_sorted_database_backup(self, dbpath, name="*"):
-        return sorted(self._list_database_backup(dbpath, name),
+    def _get_sorted_database_backup(self, database_backup_dir, name="*"):
+        return sorted(self._list_database_backup(database_backup_dir, name),
                       reverse=True,
                       key=lambda p: p[0].stat().st_mtime)
 
     def _get_latest_database_backup(self, name="*"):
-        return max(self._list_database_backup(DATABASE_BACKUP_PATH_MAIN, name),
+        return max(self._list_database_backup(DATABASE_BACKUP_DIR_MAIN, name),
                    default=(None, None),
                    key=lambda p: p[0].stat().st_mtime)
 

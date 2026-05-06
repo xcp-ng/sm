@@ -2388,12 +2388,11 @@ class LinstorVDI(VDI.VDI):
         if not blktap2.VDI.tap_pause(self.session, sr_uuid, vdi_uuid):
             raise util.SMException('Failed to pause VDI {}'.format(vdi_uuid))
         try:
-            result = self._snapshot(snapType, cbtlog, consistency_state)
-            self.sr.database_backup("snapshot")
-            return result
+            return self._snapshot(snapType, cbtlog, consistency_state)
         finally:
             self.disable_leaf_on_secondary(vdi_uuid, secondary=secondary)
             blktap2.VDI.tap_unpause(self.session, sr_uuid, vdi_uuid, secondary)
+            self.sr.database_backup("snapshot")
 
     def _snapshot(self, snap_type, cbtlog=None, cbt_consistency=None):
         util.SMlog(
