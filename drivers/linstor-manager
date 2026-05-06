@@ -1257,6 +1257,8 @@ if __name__ == '__main__':
         # DRBDs, otherwise we still have EROFS errors...
         'check': check,
         'getInfo': get_info,
+        # Backward compatibility with non-QCOW2 versions.
+        'getVHDInfo': get_info,
         'hasParent': has_parent,
         'getParent': get_parent,
         'getSizeVirt': get_size_virt,
