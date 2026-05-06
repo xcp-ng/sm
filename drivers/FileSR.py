@@ -81,46 +81,6 @@ OPS_EXCLUSIVE = [
 
 DRIVER_CONFIG = {"ATTACH_FROM_CONFIG_WITH_TAPDISK": True}
 
-class VDILogEntry:
-    """Serialization class for FileVDI intended to log operations on the SR"""
-    def __init__(self, uuid: str, path: Union[str, Path], parent: str, is_raw: bool):
-        self.uuid = uuid
-        self.path = Path(path)
-        self.parent = parent
-        self.is_raw = is_raw
-
-    def to_dict(self) -> Dict[str, Union[str, bool]]:
-        return {
-            "uuid": self.uuid,
-            "path": str(self.path),
-            "parent": self.parent,
-            "is_raw": self.is_raw,
-        }
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Union[str, bool]]) -> "VDILogEntry":
-        return cls(
-            uuid=str(data["uuid"]),
-            path=str(data["path"]),
-            parent=str(data["parent"]),
-            is_raw=bool(data["is_raw"]),
-        )
-
-    @classmethod
-    def from_file_vdi(cls, vdi: "FileVDI") -> "VDILogEntry":
-        return cls.from_dict(
-            {
-                "uuid": str(vdi.uuid),
-                "path": str(vdi.path),
-                "parent": vdi.parent if vdi.parent else "",
-                "is_raw": vdi.VDI_TYPE == VdiType.RAW,
-            }
-        )
-
-    @override
-    def __str__(self) -> str:
-        return str(self.to_dict())
-
 class RevertLogEntry(BaseLogEntry):
     """Journal entry used to rollback failed revert operations"""
 
@@ -129,18 +89,21 @@ class RevertLogEntry(BaseLogEntry):
 
     def __init__(
         self,
-        vdi: VDILogEntry,
+        vdi_uuid: str,
+        vdi_path: Union[Path, str],
         backup_path: Union[Path, str],
         tmp_path: Union[Path, str],
     ):
-        self.vdi = vdi
+        self.vdi_uuid = vdi_uuid
+        self.vdi_path = vdi_path
         self.backup_path = Path(backup_path)
         self.tmp_path = Path(tmp_path)
 
     @override
     def to_dict(self) -> Dict[str, Collection[str]]:
         return {
-            "vdi": self.vdi.to_dict(),
+            "vdi_uuid": self.vdi_uuid,
+            "vdi_path": str(self.vdi_path),
             "backup_path": str(self.backup_path),
             "tmp_path": str(self.tmp_path),
         }
@@ -149,41 +112,17 @@ class RevertLogEntry(BaseLogEntry):
     @classmethod
     def from_dict(cls, data: Dict[str, Union[Dict[str, str], str]]) -> "RevertLogEntry":
         return cls(
-            vdi=VDILogEntry.from_dict(data["vdi"]), # type: ignore # Version checked
+            vdi_uuid=(data["vdi_uuid"]), # type: ignore # Version checked
+            vdi_path=data["vdi_path"], # type: ignore # Version checked
             backup_path=data["backup_path"], # type: ignore # Version checked
             tmp_path=data["tmp_path"], # type: ignore # Version checked
-        )
-
-class InsertCloneLogEntry(BaseLogEntry):
-    """Journal entry used to rollback failed clone insertions, part of revert operations"""
-
-    CURRENT_VERSION = "1.0"
-    JRN_KEY = "insert-clone"
-
-    def __init__(self, clone: VDILogEntry, *children: VDILogEntry):
-        self.clone = clone
-        self.children = children
-
-    @override
-    def to_dict(self) -> Dict[str, Collection[Any]]:
-        return {
-            "clone": self.clone.to_dict(),
-            "children": [child.to_dict() for child in self.children],
-        }
-
-    @override
-    @classmethod
-    def from_dict(cls, data: Dict[str, Union[Dict[str, str], str]]) -> "InsertCloneLogEntry":
-        return cls(
-            VDILogEntry.from_dict(data["clone"]), # type: ignore # Version checked
-            *[VDILogEntry.from_dict(child) for child in data["children"]], # type: ignore # Version checked
         )
 
 class FileSR(SR.SR):
     """Local file storage repository"""
 
     SR_TYPE = "file"
-    JRN_KEYS = (RevertLogEntry.JRN_KEY, InsertCloneLogEntry.JRN_KEY)
+    JRN_KEYS = (RevertLogEntry.JRN_KEY,)
 
     @override
     @staticmethod
@@ -220,10 +159,7 @@ class FileSR(SR.SR):
         self.attached = False
         self.driver_config = DRIVER_CONFIG
         self.journaler = fjournaler.Journaler(self.path)
-        if self.cmd in [
-            "vdi_revert", "vdi_attach", "vdi_activate", "vdi_deactivate", "vdi_clone", "vdi_resize", "vdi_resize_online"
-        ]:
-            self._undo_all_journals()
+        self._undo_all_journals()
 
     @property
     def _has_journals(self) -> bool:
@@ -234,13 +170,25 @@ class FileSR(SR.SR):
 
     def _undo_all_journals(self):
         """Undo all interrupted journaled operations."""
+
         if not self._has_journals:
             return
 
+        # TODO: check master
+        if self.cmd not in [
+            'sr_scan', 'vdi_detach',
+            'vdi_activate', 'vdi_deactivate',
+            'vdi_epoch_begin', 'vdi_epoch_end',
+            'vdi_update', 'vdi_destroy'
+        ]:
+            return
+
+        self._check_o_direct()
+        self._loadvdis()
+
         self.lock.acquire()
         try:
-            self._undo_insert_clone_journals()
-            self._undo_revert_journals()
+            self._handle_revert_journals()
         finally:
             self.lock.release()
             self.cleanup()
@@ -386,17 +334,6 @@ class FileSR(SR.SR):
         self.physical_utilisation = self._getutilisation()
         self._db_update()
 
-    def get_children_of(self, uuid: str) -> List[str]:
-        self._loadvdis()
-
-        children = []
-
-        for vdi in self.vdis.values():
-            if vdi.parent == uuid:
-                children.append(vdi.uuid)
-
-        return children
-
     @override
     def content_type(self, sr_uuid) -> str:
         return super(FileSR, self).content_type(sr_uuid)
@@ -503,55 +440,30 @@ class FileSR(SR.SR):
                 util.SMlog("Scan found hidden leaf (%s), ignoring" % uuid)
                 del self.vdis[uuid]
 
-    def _rollback_revert_vdi(self, vdi: "FileVDI", backup: Union[str, Path], tmp_path: Union[str, Path]):
+    def _rollback_revert_vdi(
+        self,
+        vdi_uuid: str,
+        vdi_path: Union[str, Path],
+        backup_path: Union[str, Path],
+        tmp_path: Union[str, Path],
+    ):
         util.SMlog(f"Removing temporary file {tmp_path}")
         self._unlink_paths(tmp_path)
 
-        util.SMlog(f"Reverting vdi {vdi.uuid} from backup {backup}")
-        if not util.ioretry(lambda: util.pathexists(str(backup))):
-            util.SMlog(f"Tried reverting {vdi.uuid} but backup {backup} not found, skpping")
+        util.SMlog(f"Reverting vdi {vdi_uuid} from backup {backup_path}")
+        if not util.ioretry(lambda: util.pathexists(str(backup_path))):
+            util.SMlog(f"Tried reverting {vdi_uuid} but backup {backup_path} not found, skpping")
             return
 
-        vdi.sm_config = vdi.session.xenapi.VDI.get_sm_config(vdi.sr.srcmd.params['vdi_ref'])
-
-        util.ioretry(lambda: vdi._rename(backup, vdi.path),
+        util.ioretry(lambda: os.rename(backup_path, vdi_path),
                      errlist=[errno.EIO, errno.EACCES])
+
+        vdi: "FileVDI" = self.vdi(vdi_uuid) # type: ignore[assignment]
+        vdi.sm_config = vdi.session.xenapi.VDI.get_sm_config(vdi.session.xenapi.VDI.get_by_uuid(vdi.uuid))
 
         vdi.load_from_file(vdi.path)
         vdi._db_update()
-
-    def _rollback_insert_clone_journals(self, entry: InsertCloneLogEntry):
-        # Revert parents on children
-        for child in entry.children:
-            vdi = self.vdi(child.uuid)
-            vdi.sm_config = vdi.session.xenapi.VDI.get_sm_config(vdi.session.xenapi.VDI.get_by_uuid(vdi.uuid))
-
-            with vdi.tap_pause():
-                util.SMlog(f"Reverting parent of {vdi.uuid} to {child.parent}")
-                parent = child.parent
-                if child.parent:
-                    parent = self.vdi(child.parent).path
-
-                vdi.cowutil.setParent(str(child.path), parent, child.is_raw)
-
-                vdi.load_from_file(vdi.path)
-                vdi._db_update()
-
-        # Delete cloned vdi
-        ## Deletes from xapi if it exists
-        util.SMlog(f"Try to delete {entry.clone.uuid} from the smapi")
-        vdi = None
-        with contextlib.suppress(Exception):
-            vdi = self.vdi(entry.clone.uuid)
-
-        if vdi:
-            vdi.detach(vdi.sr.uuid, vdi.uuid)
-            vdi.delete(vdi.sr.uuid, vdi.uuid)
-
-        ## Delete remaining files
-        util.SMlog(f"Try to delete {entry.clone.path}")
-        self._unlink_paths(entry.clone.path)
-
+        self.added_vdi(vdi)
 
 
     def _unlink_paths(self, *files: Union[Path, str]):
@@ -559,22 +471,12 @@ class FileSR(SR.SR):
             if util.ioretry(lambda: util.pathexists(str(path))):
                 os.unlink(str(path))
 
-    def _undo_insert_clone_journals(self):
-        for uuid, value in self.journaler.getAll(InsertCloneLogEntry.JRN_KEY).items():
-            entry = InsertCloneLogEntry.from_journal(uuid, value)
-            util.SMlog(f"Removing {entry.clone.uuid}")
-            self._rollback_insert_clone_journals(entry)
-
-            self.journaler.remove(InsertCloneLogEntry.JRN_KEY, uuid)
-
-    def _undo_revert_journals(self):
+    def _handle_revert_journals(self):
         for uuid, value in self.journaler.getAll(RevertLogEntry.JRN_KEY).items():
             entry = RevertLogEntry.from_journal(uuid, value)
-            util.SMlog(f"Reverting {entry.vdi.uuid}")
-            vdi = self.vdi(entry.vdi.uuid)
+            util.SMlog(f"Reverting {entry.vdi_uuid}")
 
-            with vdi.tap_pause():
-                self._rollback_revert_vdi(vdi, entry.backup_path, entry.tmp_path)
+            self._rollback_revert_vdi(entry.vdi_uuid, entry.vdi_path, entry.backup_path, entry.tmp_path)
 
             self.journaler.remove(RevertLogEntry.JRN_KEY, uuid)
 
@@ -988,44 +890,26 @@ class FileVDI(VDI.VDI):
                        (cbt_consistency_state, self.uuid))
             raise xs_errors.XenError("Not implemented yet")
 
-        # Get sibling of the restored snapshot
-        # If it exists, it will be used to reconnect the rest of
-        # the snapshot tree when we'll introduce a clone of the
-        # snapshot's parent
-        if self.parent == dest.parent:
-            snap_sibling = None
-        else:
-            children = [child for child in self.sr.get_children_of(self.parent) if child != self.uuid]
-            if not children:
-                snap_sibling = None
-            elif len(children) > 1:
-                raise xs_errors.SRException(f"Too many children for {self.parent}. Expected 1, found {len(children) + 1}")
-            else:
-                snap_sibling = self.sr.vdi(children[0])
-
         with self.tap_pause(), dest.tap_pause():
-            self._revert(dest, snap_sibling, cbtlog, cbt_consistency_state)
+            self._revert(dest, cbtlog, cbt_consistency_state)
 
     def _revert(
         self,
         dest: "FileVDI",
-        snap_sibling: Optional["FileVDI"],
         cbtlog: Optional[str],
         cbt_consistency_state: bool,
     ):
         """This assumes that self and dest VDIs has been paused"""
         dest_tmp_uuid = util.gen_uuid() # Will be replaced by dest.uuid at the end
-        dest_tmp_path = os.path.join(dest.sr.path, f"TMP-{dest_tmp_uuid}{VDI_TYPE_TO_EXTENSION[dest.vdi_type]}")
+        dest_tmp_path = os.path.join(dest.sr.path, f"{dest_tmp_uuid}{VDI_TYPE_TO_EXTENSION[dest.vdi_type]}.tmp")
 
-        dest_backup_path = os.path.join(dest.sr.path, f"BACK-{util.gen_uuid()}{VDI_TYPE_TO_EXTENSION[dest.vdi_type]}")
+        dest_backup_path = os.path.join(dest.sr.path, f"{util.gen_uuid()}{VDI_TYPE_TO_EXTENSION[dest.vdi_type]}.back")
 
         src_parent = self.sr.vdi(self.parent)
 
-        if snap_sibling:
-            self._insert_clone_below(src_parent, cbtlog, self, snap_sibling)
-
         log_entry = RevertLogEntry(
-            vdi=VDILogEntry.from_file_vdi(dest),
+            vdi_uuid=dest.uuid,
+            vdi_path=dest.path,
             backup_path=dest_backup_path,
             tmp_path=dest_tmp_path,
         )
@@ -1043,8 +927,6 @@ class FileVDI(VDI.VDI):
         util.ioretry(lambda: self._snap(dest_tmp_path, src_parent.path, False))
         self.cowutil.setHidden(dest_tmp_path, False)
 
-        dest.sm_config = dest.session.xenapi.VDI.get_sm_config(dest.session.xenapi.VDI.get_by_uuid(dest.uuid))
-
         # Apply snapshot
         util.ioretry(lambda: self._rename(dest_tmp_path, dest.path),
                      errlist=[errno.EIO, errno.EACCES])
@@ -1054,70 +936,6 @@ class FileVDI(VDI.VDI):
         # Cleanup
         self.sr._unlink_paths(dest_tmp_path, dest_backup_path)
         self.sr.journaler.remove(log_entry.JRN_KEY, journal_id)
-
-    def _insert_clone_below(self, to_clone: "FileVDI", cbtlog: Optional[str], *children: "FileVDI") -> "FileVDI":
-        """Clone a VDI, attach it to the original as a child and attach all provided children to the new clone"""
-        is_raw = to_clone.VDI_TYPE == VdiType.RAW
-
-        clone_uuid = util.gen_uuid()
-        clone_path = os.path.join(
-            to_clone.sr.path,
-            "%s%s" % (clone_uuid, VDI_TYPE_TO_EXTENSION[to_clone.vdi_type])
-        )
-
-        # Fetch sm_config. If it fails now, we don't need to cleanup
-        for vdi in [to_clone] + list(children):
-            vdi.sm_config = vdi.session.xenapi.VDI.get_sm_config(vdi.sr.srcmd.params['vdi_ref'])
-
-        log_entry = InsertCloneLogEntry(
-            VDILogEntry(clone_uuid, clone_path, to_clone.parent, is_raw),
-            *[VDILogEntry.from_file_vdi(child) for child in children]
-        )
-        journal_id, journal_content = log_entry.to_journal()
-        self.sr.journaler.create(log_entry.JRN_KEY, journal_id, journal_content)
-
-        # Actual cloning
-        util.fistpoint.activate_custom_fn(
-            "FileSR_fail_insert_clone_below",
-            self.__fist_enospace)
-        util.ioretry(lambda: self._snap(clone_path, to_clone.path, False))
-
-        ## Protect the new parent from being coalesced by the GC
-        self.cowutil.setHidden(clone_path, False)
-
-        ## Attach children
-        self.cowutil.setParent(clone_path, to_clone.path, is_raw)
-
-        for child in children:
-            child.cowutil.setParent(child.path, clone_path, is_raw)
-
-        ## Introduce new readonly vdi to db
-        clone = FileVDI(to_clone.sr, clone_uuid)
-
-        clone.label = "base copy"
-        clone.read_only = True
-        clone.location = clone_uuid
-        clone.sm_config = {}
-        # TODO: fix the raw snapshot case 
-        clone.sm_config["image-format"] = getImageStringFromVdiType(self.vdi_type)
-        if "key_hash" in to_clone.sm_config:
-            clone.sm_config['key_hash'] = to_clone.sm_config['key_hash']
-        clone.cbt_enabled = bool(cbtlog)
-
-        ## Update XAPI
-        for vdi in [clone] + list(children):
-            vdi.load_from_file(vdi.path)
-
-        clone._db_introduce()
-
-        ## The new parent can now be set hidden and don't need to be protected by the GC
-        self.cowutil.setHidden(clone.path, True)
-        for child in children:
-            child._db_update()
-
-        self.sr.journaler.remove(log_entry.JRN_KEY, journal_id)
-
-        return clone
 
     def load_from_file(self, path: Union[str, Path]):
         """Change path to provided disk and updated properties based on it's content"""

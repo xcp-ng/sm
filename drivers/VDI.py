@@ -265,7 +265,7 @@ class VDI(object):
         if not self.managed:
             raise util.SMException(f"Source {self.uuid} is a base copy.")
 
-        dest = self.__class__.from_uuid(self.sr.session, target_uuid)
+        dest = self.sr.vdi(target_uuid)
 
         if not dest.managed:
             raise util.SMException(f"Destination {self.uuid} is a base copy.")
@@ -277,6 +277,8 @@ class VDI(object):
             cbtlog = self._get_cbt_logpath(self.uuid)
         else:
             cbtlog = None
+
+        dest.sm_config = dest.session.xenapi.VDI.get_sm_config(dest.session.xenapi.VDI.get_by_uuid(dest.uuid))
 
         self._do_revert(dest, cbtlog=cbtlog)
 
