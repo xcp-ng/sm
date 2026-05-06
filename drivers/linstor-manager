@@ -296,6 +296,16 @@ def extract_uuid(linstor, device_path):
 
 # ------------------------------------------------------------------------------
 
+def get_args_vdi_type(args):
+    # Backward compatibility with non-QCOW2 versions.
+    # `vdiType` is not defined on previous versions.
+    return args.get('vdiType') or 'vhd'
+
+def get_cow_util_from_args(args):
+    return getCowUtil(get_args_vdi_type(args))
+
+# ------------------------------------------------------------------------------
+
 
 def prepare_sr(session, args):
     try:
@@ -400,7 +410,7 @@ def destroy(session, args):
 
 def check(session, args):
     try:
-        cowutil = getCowUtil(args['vdiType'])
+        cowutil = get_cow_util_from_args(args)
         device_path = args['devicePath']
         ignore_missing_footer = util.strtobool(
             args['ignoreMissingFooter']
@@ -414,7 +424,7 @@ def check(session, args):
 
 def get_info(session, args):
     try:
-        cowutil = getCowUtil(args['vdiType'])
+        cowutil = get_cow_util_from_args(args)
         device_path = args['devicePath']
         group_name = args['groupName']
         include_parent = util.strtobool(args['includeParent'])
@@ -436,7 +446,7 @@ def get_info(session, args):
 
 def has_parent(session, args):
     try:
-        cowutil = getCowUtil(args['vdiType'])
+        cowutil = get_cow_util_from_args(args)
         device_path = args['devicePath']
         return str(cowutil.hasParent(device_path))
     except Exception as e:
@@ -446,7 +456,7 @@ def has_parent(session, args):
 
 def get_parent(session, args):
     try:
-        cowutil = getCowUtil(args['vdiType'])
+        cowutil = get_cow_util_from_args(args)
         device_path = args['devicePath']
         group_name = args['groupName']
 
@@ -464,7 +474,7 @@ def get_parent(session, args):
 
 def get_size_virt(session, args):
     try:
-        cowutil = getCowUtil(args['vdiType'])
+        cowutil = get_cow_util_from_args(args)
         device_path = args['devicePath']
         return str(cowutil.getSizeVirt(device_path))
     except Exception as e:
@@ -474,7 +484,7 @@ def get_size_virt(session, args):
 
 def get_size_phys(session, args):
     try:
-        cowutil = getCowUtil(args['vdiType'])
+        cowutil = get_cow_util_from_args(args)
         device_path = args['devicePath']
         return str(cowutil.getSizePhys(device_path))
     except Exception as e:
@@ -484,7 +494,7 @@ def get_size_phys(session, args):
 
 def get_allocated_size(session, args):
     try:
-        cowutil = getCowUtil(args['vdiType'])
+        cowutil = get_cow_util_from_args(args)
         device_path = args['devicePath']
         return str(cowutil.getAllocatedSize(device_path))
     except Exception as e:
@@ -494,7 +504,7 @@ def get_allocated_size(session, args):
 
 def get_max_resize_size(session, args):
     try:
-        cowutil = getCowUtil(args['vdiType'])
+        cowutil = get_cow_util_from_args(args)
         device_path = args['devicePath']
         return str(cowutil.getMaxResizeSize(device_path))
     except Exception as e:
@@ -504,7 +514,7 @@ def get_max_resize_size(session, args):
 
 def get_depth(session, args):
     try:
-        cowutil = getCowUtil(args['vdiType'])
+        cowutil = get_cow_util_from_args(args)
         device_path = args['devicePath']
         return str(cowutil.getDepth(device_path))
     except Exception as e:
@@ -514,7 +524,7 @@ def get_depth(session, args):
 
 def get_key_hash(session, args):
     try:
-        cowutil = getCowUtil(args['vdiType'])
+        cowutil = get_cow_util_from_args(args)
         device_path = args['devicePath']
         return cowutil.getKeyHash(device_path) or ''
     except Exception as e:
@@ -524,7 +534,7 @@ def get_key_hash(session, args):
 
 def get_block_bitmap(session, args):
     try:
-        cowutil = getCowUtil(args['vdiType'])
+        cowutil = get_cow_util_from_args(args)
         device_path = args['devicePath']
         return base64.b64encode(cowutil.getBlockBitmap(device_path)).decode('ascii')
     except Exception as e:
@@ -546,7 +556,7 @@ def get_drbd_size(session, args):
 
 def set_size_virt(session, args):
     try:
-        cowutil = getCowUtil(args['vdiType'])
+        cowutil = get_cow_util_from_args(args)
         device_path = args['devicePath']
         size = int(args['size'])
         jFile = args['jFile']
@@ -559,7 +569,7 @@ def set_size_virt(session, args):
 
 def set_size_virt_fast(session, args):
     try:
-        cowutil = getCowUtil(args['vdiType'])
+        cowutil = get_cow_util_from_args(args)
         device_path = args['devicePath']
         size = int(args['size'])
         cowutil.setSizeVirtFast(device_path, size)
@@ -571,7 +581,7 @@ def set_size_virt_fast(session, args):
 
 def set_parent(session, args):
     try:
-        cowutil = getCowUtil(args['vdiType'])
+        cowutil = get_cow_util_from_args(args)
         device_path = args['devicePath']
         parent_path = args['parentPath']
         cowutil.setParent(device_path, parent_path, False)
@@ -583,7 +593,7 @@ def set_parent(session, args):
 
 def coalesce(session, args):
     try:
-        cowutil = getCowUtil(args['vdiType'])
+        cowutil = get_cow_util_from_args(args)
         device_path = args['devicePath']
         return str(cowutil.coalesce(device_path))
     except Exception as e:
@@ -593,7 +603,7 @@ def coalesce(session, args):
 
 def repair(session, args):
     try:
-        cowutil = getCowUtil(args['vdiType'])
+        cowutil = get_cow_util_from_args(args)
         device_path = args['devicePath']
         cowutil.repair(device_path)
         return ''
@@ -604,7 +614,7 @@ def repair(session, args):
 
 def deflate(session, args):
     try:
-        vdi_type = args['vdiType']
+        vdi_type = get_args_vdi_type(args)
         device_path = args['devicePath']
         new_size = int(args['newSize'])
         old_size = int(args['oldSize'])
