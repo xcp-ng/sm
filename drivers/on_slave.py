@@ -162,26 +162,33 @@ def refresh_lun_size_by_SCSIid(session, args):
         util.SMlog("on-slave.refresh_lun_size_by_SCSIid with %s failed" % args)
         return "False"
 
-def commit_tapdisk(session, args):
-    path: str = args["path"]
-    vdi_type = args["vdi_type"]
-    #TODO: naming should reflect that it does more than coalesceing, like setting volume RW
-
+def _make_chain_RW(cowutil, leaf_path, write: bool):
     def set_RW(path):
         try:
             util.pread2(["lvchange", "-p", "rw", path])
         except:
             pass
-    #TODO: need to make children RW. Or we let the relink happen with a refresh on master and hope it doesn't corrupt the disk
-    if path.startswith("/dev/"):
-        set_RW(path)
+
+    # if path.startswith("/dev/"):
+    #     set_RW(leaf_path) # Not needed since it's a leaf
+
+    parent = cowutil.getParentNoCheck(leaf_path)
+    while parent:
+        if parent.startswith("/dev/"):
+            set_RW(parent)
+        parent = cowutil.getParentNoCheck(parent)
+
+def commit_tapdisk(session, args):
+    path: str = args["path"]
+    vdi_type = args["vdi_type"]
+    leaf_path: str = args["leaf_path"] # The path of the leaf used by the tapdisk
 
     from cowutil import getCowUtil
     cowutil = getCowUtil(vdi_type)
     try:
-        parent = cowutil.getParentNoCheck(path)
-        if parent.startswith("/dev/"):
-            set_RW(parent)
+        if path.startswith("/dev/"):
+            # We need to make children RW or tapdisk will crash trying to do it
+            _make_chain_RW(cowutil, leaf_path, True)
         return str(cowutil.coalesceOnline(path))
     except:
         util.logException("Couldn't coalesce online")

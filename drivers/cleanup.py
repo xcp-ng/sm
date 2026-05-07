@@ -842,9 +842,9 @@ class VDI(object):
     def _cancel_exception(sig, frame):
         raise CancelException()
 
-    def _call_plugin_coalesce(self, hostRef):
+    def _call_plugin_coalesce(self, hostRef, leaf):
         signal.signal(signal.SIGTERM, self._cancel_exception)
-        args = {"path": self.path, "vdi_type": self.vdi_type}
+        args = {"path": self.path, "vdi_type": self.vdi_type, "leaf_path": leaf.path}
         Util.log("Calling remote coalesce plugin with: {}".format(args))
         try:
             ret = self.sr.xapi.session.xenapi.host.call_plugin( \
@@ -858,13 +858,11 @@ class VDI(object):
         except Exception:
             raise
 
-    def _doCoalesceOnHost(self, hostRef):
+    def _doCoalesceOnHost(self, hostRef, leaf):
         self.parent._increaseSizeVirt(self.sizeVirt)
         self.sr._updateSlavesOnResize(self.parent)
-        #TODO: We might need to make the LV RW on the slave directly for coalesce?
-        # Children and parent need to be RW for QCOW2 coalesce, otherwise tapdisk(libqcow) will crash trying to access them
 
-        self._coalesceCowImageOnHost(hostRef)
+        self._coalesceCowImageOnHost(hostRef, leaf)
 
         #self._verifyContents(0)
         self.parent.updateBlockInfo()
@@ -1035,7 +1033,7 @@ class VDI(object):
 
         util.fistpoint.activate("LVHDRT_coalescing_VHD_data", self.sr.uuid)
 
-    def _coalesceCowImageOnHost(self, hostRef):
+    def _coalesceCowImageOnHost(self, hostRef, leaf):
         Util.log("  Running COW coalesce on {} via remote host {}".format(self, hostRef))
         def abortTest():
             file = self.sr._gc_running_file(self)
@@ -1052,7 +1050,7 @@ class VDI(object):
                 return True
             return False
 
-        Util.runAbortable(lambda: self._call_plugin_coalesce(hostRef),
+        Util.runAbortable(lambda: self._call_plugin_coalesce(hostRef, leaf),
                           None, self.sr.uuid, abortTest, VDI.POLL_INTERVAL, 0, prefSig=signal.SIGTERM)
 
     def _relinkSkip(self) -> None:
@@ -2526,7 +2524,7 @@ class SR(object):
     def _hasLeavesAttachedOn(self, vdi: VDI):
         leaves = vdi.getAllLeaves()
         leaves_vdi = [leaf.uuid for leaf in leaves]
-        return util.get_hosts_attached_on(self.xapi.session, leaves_vdi)
+        return util.get_hosts_attached_on_with_vdi_uuid(self.xapi.session, leaves_vdi)
 
     def _gc_running_file(self, vdi: VDI):
         run_file = "gc_running_{}".format(vdi.uuid)
@@ -2571,7 +2569,11 @@ class SR(object):
                 if host_refs and vdi.cowutil.isCoalesceableOnRemote():
                     #Leaf opened on another host, we need to call online coalesce
                     Util.log("Remote coalesce for {}".format(vdi.path))
-                    vdi._doCoalesceOnHost(list(host_refs)[0])
+
+                    leaf_for_coalesce_uuid, host_ref = next(iter(host_refs.items())) # First host_ref since we should only have one
+                    leaf_for_coalesce = [leaf for leaf in vdi.getAllLeaves() if leaf.uuid == leaf_for_coalesce_uuid][0]
+
+                    vdi._doCoalesceOnHost(host_ref, leaf_for_coalesce)
                     # If we use a host OpaqueRef to do a online coalesce, this vdi will not need to be relinked since it was done by tapdisk
                     # If we coalesce up the chain, we shouldn't need to do the relink at all, we only need to do the relink on the children if their direct parent was the one we were coalescing
                     for child in vdi.children:
@@ -2900,7 +2902,8 @@ class SR(object):
         host_refs = self._hasLeavesAttachedOn(vdi) if coalesce_on_remote else None
         if host_refs:
             util.fistpoint.activate("LVHDRT_coaleaf_before_coalesce", self.uuid)
-            vdi._coalesceCowImageOnHost(list(host_refs)[0])
+            _, host_ref = next(iter(host_refs.items()))
+            vdi._coalesceCowImageOnHost(host_ref, vdi) # vdi is the leaf for the online coalesce
             util.fistpoint.activate("LVHDRT_coaleaf_after_coalesce", self.uuid)
         else:
             vdi.validate(True)
