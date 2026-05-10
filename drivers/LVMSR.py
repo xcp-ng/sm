@@ -1369,17 +1369,23 @@ class LVMVDI(VDI.VDI):
             image_format = self.sr.read_config_image_format(vdi_sm_config)
 
         if not image_format:
-            size = int(self.sr.srcmd.params['args'][0])
-            # In the case of vdi_create, the first parameter is size.
-            # We need it to validate the vdi_type choice
-            for image_format in self.sr.preferred_image_formats:
-                vdi_type = self.sr._resolve_vdi_type_from_image_format(image_format)
-                self._setType(vdi_type)
-                try:
-                    self.cowutil.validateAndRoundImageSize(size)
-                    break
-                except xs_errors.SROSError:
-                    util.SMlog(f"We won't be able to create the VDI with format {vdi_type}.")
+            if self.sr.srcmd.cmd == "vdi_create":
+                size = int(self.sr.srcmd.params['args'][0])
+                # In the case of vdi_create, the first parameter is size.
+                # We need it to validate the vdi_type choice
+                for image_format in self.sr.preferred_image_formats:
+                    vdi_type = self.sr._resolve_vdi_type_from_image_format(image_format)
+                    self._setType(vdi_type)
+                    try:
+                        self.cowutil.validateAndRoundImageSize(size)
+                        break
+                    except xs_errors.SROSError:
+                        util.SMlog(f"We won't be able to create the VDI with format {vdi_type}.")
+            else:
+                # For cbt_metadata, we found ourselves here without being a vdi_create, we don't have size
+                util.SMlog("Not a vdi_create, must be cbtlog")
+                image_format = self.sr.preferred_image_formats[0]
+                self._setType(self.sr._resolve_vdi_type_from_image_format(image_format))
 
         if self.sr.legacyMode and self.sr.cmd == 'vdi_create' and VdiType.isCowImage(self.vdi_type):
             raise xs_errors.XenError('VDICreate', opterr='Cannot create COW type disk in legacy mode')
