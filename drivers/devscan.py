@@ -27,6 +27,8 @@ DMDEVPATH = '/dev/mapper'
 SYSFS_PATH1 = '/sys/class/scsi_host'
 SYSFS_PATH2 = '/sys/class/scsi_disk'
 SYSFS_PATH3 = '/sys/class/fc_transport'
+PFX_PATH = '/dev/disk/by-scsid/emc-vol-*'
+SYSFS_BLOCK = '/sys/class/block'
 
 DRIVER_BLACKLIST = ['^(s|p|)ata_.*', '^ahci$', '^pdc_adma$', '^iscsi_tcp$', '^usb-storage$']
 
@@ -376,6 +378,16 @@ def scan(srobj):
             textnode = dom.createTextNode(str(aval))
             entry.appendChild(textnode)
 
+    pfx_vols = getattr(srobj, 'powerflex_devices', {})
+    for pfx_vol in pfx_vols.values():
+        dev_elem = dom.createElement("BlockDevice")
+        e.appendChild(dev_elem)
+        for k, v in pfx_vol.items():
+            entry = dom.createElement(str(k))
+            dev_elem.appendChild(entry)
+            text_node = dom.createTextNode(str(v))
+            entry.appendChild(text_node)
+
     for key in hbas:
         a = dom.createElement("Adapter")
         e.appendChild(a)
@@ -429,3 +441,32 @@ def match_nonpartitions(s):
     regex = re.compile("-part[0-9]")
     if not regex.search(s, 0):
         return True
+
+
+def powerflex_devices():
+    devices = {}
+
+    for vol in glob.glob(PFX_PATH):
+        try:
+            SCSIid = os.path.basename(vol)
+            path = os.path.realpath(os.path.join(vol, 'scini'))
+            dev_name = os.path.basename(path)
+
+            with open(os.path.join(SYSFS_BLOCK, dev_name, 'size')) as f:
+                size_in_blocks = int(f.readline().strip())
+
+            with open(os.path.join(SYSFS_BLOCK, dev_name,
+                                   'queue', 'logical_block_size')) as f:
+                blocksize = int(f.readline().strip())
+
+            devices[SCSIid] = {
+                'SCSIid': SCSIid,
+                'path': path,
+                'vendor': 'emc',
+                'size': size_in_blocks * blocksize,
+            }
+        except (OSError, ValueError) as exc:
+            util.SMlog("Skipping PowerFlex volume %s during probe: %s",
+                       vol, exc)
+
+    return devices

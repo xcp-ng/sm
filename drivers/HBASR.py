@@ -244,9 +244,17 @@ class HBASR(SR.SR):
             self.virtual_allocation = self.physical_utilisation
         return super(HBASR, self).scan(sr_uuid)
 
+    def load_powerflex(self):
+        devices = devscan.powerflex_devices()
+
+        if devices:
+            self.powerflex_devices = devices
+
     def print_devs(self):
         self.attach("")
         self._init_hbadict()
+        # Load any PowerFlex volumes
+        self.load_powerflex()
         return devscan.scan(self)
 
     # This function returns a dictionary of HBA attached LUNs

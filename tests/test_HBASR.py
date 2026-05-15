@@ -7,6 +7,10 @@ from DummySR import DRIVER_INFO
 import xml.dom.minidom
 import util
 import xs_errors
+
+import errno
+import io
+import os
 import uuid
 
 
@@ -67,6 +71,27 @@ class TestHBASR(unittest.TestCase):
         adapters_patcher = mock.patch(
             "HBASR.devscan.adapters", autospec=True)
         self.mock_devscan_adapters = adapters_patcher.start()
+
+        mpath_handle_patcher = mock.patch(
+            "HBASR.SR.SR._mpathHandle", autospec=True)
+        self.mock_mpath_handle = mpath_handle_patcher.start()
+
+        rootdev_patcher = mock.patch(
+            'HBASR.devscan.util.getrootdevID', autospec=True)
+        self.mock_rootdevid = rootdev_patcher.start()
+
+        glob_patcher = mock.patch('HBASR.devscan.glob.glob', autospec=True)
+        self.mock_glob = glob_patcher.start()
+
+        real_path_basename = os.path.basename
+        real_path_join = os.path.join
+        os_path_patcher = mock.patch('HBASR.devscan.os.path', autospec=True)
+        self.mock_os_path = os_path_patcher.start()
+        self.mock_os_path.basename = real_path_basename
+        self.mock_os_path.join = real_path_join
+
+        smlog_patcher = mock.patch('HBASR.util.SMlog', autospec=True)
+        self.mock_sm_log = smlog_patcher.start()
 
     def make_sr_cmd(self, command='sr_probe'):
         sr_cmd = mock.Mock(spec=SRCommand(DRIVER_INFO))
@@ -230,10 +255,90 @@ class TestHBASR(unittest.TestCase):
         res = sr._probe_hba()
         self.assertEqual(res, imp_fake_probe())
 
-    @mock.patch('HBASR.HBASR._mpathHandle', autospec=True)
-    def test_attach(self, mock_mpath):
+    def test_attach(self):
         sr_uuid = str(uuid.uuid4())
         sr_cmd = self.make_sr_cmd()
         sr = HBASR.HBASR(sr_cmd, sr_uuid)
         sr.attach(1234)
-        self.assertEqual(mock_mpath.call_count, 1)
+        self.assertEqual(self.mock_mpath_handle.call_count, 1)
+
+    def test_print_devs_no_devs(self):
+        # Arrange
+        sr_uuid = str(uuid.uuid4())
+        sr_cmd = self.make_sr_cmd()
+        sr = HBASR.HBASR(sr_cmd, sr_uuid)
+
+        # Act
+        dev_str = sr.print_devs()
+
+        # Assert
+        self.assertEqual(dev_str,
+                         '<?xml version="1.0" ?>\n<Devlist/>\n')
+
+    def test_print_devs_powerflex_error(self):
+        sr_uuid = str(uuid.uuid4())
+        sr_cmd = self.make_sr_cmd()
+        sr = HBASR.HBASR(sr_cmd, sr_uuid)
+        self.mock_glob.return_value = [
+            '/dev/disk/by-scsid/emc-vol-19ab00bee9314e0f-894b409a00000000'
+        ]
+        self.mock_os_path.realpath.side_effect = OSError(errno.ENOENT)
+
+        # Act
+        dev_str = sr.print_devs()
+
+        # Assert
+        self.assertEqual(dev_str,
+                         '<?xml version="1.0" ?>\n<Devlist/>\n')
+
+    def test_print_devs_powerflex(self):
+        # Arrange
+        sr_uuid = str(uuid.uuid4())
+        sr_cmd = self.make_sr_cmd()
+        sr = HBASR.HBASR(sr_cmd, sr_uuid)
+        self.mock_glob.return_value = [
+            '/dev/disk/by-scsid/emc-vol-19ab00bee9314e0f-894b409a00000000'
+        ]
+        self.mock_os_path.realpath.return_value = '/dev/scinia'
+
+        file_data = {
+            'size': 2 * 1024 * 1024,
+            'logical_block_size': 512
+        }
+
+        def open(filename):
+            basename = os.path.basename(filename.strip())
+            file_contents = io.StringIO()
+            file_contents.write(f'{file_data[basename]}\n')
+
+            file_contents.seek(0)
+            return file_contents
+
+        # Act
+        with mock.patch("builtins.open") as mock_open:
+            mock_open.side_effect = open
+
+            dev_str = sr.print_devs()
+
+        # Assert
+        dom = xml.dom.minidom.Document()
+        dl = dom.createElement("Devlist")
+        dom.appendChild(dl)
+        bd = dom.createElement("BlockDevice")
+        dl.appendChild(bd)
+        device_data = {
+            'SCSIid': 'emc-vol-19ab00bee9314e0f-894b409a00000000',
+            'path': '/dev/scinia',
+            'vendor': 'emc',
+            'size': 1073741824}
+        for k, v in device_data.items():
+            entry = dom.createElement(str(k))
+            bd.appendChild(entry)
+            text_node = dom.createTextNode(str(v))
+            entry.appendChild(text_node)
+
+        self.assertEqual(dev_str, dom.toprettyxml())
+        self.mock_os_path.realpath.assert_called_once_with(
+            '/dev/disk/by-scsid/emc-vol-19ab00bee9314e0f-894b409a00000000/'
+            'scini'
+        )
