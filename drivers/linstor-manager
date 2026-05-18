@@ -21,6 +21,8 @@ import sys
 sys.path[0] = '/opt/xensource/sm/'
 
 import base64
+import cleanup
+import ipc
 import os
 import socket
 import XenAPI
@@ -407,6 +409,17 @@ def destroy(session, args):
         util.stop_service('linstor-controller')
         util.stop_service('var-lib-linstor.service')
         util.SMlog('linstor-manager:destroy error: {}'.format(e))
+    return str(False)
+
+
+def abort_gc(session, args):
+    try:
+        sr_uuid = args['srUuid']
+        abort_flag = ipc.IPCFlag(sr_uuid)
+        abort_flag.set(cleanup.FLAG_TYPE_ABORT, soft=False)
+        return str(True)
+    except Exception as e:
+        util.SMlog('linstor-manager:abort_gc error: {}'.format(e))
     return str(False)
 
 
@@ -1260,6 +1273,7 @@ if __name__ == '__main__':
         'attach': attach,
         'detach': detach,
         'destroy': destroy,
+        'abortGc': abort_gc,
 
         # cowutil wrappers called by LinstorCowUtil.
         # Note: When a COW image is open in RO mode (so for all cowutil getters),

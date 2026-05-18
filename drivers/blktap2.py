@@ -17,7 +17,6 @@
 #
 # blktap2: blktap/tapdisk management layer
 #
-
 from sm_typing import Any, Callable, ClassVar, Dict, override, List, Union
 
 from abc import abstractmethod
@@ -58,7 +57,7 @@ from socket import socket, AF_UNIX, SOCK_STREAM
 
 
 try:
-    from linstorvolumemanager import log_drbd_openers
+    from linstorvolumemanager import get_controller_uri, get_all_volume_openers, LinstorVolumeManager
     LINSTOR_AVAILABLE = True
 except ImportError:
     LINSTOR_AVAILABLE = False
@@ -75,6 +74,13 @@ POOL_SIZE_KEY = "mem-pool-size-rings"
 
 ENABLE_MULTIPLE_ATTACH = "/etc/xensource/allow_multiple_vdi_attach"
 NO_MULTIPLE_ATTACH = not (os.path.exists(ENABLE_MULTIPLE_ATTACH))
+
+# Including DRBD in the pattern to prevent matching with other SRs than LinstorSR
+TAP_CTL_ERROR_PATTERN = re.compile(
+    r"(?P<status>ERROR|SUCCESS)\s"
+    r"\[(?P<code>-?[0-9]+)\s-\s(?P<category>.+?)]:\s"
+    r"(?P<message>.*)\sReason:\s(?P<reason>.+drbd.+)"
+)
 
 
 def locking(excType, override=True):
@@ -426,7 +432,21 @@ class TapCtl(object):
             args += ["-a", str(params)]
         if cbtlog:
             args.extend(["-c", cbtlog])
-        cls._pread(args)
+
+        @retried(backoff=.5, limit=3)
+        def unpause_impl():
+            drbd_path = _file
+            try:
+                cls._pread(args)
+            except TapCtl.CommandFailure as e:
+                match = TAP_CTL_ERROR_PATTERN.search(e.info.get("errmsg", ""))
+                if match and match.group("reason"):
+                    drbd_path = match.group("reason")
+                if e.get_error_code() in (errno.EROFS, errno.EMEDIUMTYPE) and Tapdisk.abort_linstor_gc(drbd_path):
+                    raise RetryLoop.TransientFailure(e)
+                raise
+
+        unpause_impl()
 
     @classmethod
     def shutdown(cls, pid):
@@ -852,9 +872,43 @@ class Tapdisk(object):
         except util.CommandException as e:
             util.logException(e)
 
+    @staticmethod
+    def abort_linstor_gc(drbd_path: str) -> bool:
+        if not LINSTOR_AVAILABLE or not drbd_path.startswith("/dev/drbd/by-res/xcp-volume-"):
+            return False
+
+        _, volume_name, _ = drbd_path.rsplit("/", 2)
+        group_name = LinstorVolumeManager.get_volume_group_name(volume_name)
+
+        openers = get_all_volume_openers(volume_name, "0")
+
+        session = util.timeout(5, util.get_localAPI_session)
+        try:
+            srs = util.get_linstor_srs_uuid(session)
+            pbd_ref = util.find_pbd_ref_from_dconf_value(
+                session, srs, "group-name", group_name, LinstorVolumeManager.build_group_name
+            )
+            if pbd_ref:
+                pbd_rec = session.xenapi.PBD.get_record(pbd_ref)
+
+                sr_ref = pbd_rec["SR"]
+                sr_uuid = session.xenapi.SR.get_uuid(sr_ref)
+
+                import cleanup # pylint: disable=C0415
+                if cleanup.LinstorSR.abort_gc_from_openers_sr(sr_uuid, openers):
+                    return True
+            else:
+                util.SMlog(f"Unable to find PBD of LINSTOR group `{group_name}`...")
+
+            util.SMlog(f"Unable to run tapdisk, openers of DRBD resource `{drbd_path}`: {openers}")
+        finally:
+            session.xenapi.session.logout()
+
+        return False
+
     @classmethod
     def launch_on_tap(cls, blktap, path, _type, options):
-
+        drbd_path = path
         tapdisk = cls.find_by_path(path)
         if tapdisk:
             raise TapdiskExists(tapdisk)
@@ -873,16 +927,17 @@ class Tapdisk(object):
                             TapCtl.open(pid, minor, _type, path, options)
                             break
                         except TapCtl.CommandFailure as e:
-                            err = (
-                                'status' in e.info and e.info['status']
-                            ) or None
-                            if err in (errno.EIO, errno.EROFS, errno.EAGAIN):
-                                if retry_open < 5:
-                                    retry_open += 1
-                                    time.sleep(1)
-                                    continue
-                                if LINSTOR_AVAILABLE and err == errno.EROFS:
-                                    log_drbd_openers(path)
+                            err = e.get_error_code()
+                            match = TAP_CTL_ERROR_PATTERN.search(e.info.get("errmsg", ""))
+                            if match and match.group("reason"):
+                                drbd_path = match.group("reason")
+                            if err in (errno.EROFS, errno.EMEDIUMTYPE) and cls.abort_linstor_gc(drbd_path):
+                                continue
+
+                            if err in (errno.EIO, errno.EAGAIN, errno.EROFS, errno.EMEDIUMTYPE) and retry_open < 1:
+                                retry_open += 1
+                                time.sleep(1)
+                                continue
                             raise
                     try:
                         tapdisk = cls.__from_blktap(blktap)
