@@ -14,13 +14,14 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-from sm_typing import List, override
+from sm_typing import Any, Callable, Dict, IO, List, Optional, override
 
 from linstorjournaler import LinstorJournaler
-from linstorvolumemanager import LinstorVolumeManager
+from linstorvolumemanager import LinstorVolumeManager, LinstorVolumeOpeners
 
 from concurrent.futures import ThreadPoolExecutor
 import base64
+import contextlib
 import errno
 import json
 import socket
@@ -162,7 +163,21 @@ def linstormodifier():
     return decorated
 
 
-class LinstorCowUtil(object):
+class LinstorCowUtil:
+    class Chain(object):
+        def __init__(self, files: List[IO], leaf_path: str):
+            self._files = files
+            self._leaf_path = leaf_path
+
+        @property
+        def leaf_path(self) -> str:
+            return self._leaf_path
+
+        def close(self) -> None:
+            for file in self._files:
+                with contextlib.suppress(Exception):
+                    file.close()
+
     def __init__(self, session, linstor, vdi_type: str):
         self._session = session
         self._linstor = linstor
@@ -173,43 +188,54 @@ class LinstorCowUtil(object):
     def cowutil(self) -> CowUtil:
         return self._cowutil
 
-    def create_chain_paths(self, vdi_uuid, readonly=False):
+    def create_chain_paths(
+        self,
+        vdi_uuid: str,
+        readonly=False,
+        cb_openers: Optional[Callable[[str, LinstorVolumeOpeners], Any]] = None
+    ) -> Chain:
         # OPTIMIZE: Add a limit_to_first_allocated_block param to limit cowutil calls.
         # Useful for the snapshot code algorithm.
 
-        leaf_vdi_path = self._linstor.get_device_path(vdi_uuid)
-        path = leaf_vdi_path
-        while True:
-            if not util.pathexists(path):
-                raise xs_errors.XenError(
-                    'VDIUnavailable', opterr='Could not find: {}'.format(path)
-                )
+        files: List[IO] = []
 
-            # Diskless path can be created on the fly, ensure we can open it.
-            def check_volume_usable():
-                while True:
-                    try:
-                        with open(path, 'r' if readonly else 'r+'):
-                            pass
-                    except IOError as e:
-                        if e.errno == errno.ENODATA:
-                            time.sleep(2)
-                            continue
-                        if e.errno == errno.EROFS or e.errno == errno.EMEDIUMTYPE:
-                            util.SMlog('Volume not attachable because used. Openers: {}'.format(
-                                self._linstor.get_volume_openers(vdi_uuid)
-                            ))
-                        raise
+        leaf_path = self._linstor.get_device_path(vdi_uuid)
+        path = leaf_path
+        try:
+            while True:
+                if not util.pathexists(path):
+                    raise xs_errors.XenError(
+                        'VDIUnavailable', opterr='Could not find: {}'.format(path)
+                    )
+
+                # Diskless path can be created on the fly, ensure we can open it.
+                def check_volume_usable():
+                    while True:
+                        try:
+                            files.append(open(path, 'r' if readonly else 'r+'))
+                        except (IOError, OSError) as e:
+                            if e.errno == errno.ENODATA:
+                                time.sleep(2)
+                                continue
+                            if e.errno == errno.EROFS or e.errno == errno.EMEDIUMTYPE:
+                                openers = self._linstor.get_volume_openers(vdi_uuid)
+                                util.SMlog(f'Volume not attachable because used. Openers: {openers}')
+                                if cb_openers:
+                                    cb_openers(vdi_uuid, openers)
+                            raise
+                        break
+                util.retry(check_volume_usable, 15, 2)
+
+                vdi_uuid = self.get_info(vdi_uuid).parentUuid
+                if not vdi_uuid:
                     break
-            util.retry(check_volume_usable, 15, 2)
+                path = self._linstor.get_device_path(vdi_uuid)
+                readonly = True  # Non-leaf is always readonly.
+        except Exception as e:
+            self.Chain(files, leaf_path).close()
+            raise e
 
-            vdi_uuid = self.get_info(vdi_uuid).parentUuid
-            if not vdi_uuid:
-                break
-            path = self._linstor.get_device_path(vdi_uuid)
-            readonly = True  # Non-leaf is always readonly.
-
-        return leaf_vdi_path
+        return self.Chain(files, leaf_path)
 
     # --------------------------------------------------------------------------
     # Getters: read locally and try on another host in case of failure.
@@ -569,7 +595,7 @@ class LinstorCowUtil(object):
         # B.3. Call!
         def remote_call():
             try:
-                all_openers = self._linstor.get_volume_openers(openers_uuid)
+                openers = self._linstor.get_volume_openers(openers_uuid)
             except Exception as e:
                 raise xs_errors.XenError(
                     'VDIUnavailable',
@@ -578,8 +604,8 @@ class LinstorCowUtil(object):
                 )
 
             no_host_found = True
-            for hostname, openers in all_openers.items():
-                if not openers:
+            for hostname, host_openers in openers.items():
+                if not host_openers:
                     continue
 
                 host_ref = self._find_host_ref_from_hostname(hosts, hostname)
