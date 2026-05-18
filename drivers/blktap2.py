@@ -72,6 +72,11 @@ POOL_SIZE_KEY = "mem-pool-size-rings"
 ENABLE_MULTIPLE_ATTACH = "/etc/xensource/allow_multiple_vdi_attach"
 NO_MULTIPLE_ATTACH = not (os.path.exists(ENABLE_MULTIPLE_ATTACH))
 
+TAP_CTL_ERROR_PATTERN = re.compile(
+    r"(?P<status>ERROR|SUCCESS)\s"
+    r"\[(?P<code>-?[0-9]+)\s-\s(?P<category>.+?)]:\s"
+    r"(?P<message>.*)\sReason:\s(?P<reason>.+)"
+)
 
 def locking(excType, override=True):
     def locking2(op):
@@ -425,8 +430,20 @@ class TapCtl(object):
         if cbtlog:
             args.extend(["-c", cbtlog])
 
-        # TODO: Handle issue.
-        cls._pread(args)
+        @retried(backoff=.5, limit=10)
+        def unpause():
+            drbd_path = _file
+            try:
+                cls._pread(args)
+            except TapCtl.CommandFailure as e:
+                match = TAP_CTL_ERROR_PATTERN.search(e.info.get("errmsg", ""))
+                if match and match.group("reason"):
+                    drbd_path = match.group("reason")
+                if e.get_error_code() in (errno.EROFS, errno.EMEDIUMTYPE) and Tapdisk.abort_linstor_gc(drbd_path):
+                    raise RetryLoop.TransientFailure(e)
+                raise
+
+        unpause()
 
     @classmethod
     def shutdown(cls, pid):
@@ -860,7 +877,7 @@ class Tapdisk(object):
 
     @classmethod
     def launch_on_tap(cls, blktap, path, _type, options):
-
+        drbd_path = path
         tapdisk = cls.find_by_path(path)
         if tapdisk:
             raise TapdiskExists(tapdisk)
@@ -879,10 +896,11 @@ class Tapdisk(object):
                             TapCtl.open(pid, minor, _type, path, options)
                             break
                         except TapCtl.CommandFailure as e:
-                            err = (
-                                'status' in e.info and e.info['status']
-                            ) or None
-                            if err in (errno.EROFS, errno.EMEDIUMTYPE) and cls.abort_linstor_gc(path):
+                            err = e.get_error_code()
+                            match = TAP_CTL_ERROR_PATTERN.search(e.info.get("errmsg", ""))
+                            if match and match.group("reason"):
+                                drbd_path = match.group("reason")
+                            if err in (errno.EROFS, errno.EMEDIUMTYPE) and cls.abort_linstor_gc(drbd_path):
                                 continue
 
                             if err in (errno.EIO, errno.EAGAIN, errno.EROFS, errno.EMEDIUMTYPE) and retry_open < 5:

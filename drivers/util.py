@@ -18,6 +18,7 @@
 
 from sm_typing import List
 
+import contextlib
 import os
 import re
 import sys
@@ -398,6 +399,17 @@ def ioretry_stat(path, maxretry=IORETRY_MAX):
         retries += 1
     raise CommandException(errno.EIO, "os.statvfs")
 
+@contextlib.contextmanager
+def timeout(seconds: int):
+    def handle_timeout(_signum, _frame):
+        raise TimeoutError("Timed out after %d seconds" % seconds)
+
+    signal.signal(signal.SIGALRM, handle_timeout)
+    signal.alarm(seconds)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
 
 def sr_get_capability(sr_uuid, session=None):
     result = []

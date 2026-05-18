@@ -3704,15 +3704,16 @@ class LinstorSR(SR):
                 if node_name == hostname:
                     continue
 
-                session = XAPI.getSession()
-                try:
-                    sr_uuid = util.get_sr_from_vdi_uuid(session, uuid) if is_vdi_uuid else uuid
-                    util.SMlog(f"LINSTOR volume is coalescing on `{sr_uuid}`. We're going to interrupt the GC...")
-                    return util.strtobool(session.xenapi.host.call_plugin(
-                        util.get_master_ref(session), MANAGER_PLUGIN, "abortGc", {"srUuid": sr_uuid}
-                    ))
-                finally:
-                    session.xenapi.session.logout()
+                with util.timeout(1):
+                    session = XAPI.getSession()
+                    try:
+                        sr_uuid = util.get_sr_from_vdi_uuid(session, uuid) if is_vdi_uuid else uuid
+                        util.SMlog(f"LINSTOR volume is coalescing on `{sr_uuid}`. We're going to interrupt the GC...")
+                        return util.strtobool(session.xenapi.host.call_plugin(
+                            util.get_master_ref(session), MANAGER_PLUGIN, "abortGc", {"srUuid": sr_uuid}
+                        ))
+                    finally:
+                        session.xenapi.session.logout()
         return False
 
 
