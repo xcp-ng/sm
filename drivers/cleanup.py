@@ -18,7 +18,7 @@
 # Script to coalesce and garbage collect COW-based SR's in the background
 #
 
-from sm_typing import Any, Optional, List, override
+from sm_typing import Any, Dict, Optional, List, override
 
 import os
 import os.path
@@ -59,8 +59,7 @@ try:
     from linstorcowutil import LinstorCowUtil, MultiLinstorCowUtil
     from linstorjournaler import LinstorJournaler
     from linstorvolumemanager import get_controller_uri
-    from linstorvolumemanager import LinstorVolumeManager
-    from linstorvolumemanager import LinstorVolumeManagerError
+    from linstorvolumemanager import LinstorVolumeManager, LinstorVolumeManagerError, LinstorVolumeOpeners
     from linstorvolumemanager import PERSISTENT_PREFIX as LINSTOR_PERSISTENT_PREFIX
 
     LINSTOR_AVAILABLE = True
@@ -3897,16 +3896,57 @@ class LinstorSR(SR):
 
     def _checkSlaves(self, vdi):
         try:
-            all_openers = self._linstor.get_volume_openers(vdi.uuid)
-            for openers in all_openers.values():
-                for opener in openers.values():
+            openers = self._linstor.get_volume_openers(vdi.uuid)
+            for host_openers in openers.values():
+                for opener in host_openers.values():
                     if opener['process-name'] != 'tapdisk':
                         raise util.SMException(
-                            'VDI {} is in use: {}'.format(vdi.uuid, all_openers)
+                            'VDI {} is in use: {}'.format(vdi.uuid, openers)
                         )
         except LinstorVolumeManagerError as e:
             if e.code != LinstorVolumeManagerError.ERR_VOLUME_NOT_EXISTS:
                 raise
+
+    @classmethod
+    def abort_gc_from_openers_vdi(cls, vdi_uuid: str, openers: "LinstorVolumeOpeners") -> bool:
+        return cls._abort_gc_from_openers(vdi_uuid, True, openers)
+
+    @classmethod
+    def abort_gc_from_openers_sr(cls, sr_uuid: str, openers: "LinstorVolumeOpeners") -> bool:
+        return cls._abort_gc_from_openers(sr_uuid, False, openers)
+
+    @staticmethod
+    def _abort_gc_from_openers(uuid: str, is_vdi_uuid: bool, openers: "LinstorVolumeOpeners") -> bool:
+        from linstorcowutil import MANAGER_PLUGIN
+
+        node_name = None
+
+        for host_openers in openers.values():
+            for hostname, opener in host_openers.items():
+                # Not the most accurate check but it works...
+                # `vhd-util` is probably prefixed with a "+" which is ignored here.
+                if not opener["process-name"].endswith("vhd-util") or "coalesce" not in opener["cmdline"]:
+                    continue
+
+                if not node_name:
+                    import socket
+                    node_name = socket.gethostname()
+
+                if node_name == hostname:
+                    continue
+
+                with util.timeout(5):
+                    session = XAPI.getSession()
+                    try:
+                        sr_uuid = util.get_sr_uuid_from_vdi_uuid(session, uuid) if is_vdi_uuid else uuid
+                        util.SMlog(f"LINSTOR volume is coalescing on `{sr_uuid}`. We're going to interrupt the GC...")
+                        return util.strtobool(session.xenapi.host.call_plugin(
+                            util.get_master_ref(session), MANAGER_PLUGIN, "abortGc", {"srUuid": sr_uuid}
+                        ))
+                    finally:
+                        session.xenapi.session.logout()
+        return False
+
 
 
 ################################################################################
