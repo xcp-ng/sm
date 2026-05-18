@@ -158,7 +158,7 @@ class LinstorJournaler:
 
         if native_client:
             return linstor.KV(
-                LinstorVolumeManager._build_group_name(group_name),
+                LinstorVolumeManager.build_group_name(group_name),
                 existing_client=native_client,
                 namespace=namespace
             )
@@ -171,7 +171,7 @@ class LinstorJournaler:
                         'Unable to find controller uri...'
                     )
             return linstor.KV(
-                LinstorVolumeManager._build_group_name(group_name),
+                LinstorVolumeManager.build_group_name(group_name),
                 uri=uri,
                 namespace=namespace
             )
