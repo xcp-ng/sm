@@ -571,23 +571,21 @@ class LinstorSR(SR.SR):
                 opterr='Redundancy greater than host count'
             )
 
-        xenapi = self.session.xenapi
-        srs = xenapi.SR.get_all_records_where(
-            'field "type" = "{}"'.format(self.DRIVER_TYPE)
-        )
-        srs = dict([e for e in srs.items() if e[1]['uuid'] != self.uuid])
+        srs = util.get_linstor_srs_uuid(self.session)
+        try:
+            srs.pop(self.uuid)
+        except KeyError:
+            # We cannot guarantee that the new SR key will be there even it should be the case.
+            pass
 
-        for sr in srs.values():
-            for pbd in sr['PBDs']:
-                device_config = xenapi.PBD.get_device_config(pbd)
-                group_name = device_config.get('group-name')
-                if group_name and group_name == self._group_name:
-                    raise xs_errors.XenError(
-                        'LinstorSRCreate',
-                        opterr='group name must be unique, already used by PBD {}'.format(
-                            xenapi.PBD.get_uuid(pbd)
-                        )
-                    )
+        pbd_ref = util.find_pbd_ref_from_dconf_value(
+            self.session, srs, "group-name", self._group_name, LinstorVolumeManager.build_group_name
+        )
+        if pbd_ref:
+            raise xs_errors.XenError(
+                'LinstorSRCreate',
+                opterr=f"group name must be unique, already used by PBD {self.session.xenapi.PBD.get_uuid(pbd_ref)}"
+            )
 
         if srs:
             raise xs_errors.XenError(
@@ -1855,7 +1853,12 @@ class LinstorVDI(VDI.VDI):
             return self._attach_using_http_nbd()
 
         # Ensure we have a path...
-        self.linstorcowutil.create_chain_paths(self.uuid, readonly=not writable)
+        chain = self.linstorcowutil.create_chain_paths(
+            self.uuid,
+            readonly=not writable,
+            cb_openers=cleanup.LinstorSR.abort_gc_from_openers_vdi
+        )
+        chain.close()
 
         self.attached = True
         return VDI.VDI.attach(self, self.sr.uuid, self.uuid)
@@ -2402,7 +2405,12 @@ class LinstorVDI(VDI.VDI):
             raise xs_errors.XenError('SnapshotChainTooLong')
 
         # Ensure we have a valid path if we don't have a local diskful.
-        self.linstorcowutil.create_chain_paths(self.uuid, readonly=True)
+        chain = self.linstorcowutil.create_chain_paths(
+            self.uuid,
+            readonly=True,
+            cb_openers=cleanup.LinstorSR.abort_gc_from_openers_vdi
+        )
+        chain.close()
 
         volume_path = self.path
         if not util.pathexists(volume_path):

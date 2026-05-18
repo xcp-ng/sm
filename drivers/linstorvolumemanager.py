@@ -19,6 +19,7 @@ from sm_typing import (
     Any,
     Dict,
     List,
+    cast,
     override,
 )
 
@@ -51,10 +52,12 @@ DRBD_BY_RES_PATH = '/dev/drbd/by-res/'
 
 PLUGIN = 'linstor-manager'
 
+LinstorLocalVolumeOpeners = Dict[str, Dict[str, Any]]
+LinstorVolumeOpeners = Dict[str, LinstorLocalVolumeOpeners]
 
 # ==============================================================================
 
-def get_local_volume_openers(resource_name, volume):
+def get_local_volume_openers(resource_name, volume) -> LinstorLocalVolumeOpeners:
     if not resource_name or volume is None:
         raise Exception('Cannot get DRBD openers without resource name and/or volume.')
 
@@ -77,14 +80,22 @@ def get_local_volume_openers(resource_name, volume):
         process_name = groups[0]
         pid = groups[1]
         open_duration_ms = groups[2]
+
+        try:
+            cmdline = util.get_process_cmdline(int(pid))
+        except Exception as e:
+            util.SMlog(f"Failed to get command line of `{pid}`: {e}")
+            cmdline = []
+
         result[pid] = {
             'process-name': process_name,
-            'open-duration': open_duration_ms
+            'open-duration': open_duration_ms,
+            'cmdline': cmdline
         }
 
-    return json.dumps(result)
+    return cast(LinstorLocalVolumeOpeners, json.dumps(result))
 
-def get_all_volume_openers(resource_name, volume):
+def get_all_volume_openers(resource_name, volume) -> LinstorVolumeOpeners:
     PLUGIN_CMD = 'getDrbdOpeners'
 
     volume = str(volume)
@@ -376,7 +387,7 @@ class LinstorVolumeManager(object):
         self._base_group_name = group_name
 
         # Ensure group exists.
-        group_name = self._build_group_name(group_name)
+        group_name = self.build_group_name(group_name)
         groups = self._linstor.resource_group_list_raise([group_name]).resource_groups
         if not groups:
             raise LinstorVolumeManagerError(
@@ -1167,7 +1178,7 @@ class LinstorVolumeManager(object):
 
         return states
 
-    def get_volume_openers(self, volume_uuid):
+    def get_volume_openers(self, volume_uuid) -> LinstorVolumeOpeners:
         """
         Get openers of a volume.
         :param str volume_uuid: The volume uuid to monitor.
@@ -1771,7 +1782,28 @@ class LinstorVolumeManager(object):
         :return: List of group names.
         :rtype: list
         """
-        return [cls._build_group_name(base_name), cls._build_ha_group_name(base_name)]
+        return [cls.build_group_name(base_name), cls._build_ha_group_name(base_name)]
+
+    @classmethod
+    def get_volume_group_name(cls, volume_name) -> str:
+        """
+        Get the group name associated with a volume.
+        :param str volume_name: The volume name to find.
+        :return: A group name.
+        :rtype: str
+        """
+
+        lin = cls._create_linstor_instance(uri=None)
+        try:
+            for dfn in lin.resource_dfn_list_raise(
+                query_volume_definitions=False,
+                filter_by_resource_definitions=[volume_name]
+            ).resource_definitions:
+                return dfn.resource_group_name
+        finally:
+            lin.disconnect()
+
+        return ''
 
     @classmethod
     def create_sr(cls, group_name, ips, redundancy, thin_provisioning, logger=default_logger.__func__):
@@ -1841,7 +1873,7 @@ class LinstorVolumeManager(object):
 
         driver_pool_name = group_name
         base_group_name = group_name
-        group_name = cls._build_group_name(group_name)
+        group_name = cls.build_group_name(group_name)
         storage_pool_name = group_name
         pools = lin.storage_pool_list_raise(filter_by_stor_pools=[storage_pool_name]).storage_pools
         if pools:
@@ -2437,13 +2469,13 @@ class LinstorVolumeManager(object):
             )
 
         # If force is used, ensure there is no opener.
-        all_openers = get_all_volume_openers(resource_name, '0')
-        for openers in all_openers.values():
-            if openers:
+        openers = get_all_volume_openers(resource_name, '0')
+        for host_openers in openers.values():
+            if host_openers:
                 self._mark_resource_cache_as_dirty()
                 raise LinstorVolumeManagerError(
                     'Could not force destroy resource `{}` from SR `{}`: {} (openers=`{}`)'
-                    .format(resource_name, self._group_name, error_str, all_openers)
+                    .format(resource_name, self._group_name, error_str, openers)
                 )
 
         # Maybe the resource is blocked in primary mode. DRBD/LINSTOR issue?
@@ -3011,7 +3043,7 @@ class LinstorVolumeManager(object):
         return util.retry(destroy, maxretry=10)
 
     @classmethod
-    def _build_group_name(cls, base_name):
+    def build_group_name(cls, base_name):
         # If thin provisioning is used we have a path like this:
         # `VG/LV`. "/" is not accepted by LINSTOR.
         return '{}{}'.format(cls.PREFIX_SR, base_name.replace('/', '_'))
