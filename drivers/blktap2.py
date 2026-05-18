@@ -55,7 +55,7 @@ from xmlrpc.client import ServerProxy, Transport
 from socket import socket, AF_UNIX, SOCK_STREAM
 
 try:
-    from linstorvolumemanager import log_drbd_openers
+    from linstorvolumemanager import get_controller_uri, get_all_volume_openers, LinstorVolumeManager
     LINSTOR_AVAILABLE = True
 except ImportError:
     LINSTOR_AVAILABLE = False
@@ -424,6 +424,8 @@ class TapCtl(object):
             args += ["-a", str(params)]
         if cbtlog:
             args.extend(["-c", cbtlog])
+
+        # TODO: Handle issue.
         cls._pread(args)
 
     @classmethod
@@ -820,6 +822,42 @@ class Tapdisk(object):
         except util.CommandException as e:
             util.logException(e)
 
+    @staticmethod
+    def abort_linstor_gc(drbd_path: str) -> bool:
+        if not LINSTOR_AVAILABLE or not drbd_path.startswith("/dev/drbd/by-res/xcp-volume-"):
+            return False
+
+        _, volume_name, _ = drbd_path.rsplit("/", 2)
+        group_name = LinstorVolumeManager.get_volume_group_name(volume_name)
+
+        openers = get_all_volume_openers(volume_name, "0")
+
+        session = XenAPI.xapi_local()
+        session.xenapi.login_with_password("root", "", "", "SM")
+        try:
+            srs = util.get_linstor_srs(session)
+            pbd_uuid = util.find_pbd_uuid_from_dconf_value(
+                session, srs, "group-name", group_name, LinstorVolumeManager.build_group_name
+            )
+            if pbd_uuid:
+                pbd_ref = session.xenapi.PBD.get_by_uuid(pbd_uuid)
+                pbd_rec = session.xenapi.PBD.get_record(pbd_ref)
+
+                sr_ref = pbd_rec["SR"]
+                sr_uuid = session.xenapi.SR.get_uuid(sr_ref)
+
+                import cleanup # pylint: disable=C0415
+                if cleanup.LinstorSR.abort_gc_from_openers_sr(sr_uuid, openers):
+                    return True
+            else:
+                util.SMlog(f"Unable to find PBD of LINSTOR group `{group_name}`...")
+
+            util.SMlog(f"Unable to run tapdisk, openers of DRBD resource `{drbd_path}`: {openers}")
+        finally:
+            session.xenapi.session.logout()
+
+        return False
+
     @classmethod
     def launch_on_tap(cls, blktap, path, _type, options):
 
@@ -844,13 +882,13 @@ class Tapdisk(object):
                             err = (
                                 'status' in e.info and e.info['status']
                             ) or None
-                            if err in (errno.EIO, errno.EROFS, errno.EAGAIN):
-                                if retry_open < 5:
-                                    retry_open += 1
-                                    time.sleep(1)
-                                    continue
-                                if LINSTOR_AVAILABLE and err == errno.EROFS:
-                                    log_drbd_openers(path)
+                            if err in (errno.EROFS, errno.EMEDIUMTYPE) and cls.abort_linstor_gc(path):
+                                continue
+
+                            if err in (errno.EIO, errno.EAGAIN, errno.EROFS, errno.EMEDIUMTYPE) and retry_open < 5:
+                                retry_open += 1
+                                time.sleep(1)
+                                continue
                             raise
                     try:
                         tapdisk = cls.__from_blktap(blktap)

@@ -1,6 +1,8 @@
 import typing
 from typing import *
 
+from typing import IO
+
 if not hasattr(typing, 'override'):
     def override(method): # type: ignore
         try:

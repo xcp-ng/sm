@@ -390,6 +390,19 @@ def destroy(session, args):
     return str(False)
 
 
+def abort_gc(session, args):
+    try:
+        sr_uuid = args['srUuid']
+
+        import cleanup
+        cleanup.abort(sr_uuid)
+
+        return str(True)
+    except Exception as e:
+        util.SMlog('linstor-manager:abort_gc error: {}'.format(e))
+    return str(False)
+
+
 def check(session, args):
     try:
         device_path = args['devicePath']
@@ -1236,6 +1249,7 @@ if __name__ == '__main__':
         'attach': attach,
         'detach': detach,
         'destroy': destroy,
+        'abortGc': abort_gc,
 
         # vhdutil wrappers called by linstorvhdutil.
         # Note: When a VHD is open in RO mode (so for all vhdutil getters),

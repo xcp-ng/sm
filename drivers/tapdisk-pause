@@ -168,7 +168,14 @@ class Tapdisk:
                 group_name,
                 logger=util.SMlog
             )
-            device_path = LinstorVhdUtil(session, linstor).create_chain_paths(self.vdi_uuid)
+
+            import cleanup
+            chain = LinstorVhdUtil(session, linstor).create_chain_paths(
+                self.vdi_uuid, False, cleanup.LinstorSR.abort_gc_from_openers_vdi
+            )
+
+            device_path = chain.leaf_path
+            chain.close()
 
             if realpath != device_path:
                 util.SMlog(
