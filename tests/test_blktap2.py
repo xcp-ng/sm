@@ -111,6 +111,39 @@ class TestTapdisk(unittest.TestCase):
 
         self.assertEqual(456, srose.exception.errno)
 
+    @mock.patch('blktap2.os.path.exists', autospec=True)
+    @mock.patch("blktap2.util.pread2", autospec=True)
+    def test_from_minor_success(self, mock_pread2, mock_exists):
+        # Arrange
+        mock_paths = {"/dev/xen/blktap-2/blktap3"}
+
+        def exists(path):
+            print(f"Checking if {path} in {mock_paths}")
+            return path in mock_paths
+
+        mock_exists.side_effect = exists
+
+        mock_pread2.side_effect = ['21457']
+
+        blktap2.TapCtl = self.real_tapctl
+        mock_process = mock.MagicMock(autospec='subprocess.Popen')
+        stdout = \
+            "pid=21457 minor=3 state=0 args=vhd:/dev/VG_XenStorage-2eeb9fd5-6545-8f0b-cf72-0378e413a31c/VHD-a7c0f37e-b7fb-4a44-a6fe-05067fb84c09"
+        mock_process.communicate.return_value = (stdout, "")
+        mock_process.returncode = 0
+        self.mock_subprocess.Popen.return_value = mock_process
+
+        # Act
+        tapdisk = blktap2.Tapdisk.from_minor(3)
+
+        # Assert
+        self.assertIsNotNone(tapdisk)
+        self.assertEqual(21457, tapdisk.pid)
+        self.assertEqual(3, tapdisk.minor)
+        self.assertEqual(
+            "/dev/VG_XenStorage-2eeb9fd5-6545-8f0b-cf72-0378e413a31c/VHD-a7c0f37e-b7fb-4a44-a6fe-05067fb84c09",
+            tapdisk.path)
+
 
 class TestVDI(unittest.TestCase):
     def setUp(self):

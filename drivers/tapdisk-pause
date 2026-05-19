@@ -141,9 +141,8 @@ class Tapdisk:
         if self.major != blktap2.Tapdisk.major():
             util.SMlog("Non-tap major number: %d" % self.major)
             return str(False)
-        tapargs = {"minor":self.minor}
         util.SMlog("Calling tap pause with minor %d" % self.minor)
-        tapdisk = blktap2.Tapdisk.get(**tapargs)
+        tapdisk = blktap2.Tapdisk.from_minor(self.minor)
         tapdisk.pause()
         return str(True)
 

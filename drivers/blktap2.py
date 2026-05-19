@@ -720,8 +720,17 @@ class Tapdisk(object):
         return cls.get(path=path)
 
     @classmethod
+    def get_pid_for_path(cls, path: str) -> str:
+        return util.pread2(['/usr/sbin/lsof', '-t', path]).strip()
+
+    @classmethod
     def from_minor(cls, minor):
-        return cls.get(minor=minor)
+        pid = None
+        dev_path = os.path.join(Blktap.DEV_BASEDIR, f"blktap{minor}")
+        if os.path.exists(dev_path):
+            pid = cls.get_pid_for_path(dev_path)
+
+        return cls.get(minor=minor, pid=pid)
 
     @classmethod
     def __from_blktap(cls, blktap):
