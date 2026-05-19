@@ -18,6 +18,8 @@
 # SR: Base class for storage repositories
 #
 
+from sm_typing import List
+
 import VDI
 import xml.dom.minidom
 import xs_errors
@@ -48,7 +50,7 @@ def deviceCheck(op):
     return wrapper
 
 
-backends = []
+backends: List["SR"] = []
 
 
 def registerSR(SRClass):
