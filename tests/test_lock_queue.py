@@ -1,4 +1,4 @@
-from sm_typing import override
+from sm_typing import Any, List, override
 
 import builtins
 import copy
@@ -12,7 +12,7 @@ import lock_queue
 
 ## Instead of saving the process queue to disk the mocks will save it here.
 ## It needs to be global because it is shared between threads.
-saved_queue = []
+saved_queue: List[Any] = []
 
 def mock_pickle_dump_fn(*args):
    global saved_queue
