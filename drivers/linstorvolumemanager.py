@@ -35,6 +35,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 import contextlib
+import zipfile
 
 # Persistent prefix to add to RAW persistent volumes.
 PERSISTENT_PREFIX = 'xcp-persistent-'
@@ -1777,13 +1778,20 @@ class LinstorVolumeManager(object):
         # Create new backup with link to latest
         filename = DATABASE_BACKUP_NAME_FORMAT.format(now.strftime(DATABASE_BACKUP_DATE_FORMAT), name)
         self._linstor.controller_backupdb(filename)
+        filepath = (DATABASE_BACKUP_DIR_MAIN / filename).with_suffix(".zip")
+        # backup file validation
+        try:
+            self._check_database_backup(filepath)
+        except (zipfile.BadZipFile, ValueError) as error:
+            util.SMlog("[database_backup] Check failed: {} | {}".format(error, filepath))
+            with contextlib.suppress(OSError):
+                os.unlink(filepath)
+            return
         # Copy to secondary backup location
         with contextlib.suppress(OSError):
             os.makedirs(DATABASE_BACKUP_DIR_SPARE, mode=0o755, exist_ok=True)
-            shutil.copy2(
-                (DATABASE_BACKUP_DIR_MAIN / filename).with_suffix(".zip"),
-                DATABASE_BACKUP_DIR_SPARE,
-            )
+            shutil.copy2(filepath, DATABASE_BACKUP_DIR_SPARE)
+        # Generate latest link, and apply retention on both location
         for directory in (DATABASE_BACKUP_DIR_MAIN, DATABASE_BACKUP_DIR_SPARE):
             # Remove and set latest
             with contextlib.suppress(OSError):
@@ -2668,6 +2676,20 @@ class LinstorVolumeManager(object):
         return max(self._list_database_backup(DATABASE_BACKUP_DIR_MAIN, name),
                    default=(None, None),
                    key=lambda p: p[0].stat().st_mtime)
+
+    def _check_database_backup(self, filepath):
+        try:
+            with zipfile.ZipFile(filepath, mode="r") as archive:
+                if archive.testzip() is not None:
+                    raise ValueError("zip archive CRC failed")
+                linstordb = [f for f in archive.filelist if f.filename == "linstordb.mv.db"]
+                if not linstordb:
+                    raise ValueError("cannot find linstordb.mv.db")
+                linstordb = linstordb[0]
+                if linstordb.file_size == 0:
+                    raise ValueError("linstordb.mv.db is empty")
+        except FileNotFoundError:
+            raise ValueError("no file")
 
     @classmethod
     def _build_sr_namespace(cls):
