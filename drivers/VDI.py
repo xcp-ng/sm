@@ -279,6 +279,7 @@ class VDI(object):
             cbtlog = None
 
         dest.sm_config = dest.session.xenapi.VDI.get_sm_config(dest.session.xenapi.VDI.get_by_uuid(dest.uuid))
+        self.sm_config = dest.session.xenapi.VDI.get_sm_config(dest.session.xenapi.VDI.get_by_uuid(dest.uuid))
 
         self._do_revert(dest, cbtlog=cbtlog)
 
