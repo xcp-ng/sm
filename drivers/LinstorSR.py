@@ -2585,7 +2585,7 @@ class LinstorVDI(VDI.VDI):
                 # Use a timeout call because XAPI may be unusable on startup
                 # or if the host has been ejected. So in this case the call can
                 # block indefinitely.
-                session = util.timeout_call(5, util.get_localAPI_session)
+                session = util.timeout(5, util.get_localAPI_session)
                 host_ip = util.get_this_host_address(session)
             except:
                 # Fallback using the XHA file if session not available.
@@ -2628,7 +2628,7 @@ class LinstorVDI(VDI.VDI):
                         return True
                 return False
             try:
-                if not util.timeout_call(10, is_ready):
+                if not util.timeout(10, is_ready):
                     raise Exception('Failed to wait HTTP server startup, bad output')
             except util.TimeoutException:
                 raise Exception('Failed to wait for HTTP server startup during given delay')
@@ -2669,7 +2669,7 @@ class LinstorVDI(VDI.VDI):
                 device_size = 256 * 1024 * 1024
 
             try:
-                session = util.timeout_call(5, util.get_localAPI_session)
+                session = util.timeout(5, util.get_localAPI_session)
                 ips = util.get_host_addresses(session)
             except Exception as e:
                 _, ips = get_ips_from_xha_config_file()
@@ -2715,7 +2715,7 @@ class LinstorVDI(VDI.VDI):
                         return match.group(1)
             # Use a timeout to never block the smapi if there is a problem.
             try:
-                nbd_path = util.timeout_call(10, get_nbd_path)
+                nbd_path = util.timeout(10, get_nbd_path)
                 if nbd_path is None:
                     raise Exception('Empty NBD path (NBD server is probably dead)')
             except util.TimeoutException:
