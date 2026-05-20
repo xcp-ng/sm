@@ -16,7 +16,7 @@
 # Miscellaneous utility functions
 #
 
-from sm_typing import List
+from sm_typing import Any, List, Optional, override
 
 import contextlib
 import os
@@ -27,6 +27,7 @@ import shutil
 import tempfile
 import signal
 import time
+import types
 import datetime
 import errno
 import functools
@@ -72,6 +73,55 @@ CMD_KICKPIPE = '/opt/xensource/libexec/kickpipe'
 
 FIST_PAUSE_PERIOD = 30  # seconds
 
+class _TimeoutContextManager(contextlib.AbstractContextManager):
+    def __init__(self, delay: int) -> None:
+        self.delay = delay
+        self.old_handler: Any = None
+
+    @override
+    def __enter__(self) -> "_TimeoutContextManager":
+        def handle_timeout(_signum: int, _frame: Optional[types.FrameType]) -> None:
+            raise TimeoutError(f"Timed out after {self.delay} seconds")
+        self.old_handler = signal.signal(signal.SIGALRM, handle_timeout)
+        signal.alarm(self.delay)
+        return self
+
+    @override
+    def __exit__(
+        self,
+        exc_type: Optional[Any],
+        exc_val: Optional[BaseException],
+        exc_tb: Optional[types.TracebackType]
+    ):
+        signal.alarm(0)
+        if self.old_handler is not None:
+            signal.signal(signal.SIGALRM, self.old_handler)
+            self.old_handler = None
+        return False
+
+    def __call__(self, func):
+        def wrapper(*args, **kwargs):
+            with self:
+                return func(*args, **kwargs)
+        return wrapper
+
+def timeout(*args, **kwargs):
+    if len(args) >= 2 and callable(args[1]):
+        delay, func = args[0], args[1]
+        remaining_args = args[2:]
+        with _TimeoutContextManager(delay):
+            return func(*remaining_args, **kwargs)
+
+    if len(args) == 1 and callable(args[0]):
+        raise TypeError("timeout() missing 1 required argument: 'delay'")
+
+    if args:
+        delay = args[0]
+    elif "delay" in kwargs:
+        delay = kwargs["delay"]
+    else:
+        raise TypeError("timeout() missing 1 required argument: 'delay'")
+    return _TimeoutContextManager(delay)
 
 class SMException(Exception):
     """Base class for all SM exceptions for easier catching & wrapping in
@@ -413,17 +463,6 @@ def ioretry_stat(path, maxretry=IORETRY_MAX):
         retries += 1
     raise CommandException(errno.EIO, "os.statvfs")
 
-@contextlib.contextmanager
-def timeout(seconds: int):
-    def handle_timeout(_signum, _frame):
-        raise TimeoutError("Timed out after %d seconds" % seconds)
-
-    signal.signal(signal.SIGALRM, handle_timeout)
-    signal.alarm(seconds)
-    try:
-        yield
-    finally:
-        signal.alarm(0)
 
 def sr_get_capability(sr_uuid, session=None):
     result = []
@@ -966,17 +1005,6 @@ def test_SCSIid(session, sr_uuid, SCSIid):
 
 class TimeoutException(SMException):
     pass
-
-
-def timeout_call(timeoutseconds, function, *arguments):
-    def handler(signum, frame):
-        raise TimeoutException()
-    signal.signal(signal.SIGALRM, handler)
-    signal.alarm(timeoutseconds)
-    try:
-        return function(*arguments)
-    finally:
-        signal.alarm(0)
 
 
 def _incr_iscsiSR_refcount(targetIQN, uuid):
