@@ -40,7 +40,7 @@ from journaler import Journaler
 from refcounter import RefCounter
 from ipc import IPCFlag
 from constants import NS_PREFIX_LVM, VG_LOCATION, VG_PREFIX
-from cowutil import CowUtil, getCowUtil, getImageStringFromVdiType, getVdiTypeFromImageFormat
+from cowutil import CowUtil, getCowUtil, getImageStringFromVdiType
 from lvmcowutil import LV_PREFIX, LvmCowUtil
 from lvmanager import LVActivator
 from vditype import VdiType
@@ -78,12 +78,6 @@ DRIVER_INFO = {
     'capabilities': CAPABILITIES,
     'configuration': CONFIGURATION
     }
-
-CREATE_PARAM_TYPES = {
-    "raw": VdiType.RAW,
-    "vhd": VdiType.VHD,
-    "qcow2": VdiType.QCOW2
-}
 
 OPS_EXCLUSIVE = [
         "sr_create", "sr_delete", "sr_attach", "sr_detach", "sr_scan",
@@ -157,7 +151,7 @@ class LVMSR(SR.SR):
 
     def __init__(self, srcmd, sr_uuid):
         SR.SR.__init__(self, srcmd, sr_uuid)
-        self._init_preferred_image_formats()
+        self._init_image_formats()
 
     @override
     def load(self, sr_uuid) -> None:
@@ -1364,22 +1358,21 @@ class LVMVDI(VDI.VDI):
         if self._determineType():
             return
 
+        image_format = None
+
         # the VDI must be in the process of being created
         self.exists = False
 
         vdi_sm_config = self.sr.srcmd.params.get("vdi_sm_config")
         if vdi_sm_config:
-            image_format = vdi_sm_config.get("image-format") or vdi_sm_config.get("type")
-            if image_format:
-                try:
-                    self._setType(CREATE_PARAM_TYPES[image_format])
-                except:
-                    raise xs_errors.XenError('VDICreate', opterr='bad image format')
-                if self.sr.legacyMode and self.sr.cmd == 'vdi_create' and VdiType.isCowImage(self.vdi_type):
-                    raise xs_errors.XenError('VDICreate', opterr='Cannot create COW type disk in legacy mode')
+            image_format = self.sr.read_config_image_format(vdi_sm_config)
 
-        if not self.vdi_type:
-            self._setType(getVdiTypeFromImageFormat(self.sr.preferred_image_formats[0]))
+        if not image_format:
+            image_format = self.sr.preferred_image_formats[0]
+        self._setType(self.sr._resolve_vdi_type_from_image_format(image_format))
+
+        if self.sr.legacyMode and self.sr.cmd == 'vdi_create' and VdiType.isCowImage(self.vdi_type):
+            raise xs_errors.XenError('VDICreate', opterr='Cannot create COW type disk in legacy mode')
 
         self.lvname = "%s%s" % (LV_PREFIX[self.vdi_type], vdi_uuid)
         self.path = os.path.join(self.sr.path, self.lvname)
