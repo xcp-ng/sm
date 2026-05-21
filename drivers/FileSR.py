@@ -33,7 +33,7 @@ import blktap2
 import time
 import glob
 from uuid import uuid4
-from cowutil import getCowUtil, getImageStringFromVdiType, getVdiTypeFromImageFormat
+from cowutil import getCowUtil, getImageStringFromVdiType
 from vditype import VdiType, VdiTypeExtension, VDI_COW_TYPES, VDI_TYPE_TO_EXTENSION
 import xmlrpc.client
 import XenAPI # pylint: disable=import-error
@@ -95,7 +95,7 @@ class FileSR(SR.SR):
         # "super" sometimes failed due to circular imports
         SR.SR.__init__(self, srcmd, sr_uuid)
         self.image_info = {}
-        self._init_preferred_image_formats()
+        self._init_image_formats()
         self._check_o_direct()
 
     @override
@@ -440,11 +440,6 @@ class FileVDI(VDI.VDI):
     PARAM_RAW = "raw"
     PARAM_VHD = "vhd"
     PARAM_QCOW2 = "qcow2"
-    VDI_TYPE = {
-            PARAM_RAW: VdiType.RAW,
-            PARAM_VHD: VdiType.VHD,
-            PARAM_QCOW2: VdiType.QCOW2
-    }
 
     def _find_path_with_retries(self, vdi_uuid, maxretry=5, period=2.0):
         raw_path = os.path.join(self.sr.path, "%s.%s" % \
@@ -496,22 +491,18 @@ class FileVDI(VDI.VDI):
         self.sr.srcmd.params['o_direct'] = self.sr.o_direct
 
         if self.sr.srcmd.cmd == "vdi_create":
+            image_format = None
             self.key_hash = None
 
             vdi_sm_config = self.sr.srcmd.params.get("vdi_sm_config")
             if vdi_sm_config:
+                image_format = self.sr.read_config_image_format(vdi_sm_config)
                 self.key_hash = vdi_sm_config.get("key_hash")
 
-                image_format = vdi_sm_config.get("image-format") or vdi_sm_config.get("type")
-                if image_format:
-                    vdi_type = self.VDI_TYPE.get(image_format)
-                    if not vdi_type:
-                        raise xs_errors.XenError('VDIType',
-                                opterr='Invalid VDI type %s' % vdi_type)
-                    self.vdi_type = vdi_type
+            if not image_format:
+                image_format = self.sr.preferred_image_formats[0]
+            self.vdi_type = self.sr._resolve_vdi_type_from_image_format(image_format)
 
-            if not self.vdi_type:
-                self.vdi_type = getVdiTypeFromImageFormat(self.sr.preferred_image_formats[0])
             self.cowutil = getCowUtil(self.vdi_type)
             self.path = os.path.join(self.sr.path, "%s%s" %
                 (vdi_uuid, VDI_TYPE_TO_EXTENSION[self.vdi_type]))
