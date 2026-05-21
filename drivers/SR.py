@@ -18,7 +18,7 @@
 # SR: Base class for storage repositories
 #
 
-from sm_typing import List
+from sm_typing import Dict, List, Optional
 
 import VDI
 import xml.dom.minidom
@@ -30,8 +30,15 @@ import copy
 import os
 import traceback
 
-from cowutil import \
-    ImageFormat, getCowUtilFromImageFormat, getImageStringFromVdiType, getVdiTypeFromImageFormat, parseImageFormats
+from cowutil import (
+    getCowUtilFromImageFormat,
+    getImageStringFromVdiType,
+    getVdiTypeFromImageFormat,
+    ImageFormat,
+    parseImageFormats,
+    STR_TO_IMAGE_FORMAT
+)
+
 from vditype import VdiType
 
 MOUNT_BASE = '/var/run/sr-mount'
@@ -41,7 +48,8 @@ MASTER_LVM_CONF = '/etc/lvm/master'
 # LUN per VDI key for XenCenter
 LUNPERVDI = "LUNperVDI"
 
-DEFAULT_IMAGE_FORMATS = [ImageFormat.VHD, ImageFormat.QCOW2]
+DEFAULT_PREFERRED_IMAGE_FORMATS = [ImageFormat.VHD, ImageFormat.QCOW2]
+DEFAULT_SUPPORTED_IMAGE_FORMATS = [ImageFormat.RAW, ImageFormat.VHD, ImageFormat.QCOW2]
 
 
 
@@ -523,11 +531,35 @@ class SR(object):
 
         return missing_keys
 
-    def _init_preferred_image_formats(self, default_image_formats=None) -> None:
+    @staticmethod
+    def read_config_image_format(config: Dict[str, str]) -> Optional[ImageFormat]:
+        str_image_format = config.get("image-format") or config.get("type")
+        if not str_image_format:
+            return None
+
+        image_format = STR_TO_IMAGE_FORMAT.get(str_image_format)
+        if image_format:
+            return image_format
+
+        raise xs_errors.XenError('VDIType', opterr=f'Unknown image format `{str_image_format}`')
+
+    def _init_image_formats(
+        self,
+        *,
+        preferred_image_formats = DEFAULT_PREFERRED_IMAGE_FORMATS,
+        supported_image_formats = DEFAULT_SUPPORTED_IMAGE_FORMATS
+    ) -> None:
         self.preferred_image_formats = parseImageFormats(
             self.dconf and self.dconf.get('preferred-image-formats'),
-            default_image_formats or DEFAULT_IMAGE_FORMATS
+            preferred_image_formats,
+            supported_image_formats
         )
+        self.supported_image_formats = supported_image_formats
+
+    def _resolve_vdi_type_from_image_format(self, image_format: ImageFormat) -> str:
+        if image_format in self.supported_image_formats:
+            return getVdiTypeFromImageFormat(image_format)
+        raise xs_errors.XenError('VDIType', opterr=f'Unsupported image format `{image_format}`')
 
     def _get_snap_vdi_type(self, vdi_type: str, size: int) -> str:
         if VdiType.isCowImage(vdi_type):
