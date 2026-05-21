@@ -45,16 +45,20 @@ STR_TO_IMAGE_FORMAT: Final = {v: k for k, v in IMAGE_FORMAT_TO_STR.items()}
 
 # ------------------------------------------------------------------------------
 
-def parseImageFormats(str_formats: Optional[str], default_formats: List[ImageFormat]) -> List[ImageFormat]:
+def parseImageFormats(
+    str_formats: Optional[str],
+    default_formats: List[ImageFormat],
+    supported_formats: List[ImageFormat]
+) -> List[ImageFormat]:
+    default_formats = [f for f in default_formats if f in supported_formats]
+
     if not str_formats:
         return default_formats
 
-    entries = [entry.strip() for entry in str_formats.split(",")]
-
     image_formats: List[ImageFormat] = []
-    for entry in entries:
-        image_format = STR_TO_IMAGE_FORMAT.get(entry)
-        if image_format and image_format not in image_formats:
+    for entry in str_formats.split(","):
+        image_format = STR_TO_IMAGE_FORMAT.get(entry.strip())
+        if image_format in supported_formats and image_format not in image_formats:
             image_formats.append(image_format)
 
     if image_formats:
