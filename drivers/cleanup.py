@@ -670,7 +670,8 @@ class VDI(object):
                 self.parent and \
                 len(self.parent.children) == 1 and \
                 self.isHidden() and \
-                len(self.children) > 0
+                len(self.children) > 0 and \
+                len(self.sr.hasLeavesAttachedOn(self)) <= 1
 
     def isLeafCoalesceable(self):
         """A VDI is leaf-coalesceable if it has no siblings and is a leaf"""
@@ -2521,7 +2522,7 @@ class SR(object):
     def cleanupCache(self, maxAge=-1) -> int:
         return 0
 
-    def _hasLeavesAttachedOn(self, vdi: VDI):
+    def hasLeavesAttachedOn(self, vdi: VDI):
         leaves = vdi.getAllLeaves()
         leaves_vdi = [leaf.uuid for leaf in leaves]
         return util.get_hosts_attached_on_with_vdi_uuid(self.xapi.session, leaves_vdi)
@@ -2559,12 +2560,7 @@ class SR(object):
             self._create_running_file(vdi)
 
             self.journaler.create(vdi.JRN_COALESCE, vdi.uuid, "1")
-            host_refs = self._hasLeavesAttachedOn(vdi)
-            #TODO: this check of multiple host_refs should be done earlier in `is_coalesceable` to avoid stopping this late every time
-            if len(host_refs) > 1:
-                Util.log("Not coalesceable, chain activated more than once")
-                raise Exception("Not coalesceable, chain activated more than once") #TODO: Use correct error
-
+            host_refs = self.hasLeavesAttachedOn(vdi)
             try:
                 if host_refs and vdi.cowutil.isCoalesceableOnRemote():
                     #Leaf opened on another host, we need to call online coalesce
@@ -2903,7 +2899,7 @@ class SR(object):
         self._prepareCoalesceLeaf(vdi)
         vdi.parent._setHidden(False)
         vdi.parent._increaseSizeVirt(vdi.sizeVirt, False)
-        host_refs = self._hasLeavesAttachedOn(vdi) if coalesce_on_remote else None
+        host_refs = self.hasLeavesAttachedOn(vdi) if coalesce_on_remote else None
         if host_refs:
             util.fistpoint.activate("LVHDRT_coaleaf_before_coalesce", self.uuid)
             _, host_ref = next(iter(host_refs.items()))
