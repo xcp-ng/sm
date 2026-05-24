@@ -47,7 +47,8 @@ import resource
 import traceback
 import glob
 import copy
-import tempfile
+import contextlib
+from sm_typing import override
 
 from functools import reduce
 from sm_typing import List, Optional
@@ -769,11 +770,11 @@ def getrootdevID():
     return rootdevID
 
 
-class APISession:
+class APISession(contextlib.AbstractContextManager):
     def __init__(self, originator="SM"):
         self.originator = originator
         self.session = self.login()
-        SMlog("APISession [{}] login".format(self.originator))
+        SMlog("APISession [{}] login".format(self.originator), priority=LOG_DEBUG)
         atexit.register(self.atexit)
 
     def login(self):
@@ -783,17 +784,17 @@ class APISession:
             session.xenapi.login_with_password('root', '', '', self.originator)
         except Exception as exc:
             msg = f"APISession [{self.originator}] Unable to open local XAPI session"
-            SMlog(msg)
+            SMlog(msg, priority=LOG_ERR)
             raise xs_errors.XenError(msg) from exc
         return session
 
     def _logout(self, log):
         """Closes an API session"""
         if self.session is None:
-            SMlog("APISession [{}] session is None {}".format(self.originator, log))
+            SMlog("APISession [{}] session is None {}".format(self.originator, log), priority=LOG_DEBUG)
             return
         self.session.xenapi.session.logout()
-        SMlog("APISession [{}] {}".format(self.originator, log))
+        SMlog("APISession [{}] {}".format(self.originator, log), priority=LOG_DEBUG)
         self.session = None
 
     def logout(self, log="logout"):
@@ -807,9 +808,13 @@ class APISession:
     def atexit(self):
         self._logout(log="logout atexit")
 
+    @override
     def __enter__(self):
+        if not self.session:
+            raise SyntaxError("Session is already closed: wrong usage of context.")
         return self.session
 
+    @override
     def __exit__(self, _type, _value, _traceback):
         self.logout(log=f"logout exception[{_type}] {_value}" if _type else "logout context")
 
