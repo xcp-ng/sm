@@ -250,6 +250,9 @@ class LinstorVolumeManagerError(Exception):
         return self._code
 
 
+class LinstorDatabaseBackupError(Exception):
+    pass
+
 # ==============================================================================
 
 # Note:
@@ -1782,8 +1785,9 @@ class LinstorVolumeManager(object):
         # backup file validation
         try:
             self._check_database_backup(filepath)
-        except (zipfile.BadZipFile, ValueError) as error:
-            util.SMlog("[database_backup] Check failed: {} | {}".format(error, filepath))
+        except LinstorDatabaseBackupError as error:
+            util.SMlog("[database_backup] Check failed: `{}` [{}]".format(error, filepath),
+                       priority=util.LOG_ERR)
             with contextlib.suppress(OSError):
                 os.unlink(filepath)
             return
@@ -2681,15 +2685,17 @@ class LinstorVolumeManager(object):
         try:
             with zipfile.ZipFile(filepath, mode="r") as archive:
                 if archive.testzip() is not None:
-                    raise ValueError("zip archive CRC failed")
+                    raise LinstorDatabaseBackupError("zip archive CRC failed")
                 linstordb = [f for f in archive.filelist if f.filename == "linstordb.mv.db"]
                 if not linstordb:
-                    raise ValueError("cannot find linstordb.mv.db")
+                    raise LinstorDatabaseBackupError("cannot find linstordb.mv.db")
                 linstordb = linstordb[0]
                 if linstordb.file_size == 0:
-                    raise ValueError("linstordb.mv.db is empty")
-        except FileNotFoundError:
-            raise ValueError("no file")
+                    raise LinstorDatabaseBackupError("linstordb.mv.db is empty")
+        except LinstorDatabaseBackupError:
+            raise
+        except Exception as e:
+            raise LinstorDatabaseBackupError(e) from e
 
     @classmethod
     def _build_sr_namespace(cls):
