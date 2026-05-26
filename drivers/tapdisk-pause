@@ -28,9 +28,11 @@ import XenAPI
 import lvhdutil
 import vhdutil
 import lvmcache
+import VDI
 
 TAPDEV_BACKPATH_PFX = "/dev/sm/backend"
 TAPDEV_PHYPATH_PFX = "/dev/sm/phy"
+
 
 def locking(excType, override=True):
     def locking2(op):
@@ -130,7 +132,12 @@ class Tapdisk:
                     self.realpath = p
                     if ty == "LV": self.vdi_type = "aio"
                     else: self.vdi_type = "vhd"
-        
+
+    def _is_snap_paused(self):
+        vdi_ref = self.session.xenapi.VDI.get_by_uuid(self.vdi_uuid)
+        sm_config = self.session.xenapi.VDI.get_sm_config(vdi_ref)
+        return 'paused' in sm_config
+
     @locking("VDIUnavailable")
     def Pause(self):
         util.SMlog("Pause for %s" % self.vdi_uuid)
@@ -143,6 +150,10 @@ class Tapdisk:
             return str(False)
         util.SMlog("Calling tap pause with minor %d" % self.minor)
         tapdisk = blktap2.Tapdisk.from_minor(self.minor)
+        if tapdisk.is_paused() and not self._is_snap_paused():
+            # If we're already paused and not in a snapshot, return
+            return str(True)
+        
         tapdisk.pause()
         return str(True)
 
@@ -170,7 +181,6 @@ class Tapdisk:
                     continue
                 lvm_cache.activate(ns, uuid, lv_name, False)
 
-        import VDI
         vdi = VDI.VDI.from_uuid(self.session, self.vdi_uuid)
         # Check if CBT is enabled on disk we are about to unpause
         if vdi._get_blocktracking_status():
@@ -182,9 +192,8 @@ class Tapdisk:
         else:
             self.cbtlog = None
 
-        tapargs = {"minor":self.minor}
         util.SMlog("Calling tap unpause with minor %d" % self.minor)
-        tapdisk = blktap2.Tapdisk.get(**tapargs)
+        tapdisk = blktap2.Tapdisk.from_minor(self.minor)
         tapdisk.unpause(self.vdi_type, self.realpath, self.secondary, self.cbtlog)
         return str(True)
 
