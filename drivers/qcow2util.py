@@ -30,8 +30,6 @@ import util
 import xs_errors
 from blktap2 import TapCtl
 from cowutil import CowUtil, CowImageInfo
-from lvmcache import LVMCache
-from constants import NS_PREFIX_LVM, VG_PREFIX
 
 # ------------------------------------------------------------------------------
 
@@ -501,28 +499,8 @@ class QCowUtil(CowUtil):
     def getInfoFromLVM(
         self, lvName: str, extractUuidFunction: Callable[[str], str], vgName: str
     ) -> Optional[CowImageInfo]:
-        lvcache = LVMCache(vgName)
-        return self._getInfoLV(lvcache, extractUuidFunction, vgName, lvName)
-
-    def _getInfoLV(
-        self, lvcache: LVMCache, extractUuidFunction: Callable[[str], str], vgName: str, lvName: str
-    ) -> Optional[CowImageInfo]:
-        lvPath = "/dev/{}/{}".format(vgName, lvName)
-        lvcache.refresh()
-        if lvName not in lvcache.lvs:
-            util.SMlog("{} does not exist anymore".format(lvName))
-            return None
-
-        vdiUuid = extractUuidFunction(lvPath)
-        srUuid = vgName.replace(VG_PREFIX, "")
-
-        ns = NS_PREFIX_LVM + srUuid
-        lvcache.activate(ns, vdiUuid, lvName, False)
-        try:
-            cowinfo = self.getInfo(lvPath, extractUuidFunction)
-        finally:
-            lvcache.deactivate(ns, vdiUuid, lvName, False)
-        return cowinfo
+        ret = cast(str, self._ioretry([QCOW2_HELPER, "scan", "-l", vgName, "-m", lvName]))
+        return self._parseQCOW2Info(ret, extractUuidFunction)
 
     @override
     def getAllInfoFromVG(
@@ -533,45 +511,53 @@ class QCowUtil(CowUtil):
         parents: bool = False,
         exitOnError: bool = False
     ) -> Dict[str, CowImageInfo]:
+        if vgName:
+            return self._getAllInfoFromLVM(pattern, extractUuidFunction, vgName, parents, exitOnError)
+        else:
+            return self._getAllInfoFromPath(pattern, extractUuidFunction, exitOnError)
+
+    def _getAllInfoFromLVM(
+        self,
+        pattern: str,
+        extractUuidFunction: Callable[[str], str],
+        vgName: str,
+        parents: bool = False,
+        exitOnError: bool = False
+    ) -> Dict[str, CowImageInfo]:
+        result: Dict[str, CowImageInfo] = dict()
+        cmd = [QCOW2_HELPER, "scan", "-l", vgName, "-m", pattern]
+        if parents:
+            cmd.append("-a")
+        ret = cast(str, self._ioretry(cmd))
+        
+        for line in ret.split("\n"):
+            if not line.strip():
+                continue
+            info = self._parseQCOW2Info(line, extractUuidFunction)
+            if info:
+                if info.error != 0 and exitOnError:
+                    #TODO: this is a workaround in vhdutil, don't know why
+                    return dict()
+                result[info.uuid] = info
+            else:
+                util.SMlog(f"WARN: QCOW2 info line doesn't parse correctly: {line}")
+        return result
+
+    def _getAllInfoFromPath(
+        self,
+        pattern: str,
+        extractUuidFunction: Callable[[str], str],
+        exitOnError: bool = False
+    ) -> Dict[str, CowImageInfo]:
         result: Dict[str, CowImageInfo] = dict()
         #TODO: handle exitOnError
-        if vgName:
-            reg = re.compile(pattern)
-            lvcache = LVMCache(vgName)
-            lvcache.refresh()
-            # We get size in lvcache.lvs[lvName].size (in bytes)
-            # We could read the header from the PV directly
-            lvList = list(lvcache.lvs.keys())
-            for lvName in lvList:
-                # lvinfo = lvcache.lvs[lvName]
-                if reg.match(lvName):
-                    cowinfo = self._getInfoLV(lvcache, extractUuidFunction, vgName, lvName)
-                    if cowinfo is None: #We get None if the LV stopped existing in the meanwhile
-                        continue
-                    cowinfo.path = lvName # Function CowUtil.getParentChain expect lvName here, otherwise blktap.{_activate,_deactivate} crashes
-                    result[cowinfo.uuid] = cowinfo
-                    if parents:
-                        parentUuid = cowinfo.parentUuid
-                        parentPath = cowinfo.parentPath
-                        while parentUuid != "":
-                            parentLvName = parentPath.split("/")[-1]
-                            parent_cowinfo = self._getInfoLV(lvcache, extractUuidFunction, vgName, parentLvName)
-                            if parent_cowinfo is None: #Parent disappeared while scanning
-                                raise util.SMException("Parent of {} wasn't found during scan".format(lvName))
-                            parentUuid = parent_cowinfo.parentUuid
-                            parentPath = parent_cowinfo.parentPath
-                            parent_cowinfo.path = parentLvName #Same reason as above, some users expect LvName here instead of path
-                            result[parent_cowinfo.uuid] = parent_cowinfo
-
-            return result
-        else:
-            pattern_p: Path = Path(pattern)
-            list_qcow = list(pattern_p.parent.glob(pattern_p.name))
-            for qcow in list_qcow:
-                qcow_str = str(qcow)
-                info = self.getInfo(qcow_str, extractUuidFunction)
-                result[info.uuid] = info
-            return result
+        pattern_p: Path = Path(pattern)
+        list_qcow = list(pattern_p.parent.glob(pattern_p.name))
+        for qcow in list_qcow:
+            qcow_str = str(qcow)
+            info = self.getInfo(qcow_str, extractUuidFunction)
+            result[info.uuid] = info
+        return result
 
     @override
     def getParent(self, path: str, extractUuidFunction: Callable[[str], str]) -> Optional[str]:
@@ -685,7 +671,7 @@ class QCowUtil(CowUtil):
 
     @override
     def getAllocatedSize(self, path: str) -> int:
-        cmd = [QCOW2_HELPER, "allocated", path]
+        cmd = [QCOW2_HELPER, "allocated", "-f", path]
         return int(self._ioretry(cmd))
 
     @override
@@ -725,7 +711,7 @@ class QCowUtil(CowUtil):
 
     @override
     def getBlockBitmap(self, path: str) -> bytes:
-        cmd = [QCOW2_HELPER, "bitmap", path]
+        cmd = [QCOW2_HELPER, "bitmap", "-f", path]
         text = cast(bytes, self._ioretry(cmd, text=False))
         return zlib.compress(text)
 
@@ -907,3 +893,40 @@ class QCowUtil(CowUtil):
     @override
     def isCoalesceableOnRemote(self) -> bool:
         return True
+
+    @staticmethod
+    def _parseQCOW2Info(line: str, extractUuidFunction: Callable[[str], str]) -> Optional[CowImageInfo]:
+        vhdInfo = None
+        valueMap = line.split()
+
+        try:
+            (key, val) = valueMap[0].split("=")
+        except:
+            return None
+
+        if key != "qcow2":
+            return None
+
+        uuid = extractUuidFunction(val)
+        if not uuid:
+            util.SMlog(f"***** malformed output, no UUID: {valueMap}")
+            return None
+        vhdInfo = CowImageInfo(uuid)
+        vhdInfo.path = val
+
+        for keyval in valueMap:
+            (key, val) = keyval.split("=")
+            if key == "scan-error": #TODO: need to add this to scan from qcow2_helper
+                vhdInfo.error = line
+                util.SMlog(f"***** QCOW2 scan error: {line}")
+                break
+            elif key == "capacity":
+                vhdInfo.sizeVirt = int(val)
+            elif key == "size":
+                vhdInfo.sizePhys = int(val)
+            elif key == "hidden":
+                vhdInfo.hidden = bool(int(val))
+            elif key == "parent" and val != "none":
+                vhdInfo.parentPath = val #TODO: Do I expect the full path for parent in the code?
+                vhdInfo.parentUuid = extractUuidFunction(val)
+        return vhdInfo
