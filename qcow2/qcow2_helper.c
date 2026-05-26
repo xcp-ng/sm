@@ -1,4 +1,5 @@
 #include "qcow_helper.h"
+#include "lvm-util.h"
 
 static void transform_header_be_to_le(struct qcow2_header* header){
     SWAP_BE_TO_LE(32, magic);
@@ -21,9 +22,7 @@ static void transform_header_be_to_le(struct qcow2_header* header){
     SWAP_BE_TO_LE(32, header_length);
 }
 
-//#define DEBUG
-#ifdef DEBUG
-char* qcow2_get_backing_file(struct qcow2_header* header, int fd){
+char* qcow2_get_backing_file(struct qcow2_header* header, int fd, uint64_t device_offset){
     int err, backing_file_name_size;
     char* backing_file_name;
 
@@ -34,8 +33,7 @@ char* qcow2_get_backing_file(struct qcow2_header* header, int fd){
             fprintf(stderr, "Failed to allocate for backing file name");
             exit(EXIT_FAILURE);
         }
-        lseek(fd, header->backing_file_offset, SEEK_SET);
-        err = read(fd, backing_file_name, header->backing_file_size);
+        err = pread(fd, backing_file_name, header->backing_file_size, header->backing_file_offset+device_offset);
         if(err < 0){
             fprintf(stderr, "Couldn't read backing file: %s (%d)\n", strerror(errno), errno);
             exit(EXIT_FAILURE);
@@ -45,7 +43,6 @@ char* qcow2_get_backing_file(struct qcow2_header* header, int fd){
     }
     return NULL;
 }
-#endif
 
 uint64_t* get_l1_offset(struct qcow2_header* header, int fd){
     int i, err = 0;
@@ -255,97 +252,407 @@ int get_allocated_blocks(struct qcow2_header* header, int fd, uint64_t *l1_table
     return allocated_clusters;
 }
 
-int main(int argc, char* argv[]){
-    struct qcow2_header* header = NULL;
-    char * command, * filename = NULL, * backing_file_name = NULL;
-    int fd, err = 0, ret = EXIT_SUCCESS;
-    int extended_l2;
-    uint64_t *l1_table = NULL, cluster_size = 0, allocated_clusters = 0, allocated_byte = 0;
-    uint64_t nb_l2_entries;
+static int qcow2_open(const char *filename, struct qcow2_header *header, int *fd_out) {
+    int err;
+    int fd;
 
-    if(argc != 3){
-        fprintf(stderr, "Need an argument\n");
+    fd = open(filename, O_RDONLY | O_DIRECT);
+    if (fd < 0) {
+        fprintf(stderr, "Opening file %s failed: %s (%d)\n", filename, strerror(errno), errno);
+        return -1;
+    }
+    err = pread(fd, header, QCOW2_HEADER_SIZE, 0);
+    if (err < 0) {
+        fprintf(stderr, "Failed reading file\n");
+        close(fd);
+        return -1;
+    }
+    transform_header_be_to_le(header);
+    if (header->magic != QCOW2_MAGIC) {
+        fprintf(stderr, "MAGIC is wrong\n");
+        close(fd);
+        return -1;
+    }
+
+    *fd_out = fd;
+    return 0;
+}
+
+static void usage_bitmap(void) { fprintf(stderr, "Usage: bitmap -f <file>\n"); }
+
+static void cmd_bitmap(int argc, char **argv) {
+    char *filename = NULL;
+    int opt, fd;
+    struct qcow2_header header;
+    uint64_t *l1_table;
+
+    while ((opt = getopt(argc, argv, "f:")) != -1) {
+        switch (opt) {
+        case 'f': filename = optarg; break;
+        default:
+            usage_bitmap();
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    if (filename == NULL) {
+        usage_bitmap();
         exit(EXIT_FAILURE);
     }
-    command = argv[1];
-    filename = argv[2];
-    fd = open(filename, O_RDONLY);
-    if(fd < 0){
-        fprintf(stderr, "Opening file %s failed with error %s (%d)\n", filename, strerror(errno), errno);
-        ret = EXIT_FAILURE;
-        goto exit_filename;
+
+    if (qcow2_open(filename, &header, &fd) < 0)
+        exit(EXIT_FAILURE);
+
+    l1_table = get_l1_offset(&header, fd);
+    if (l1_table == NULL) {
+        fprintf(stderr, "Couldn't read L1 Table\n");
+        close(fd);
+        exit(EXIT_FAILURE);
     }
 
-    // printf("Reading header from %s\n", filename);
+    uint64_t cluster_size = qcow2_cluster_size(&header);
+    int extended_l2 = qcow2_extended_l2(&header);
+    dump_bitmap(&header, fd, l1_table, qcow2_nb_l2_entries(cluster_size, extended_l2), extended_l2);
+
+    free(l1_table);
+    close(fd);
+}
+
+static void usage_allocated(void) { fprintf(stderr, "Usage: allocated -f <file>\n"); }
+
+static void cmd_allocated(int argc, char **argv) {
+    char *filename = NULL;
+    int opt, fd;
+    struct qcow2_header header;
+    uint64_t *l1_table;
+
+    while ((opt = getopt(argc, argv, "f:")) != -1) {
+        switch (opt) {
+        case 'f': filename = optarg; break;
+        default:
+            usage_allocated();
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    if (filename == NULL) {
+        usage_allocated();
+        exit(EXIT_FAILURE);
+    }
+
+    if (qcow2_open(filename, &header, &fd) < 0)
+        exit(EXIT_FAILURE);
+
+    l1_table = get_l1_offset(&header, fd);
+    if (l1_table == NULL) {
+        fprintf(stderr, "Couldn't read L1 Table\n");
+        close(fd);
+        exit(EXIT_FAILURE);
+    }
+    uint64_t cluster_size = qcow2_cluster_size(&header);
+    int extended_l2 = qcow2_extended_l2(&header);
+    uint64_t clusters = get_allocated_blocks(&header, fd, l1_table, qcow2_nb_l2_entries(cluster_size, extended_l2), extended_l2);
+    uint64_t bytes = get_cluster_to_byte(clusters, cluster_size, extended_l2);
+    printf("%lu\n", bytes);
+    free(l1_table);
+    close(fd);
+}
+
+struct scan_info {
+    char name[NAME_MAX_SIZE]; //SIZE decided democratically
+    uint64_t capacity;
+    uint64_t size;
+    bool hidden;
+    char parent[NAME_MAX_SIZE];
+};
+
+static struct lv* lv_find_by_name(const struct lv *lvs, int lv_count, const char *name) {
+    int i;
+    for (i = 0; i < lv_count; i++)
+        if (strcmp(lvs[i].name, name) == 0)
+            return (struct lv *)&lvs[i];
+    return NULL;
+}
+
+struct lv* lv_filter_by_pattern(const struct vg *vg, const char *pattern, int *lv_count) {
+    int i, j = 0;
+    struct lv *result;
+
+    result = malloc(sizeof(struct lv) * vg->lv_cnt);
+    if (result == NULL) {
+        *lv_count = 0;
+        return NULL;
+    }
+
+    for (i = 0; i < vg->lv_cnt; i++) {
+        if (fnmatch(pattern, vg->lvs[i].name, FNM_PATHNAME | FNM_EXTMATCH) == 0)
+            result[j++] = vg->lvs[i];
+    }
+
+    *lv_count = j;
+    return result;
+}
+
+struct qcow2_header* get_header_from_device(struct lv* lv, int fd){
+    struct qcow2_header* header = NULL;
+    int err;
 
     header = malloc(QCOW2_HEADER_SIZE);
-    if(header == NULL){
+    if (header == NULL) {
         fprintf(stderr, "Couldn't allocate header\n");
-        ret = EXIT_FAILURE;
-        goto close_and_exit;
+        return NULL;
     }
-
-    err = pread(fd, header, QCOW2_HEADER_SIZE, 0);
-    if(err < 0){
-        fprintf(stderr, "Failed reading file\n");
-        ret = EXIT_FAILURE;
-        goto close;
+    err = pread(fd, header, QCOW2_HEADER_SIZE, lv->first_segment.pe_start); //OFFSET need to be offset of LV in device
+    if (err < 0) {
+        fprintf(stderr, "Failed reading file %s\n", lv->name);
+        goto err_free_header;
     }
-
     transform_header_be_to_le(header);
-
-    if(header->magic != QCOW2_MAGIC){
-        fprintf(stderr, "MAGIC is wrong\n");
-        goto close;
+    if (header->magic != QCOW2_MAGIC) {
+        fprintf(stderr, "MAGIC is wrong for %s\n", lv->name);
+        goto err_free_header;
     }
 
-    cluster_size = (1 << header->cluster_bits);
-    extended_l2 = (header->version == 3) && (header->incompatible_features & INCOMPATIBLE_FEATURE_EXTENDED_L2);
+    return header;
 
-#ifdef DEBUG
-    printf("Version: %d\n", header->version);
-    backing_file_name = qcow2_get_backing_file(header, fd);
-    printf("Backing file: %s\n", backing_file_name);
-    printf("Extended L2: %d\n", extended_l2);
-#endif
+err_free_header:
+    free(header);
+    return NULL;
+}
 
-    if (extended_l2) {
-        nb_l2_entries = cluster_size / (sizeof(uint64_t) * 2);
-    } else {
-        nb_l2_entries = cluster_size / (sizeof(uint64_t));
+char* get_backing_file_from_device(struct qcow2_header* header, struct lv* lv, int fd){
+        if(header->backing_file_offset >= lv->first_segment.pe_size){
+            fprintf(stderr, "Backing file is not in first segment for LV %s\n", lv->name);
+            exit(EXIT_FAILURE);
+            // return NULL; //TODO: We need to diff not having a backing file and it erroring here.
+        }
+        return qcow2_get_backing_file(header, fd, lv->first_segment.pe_start);
+}
+
+static uint32_t read_data_from_qcow2_header(int fd, size_t offset){
+    uint32_t data;
+    if(pread(fd, &data, 4, offset) < 1){
+        exit(EXIT_FAILURE); //TODO: Handle error correctly
+    }
+    data = __builtin_bswap32(data);
+    return data;
+}
+
+void transform_custom_header_bswap(struct custom_header* custom_header){
+    custom_header->type = __builtin_bswap32(custom_header->type);
+    custom_header->length = __builtin_bswap32(custom_header->length);
+    // custom_header->custom_header_data = __builtin_bswap64(custom_header->custom_header_data);
+    /**
+     The data in the custom header is little endian when it should be big endian in qcow2
+     It's because the python code writing the hidden status wrote directly at the offset of the data
+     like if it was 1 octet.
+    */
+}
+
+size_t find_custom_header(struct qcow2_header* header, int fd, uint64_t device_offset){
+    size_t current_offset;
+    uint32_t header_length = 72, ext_type, ext_len;
+
+    if(header->version == 3){
+        header_length = header->header_length;
     }
 
-    l1_table = get_l1_offset(header, fd);
-    if(l1_table == NULL){
-        fprintf(stderr, "Couldn't read L1 Table\n");
-        ret = EXIT_FAILURE;
-        goto free_backing;
-    }
+    current_offset = header_length;
+    current_offset += device_offset;
+    
+    do{
+        ext_type = read_data_from_qcow2_header(fd, current_offset);
+        ext_len = read_data_from_qcow2_header(fd, current_offset+4);
+        if(ext_type == CUSTOM_HEADER_TYPE){
+            // A custom header is already there
+            return current_offset;
+        }
+        current_offset += 8 + ((ext_len + 7) & ~(uint32_t)7);
+    } while(ext_type != 0);
 
-    if(!strcmp("bitmap", command)){
-        dump_bitmap(header, fd, l1_table, nb_l2_entries, extended_l2);
+    return 0;
+}
+
+static int fill_scan_info_from_lv(struct lv *lv, struct scan_info *info) {
+    int fd;
+
+    strncpy(info->name, lv->name, NAME_MAX_SIZE);
+    info->size = lv->size;
+
+    /* Getting header from the underlying device*/
+    fd = open(lv->first_segment.device, O_RDONLY);
+    if (fd < 0) {
+        fprintf(stderr, "Opening device %s failed: %s (%d)\n", lv->first_segment.device, strerror(errno), errno);
+        return -1;
     }
-    else if(!strcmp("allocated", command)){
-        allocated_clusters = get_allocated_blocks(header, fd, l1_table, nb_l2_entries, extended_l2);
-        allocated_byte = get_cluster_to_byte(allocated_clusters, cluster_size, extended_l2);
-        printf("%lu\n", allocated_byte);
+    struct qcow2_header* header = get_header_from_device(lv, fd);
+
+    info->capacity = header->size;
+
+    /* Getting parent if it exist */
+    char* backing_file_name = get_backing_file_from_device(header, lv, fd);
+    if(backing_file_name){
+        char* parent_lv_name = basename(backing_file_name); //Transform the backing name from full path of the LV to just the LV name
+        strncpy(info->parent, parent_lv_name, NAME_MAX_SIZE);
+        // strncpy(info->parent, backing_file_name, strlen(backing_file_name));
+        //The existing code in qcow2util.py might need the full path though
+        free(backing_file_name);
     }
     else{
-        fprintf(stderr, "Command %s is unknown.\n", command);
-        ret = EXIT_FAILURE;
+        strncpy(info->parent, "none", 5);
     }
 
-    if(l1_table != NULL){
-        free(l1_table);
+    /* Getting hidden from custom header */
+    size_t custom_header_offset = find_custom_header(header, fd, lv->first_segment.pe_start);
+    if(custom_header_offset){
+        struct custom_header custom_header;
+        pread(fd, &custom_header, sizeof(struct custom_header), custom_header_offset);
+        transform_custom_header_bswap(&custom_header);
+        info->hidden = custom_header.data;
+    }
+    else{
+        info->hidden = 0;
     }
 
-free_backing:
-    if(backing_file_name != NULL)
-        free(backing_file_name);
-close:
     free(header);
-close_and_exit:
     close(fd);
-exit_filename:
-    exit(ret);
+    return 0;
+}
+
+struct scan_info* get_infos(char* vg_name, int* lv_count, const char* pattern, int include_parents) {
+    int i, matched_count, err;
+    struct vg vg;
+    struct lv *matched_lvs;
+    struct scan_info *infos, *info;
+
+    err = lvm_scan_vg(vg_name, &vg);
+    if(err < 0){
+        fprintf(stderr, "lvm_scan_vg failed %d\n", err);
+        return NULL;
+    }
+    matched_lvs = lv_filter_by_pattern(&vg, pattern, &matched_count);
+
+    infos = calloc(vg.lv_cnt, sizeof(struct scan_info));
+    if(infos == NULL){
+        fprintf(stderr, "Failed to allocate scan_info array\n");
+        goto alloc_info_err;
+    }
+
+    for(i = 0; i < matched_count; i++){
+        if(fill_scan_info_from_lv(&matched_lvs[i], &infos[i]) < 0){
+            goto scan_info_err;
+        }
+    }
+
+    if(include_parents){
+        for (i = 0; i < matched_count; i++){
+            struct lv* parent_lv;
+            info = &infos[i];
+
+            if(strcmp(info->parent, "none") == 0)
+                continue;
+
+            if(lv_find_by_name(matched_lvs, matched_count, info->parent) != NULL)
+                continue;
+
+            parent_lv = lv_find_by_name(vg.lvs, vg.lv_cnt, info->parent);
+            if(parent_lv != NULL){
+                matched_lvs[matched_count] = *parent_lv;
+                if(fill_scan_info_from_lv(&matched_lvs[matched_count], &infos[matched_count]) < 0){
+                    goto scan_info_err;
+                }
+                matched_count++;
+            }
+            else{
+                fprintf(stderr, "scan-error: %s not found\n", info->parent);
+                goto scan_info_err;
+            }
+        }
+    }
+
+    free(matched_lvs);
+    lvm_free_vg(&vg);
+
+    *lv_count = matched_count;
+    return infos;
+
+scan_info_err:
+    free(infos);
+alloc_info_err:
+    free(matched_lvs);
+    lvm_free_vg(&vg);
+    return NULL;
+}
+
+static void usage_scan(void) { fprintf(stderr, "Usage: scan -l <vg> -m <match filter> [-a scan parents]\n"); }
+
+static void cmd_scan(int argc, char **argv) {
+    char *vg_name = NULL, *pattern = NULL;
+    int i, opt, lv_count, include_parents = 0;
+
+    while ((opt = getopt(argc, argv, "l:m:a")) != -1) {
+        switch (opt) {
+        case 'l': vg_name = optarg; break;
+        case 'm': pattern = optarg; break;
+        case 'a': include_parents = 1; break;
+        default:
+            usage_scan();
+            exit(EXIT_FAILURE);
+        }
+    }
+    if(vg_name == NULL || pattern == NULL){
+        usage_scan();
+        exit(EXIT_FAILURE);
+    }
+
+    struct scan_info *infos = get_infos(vg_name, &lv_count, pattern, include_parents);
+    if(infos == NULL){
+        exit(EXIT_FAILURE);
+    }
+
+    for(i = 0; i < lv_count; i++){
+        struct scan_info info = infos[i];
+        printf("qcow2=%s capacity=%lu size=%lu hidden=%d parent=%s\n",
+               info.name, info.capacity, info.size, info.hidden, info.parent);
+    }
+    free(infos);
+}
+
+/* Defined here because they are co-dependent on commands */
+static void usage_help(void);
+static void cmd_help(int argc, char **argv);
+
+static const command_t commands[] = {
+    {"bitmap",    cmd_bitmap,    usage_bitmap},
+    {"allocated", cmd_allocated, usage_allocated},
+    {"scan",      cmd_scan,      usage_scan},
+    {"help",      cmd_help,      usage_help},
+};
+
+static void usage_help(void) { fprintf(stderr, "Usage: help\n"); }
+
+static void cmd_help(int argc, char **argv) {
+    int i;
+    fprintf(stderr, "Usage: qcow2_helper <command> [options]\n\nCommands:\n");
+    for (i = 0; i < ARRAY_SIZE(commands); i++)
+        commands[i].usage();
+}
+
+int main(int argc, char *argv[]) {
+    int i;
+
+    if (argc < 2) {
+        fprintf(stderr, "Usage: %s <command> [options]\nRun '%s help' for a list of commands.\n", argv[0], argv[0]);
+        exit(EXIT_FAILURE);
+    }
+
+    for (i = 0; i < ARRAY_SIZE(commands); i++) {
+        if (!strcmp(commands[i].name, argv[1])) {
+            commands[i].fn(argc - 1, argv + 1);
+            return EXIT_SUCCESS;
+        }
+    }
+
+    fprintf(stderr, "Command %s is unknown.\nRun '%s help' for a list of commands.\n", argv[1], argv[0]);
+    return EXIT_FAILURE;
 }
