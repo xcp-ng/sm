@@ -671,7 +671,8 @@ class VDI(object):
                 len(self.parent.children) == 1 and \
                 self.isHidden() and \
                 len(self.children) > 0 and \
-                len(self.sr.hasLeavesAttachedOn(self)) <= 1
+                (self.vdi_type != VdiType.QCOW2 or \
+                (self.vdi_type == VdiType.QCOW2 and len(self.sr.hasLeavesAttachedOn(self)) <= 1))
 
     def isLeafCoalesceable(self):
         """A VDI is leaf-coalesceable if it has no siblings and is a leaf"""
