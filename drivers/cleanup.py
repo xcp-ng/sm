@@ -2905,6 +2905,10 @@ class SR(object):
             _, host_ref = next(iter(host_refs.items()))
             vdi._coalesceCowImageOnHost(host_ref, vdi) # vdi is the leaf for the online coalesce
             util.fistpoint.activate("LVHDRT_coaleaf_after_coalesce", self.uuid)
+            vdi.pause(failfast=True)
+            # We make a pause here after the online coalesce but before the rename so we can refresh the chain for tapdisk. 
+            # It's also needed to be paused for the rename on slaves with LVMSR.
+            # We let the caller `_liveLeafCoalesce` do the unpause with the call to `vdi.ensureUnpaused()`
         else:
             vdi.validate(True)
             vdi.parent.validate(True)
@@ -2917,9 +2921,6 @@ class SR(object):
             util.fistpoint.activate("LVHDRT_coaleaf_after_coalesce", self.uuid)
             vdi.parent.validate(True)
             #vdi._verifyContents(timeout / 2)
-
-        if coalesce_on_remote:
-            vdi.pause() #If we are coalesceing on remote, we need to pause before updating, we then let the `ensureUnpaused` call from the caller do the unpausing.
 
         # rename
         vdiUuid = vdi.uuid
