@@ -2854,6 +2854,7 @@ class SR(object):
 
     def _liveLeafCoalesce(self, vdi: VDI, coalesce_on_remote: bool = False) -> bool:
         util.fistpoint.activate("LVHDRT_coaleaf_delay_3", self.uuid)
+        need_refresh = False
         self.lock()
         try:
             self.scan()
@@ -2872,6 +2873,7 @@ class SR(object):
                     self._create_running_file(vdi)
                     # "vdi" object will no longer be valid after this call
                     self._doCoalesceLeaf(vdi, coalesce_on_remote)
+                    need_refresh = True
                 except:
                     Util.logException("_doCoalesceLeaf")
                     self._handleInterruptedCoalesceLeaf()
@@ -2880,6 +2882,8 @@ class SR(object):
                 vdi = self.getVDI(uuid)
                 if vdi:
                     vdi.ensureUnpaused()
+                    if need_refresh:
+                        vdi.refresh()
                 self._delete_running_file(vdi)
                 vdiOld = self.getVDI(self.TMP_RENAME_PREFIX + uuid)
                 if vdiOld:
