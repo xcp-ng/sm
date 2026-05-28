@@ -23,6 +23,7 @@ from sm_typing import Dict, Optional, List, override, Tuple, Collection, Union, 
 
 import SR
 import VDI
+import cbtutil
 import SRCommand
 import util
 import scsiutil
@@ -82,11 +83,12 @@ OPS_EXCLUSIVE = [
 DRIVER_CONFIG = {"ATTACH_FROM_CONFIG_WITH_TAPDISK": True}
 
 class RevertLogDestinationVDI:
-    def __init__(self, uuid: str, path: str, backup_path: str, tmp_path: str):
+    def __init__(self, uuid: str, path: str, backup_path: str, tmp_path: str, cbtlog_path: Optional[str] = None):
         self.uuid = uuid
         self.path = path
         self.backup_path = backup_path
         self.tmp_path = tmp_path
+        self.cbtlog_path = cbtlog_path
 
     def to_dict(self) -> Dict[str, Collection[str]]:
         return {
@@ -94,6 +96,7 @@ class RevertLogDestinationVDI:
             "path": self.path,
             "backup_path": self.backup_path,
             "tmp_path": self.tmp_path,
+            "cbtlog_path": self.cbtlog_path or "",
         }
 
     @classmethod
@@ -103,20 +106,23 @@ class RevertLogDestinationVDI:
             path=data["path"],
             backup_path=data["backup_path"],
             tmp_path=data["tmp_path"],
+            cbtlog_path=data.get("cbtlog_path") or None,
         )
 
 
 class RevertLogSourceVDI:
-    def __init__(self, uuid: str, path: str, parent_path: str):
+    def __init__(self, uuid: str, path: str, parent_path: str, cbtlog_path: Optional[str] = None):
         self.uuid = uuid
         self.path = path
         self.parent_path = parent_path
+        self.cbtlog_path = cbtlog_path
 
     def to_dict(self) -> Dict[str, Collection[str]]:
         return {
             "uuid": self.uuid,
             "path": self.path,
             "parent_path": self.parent_path,
+            "cbtlog_path": self.cbtlog_path or "",
         }
 
     @classmethod
@@ -125,6 +131,7 @@ class RevertLogSourceVDI:
             uuid=data["uuid"],
             path=data["path"],
             parent_path=data["parent_path"],
+            cbtlog_path=data.get("cbtlog_path") or None,
         )
 
 class RevertLogInsertedVDI:
@@ -541,6 +548,33 @@ class FileSR(SR.SR):
         self._unlink_paths(entry.inserted.path)
         self.deleted_vdi(entry.inserted.uuid)
 
+        if entry.dest.cbtlog_path and not dest._get_blocktracking_status():
+            util.SMlog("CBT rollback: restoring cbtlog for dest %s" % entry.dest.uuid)
+            dest._create_cbt_log_with_size(dest.size)
+            dest_ref = dest.session.xenapi.VDI.get_by_uuid(dest.uuid)
+            dest.session.xenapi.VDI.set_cbt_enabled(dest_ref, True)
+
+        if entry.src.cbtlog_path:
+            util.SMlog("CBT revert rollback: restoring chain for src=%s inserted=%s dest=%s"
+                       % (entry.src.uuid, entry.inserted.uuid, entry.dest.uuid))
+            src_logpath = src._get_cbt_logpath(entry.src.uuid)
+            inserted_logpath = src._get_cbt_logpath(entry.inserted.uuid)
+
+            src._delete_cbt_log()
+            dest._delete_cbt_log()
+
+            if util.ioretry(lambda: util.pathexists(inserted_logpath)):
+                src._rename(inserted_logpath, src_logpath)
+
+                inserted_parent_uuid = src._cbt_op(
+                    entry.src.uuid, cbtutil.get_cbt_parent, src_logpath)
+                inserted_parent_logpath = src._get_cbt_logpath(inserted_parent_uuid)
+                if src._cbt_log_exists(inserted_parent_logpath):
+                    src._cbt_op(inserted_parent_uuid, cbtutil.set_cbt_child,
+                                inserted_parent_logpath, entry.src.uuid)
+
+            util.SMlog("CBT revert rollback: chain restored")
+
 
     def _unlink_paths(self, *files: Union[Path, str]):
         for path in files:
@@ -956,22 +990,22 @@ class FileVDI(VDI.VDI):
         if not dest._checkpath(dest.path):
             raise xs_errors.XenError(f"Could not find {dest.path}")
 
-        # CBT won't be implemented here, but I'm leaving this as an artifact
         cbt_consistency_state = False
+        dest_cbtlog = dest._get_cbt_logpath(dest.uuid) if dest._get_blocktracking_status() else None
         if cbtlog:
             cbt_consistency_state = blktap2.VDI.tap_status(self.session, self.uuid)
             util.SMlog("Saving log consistency state of %s for vdi: %s" %
                        (cbt_consistency_state, self.uuid))
-            raise xs_errors.XenError("Not implemented yet")
 
         with self.tap_pause(), dest.tap_pause():
-            self._revert(dest, cbtlog, cbt_consistency_state)
+            self._revert(dest, cbtlog, cbt_consistency_state, dest_cbtlog)
 
     def _revert(
         self,
         dest: "FileVDI",
         cbtlog: Optional[str],
         cbt_consistency_state: bool,
+        dest_cbtlog: Optional[str] = None,
     ):
         """This assumes that self and dest VDIs has been paused"""
 
@@ -998,13 +1032,18 @@ class FileVDI(VDI.VDI):
 
         log_entry = RevertLogEntry(
             dest=RevertLogDestinationVDI(
-                dest.uuid, dest.path, dest_backup_path, dest_tmp_path
+                dest.uuid, dest.path, dest_backup_path, dest_tmp_path, dest_cbtlog
             ),
-            src=RevertLogSourceVDI(self.uuid, self.path, src_parent_path),
+            src=RevertLogSourceVDI(self.uuid, self.path, src_parent_path, cbtlog),
             inserted=RevertLogInsertedVDI(inserted_uuid, inserted_path),
         )
         journal_id, journal_content = log_entry.to_journal()
         self.sr.journaler.create(log_entry.JRN_KEY, journal_id, journal_content)
+
+        if not cbtlog and dest_cbtlog:
+            util.SMlog("Reverting %s to non-CBT snapshot, disabling CBT on dest" % dest.uuid)
+            self._disable_cbt_on_vdi(dest, "VDI_CBT_REVERT_DISABLE",
+                                     "CBT disabled on %s: reverted to non-CBT snapshot" % dest.uuid)
 
         ## First move the old vdi to a backup location to allow rolling back
         ## This has to be done first because it's used as a signal to the rollback
@@ -1073,9 +1112,19 @@ class FileVDI(VDI.VDI):
         dest.load_from_file(dest.path)
         dest._db_update()
 
+        if cbtlog:
+            self._revert_cbt(inserted, dest, cbt_consistency_state)
+
         # Cleanup
         self.sr._unlink_paths(dest_tmp_path, dest_backup_path)
         self.sr.journaler.remove(log_entry.JRN_KEY, journal_id)
+
+    @override
+    def _create_cbt_log_with_size(self, size: int, consistent: bool = True) -> str:
+        """Create the physical .cbtlog file before delegating to the base class."""
+        log_path = self._get_cbt_logpath(self.uuid)
+        open(log_path, "w+").close()
+        return super()._create_cbt_log_with_size(size, consistent)
 
     def load_from_file(self, path: Union[str, Path]):
         """Change path to provided disk and updated properties based on it's content"""

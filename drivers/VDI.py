@@ -951,6 +951,63 @@ class VDI(object):
                                               alert_obj, alert_uuid,
                                               alert_str)
 
+    def _disable_cbt_on_vdi(self, vdi: "VDI", alert_name: str, alert_str: str) -> None:
+        """ Disable CBT on an explicit VDI and send an alert """
+        util.SMlog(alert_str)
+        try:
+            vdi._delete_cbt_log()
+        except Exception as e:
+            util.SMlog("Failed to delete CBT log for %s: %s" % (vdi.uuid, e))
+        vdi_ref = vdi.session.xenapi.VDI.get_by_uuid(vdi.uuid)
+        vdi.session.xenapi.VDI.set_cbt_enabled(vdi_ref, False)
+        alert_prio_warning = "3"
+        alert_obj = "VDI"
+        alert_uuid = str(vdi.uuid)
+        vdi.session.xenapi.message.create(alert_name,
+                                          alert_prio_warning,
+                                          alert_obj, alert_uuid,
+                                          alert_str)
+
+    def _create_cbt_log_with_size(self, size: int, consistent: bool = True) -> str:
+        """ Create a CBT log using an explicit size, without relying on srcmd """
+        log_path = self._get_cbt_logpath(self.uuid)
+        self._cbt_op(self.uuid, cbtutil.create_cbt_log, log_path, size)
+        self._cbt_op(self.uuid, cbtutil.set_cbt_consistency, log_path, consistent)
+        return log_path
+
+    def _reset_cbt_log(self, consistent: bool = True) -> None:
+        """ Delete and recreate a fresh CBT log for this VDI """
+        self._delete_cbt_log()
+        self._ensure_cbt_space()
+        self._create_cbt_log_with_size(self.size, consistent)
+
+    def _revert_cbt(self, inserted: "VDI", dest: "VDI", cbt_consistency_state: bool) -> None:
+        """ Update the CBT log chain after a vdi_revert """
+        src_logpath = self._get_cbt_logpath(self.uuid)
+        inserted_logpath = self._get_cbt_logpath(inserted.uuid)
+        dest_logpath = self._get_cbt_logpath(dest.uuid)
+
+        util.SMlog("CBT revert: wiring chain for src=%s inserted=%s dest=%s"
+                   % (self.uuid, inserted.uuid, dest.uuid))
+
+        self._rename(src_logpath, inserted_logpath)
+        self._cbt_op(inserted.uuid, cbtutil.set_cbt_consistency, inserted_logpath, True)
+
+        inserted_parent_uuid = self._cbt_op(
+            inserted.uuid, cbtutil.get_cbt_parent, inserted_logpath)
+        inserted_parent_logpath = self._get_cbt_logpath(inserted_parent_uuid)
+        if self._cbt_log_exists(inserted_parent_logpath):
+            self._cbt_op(inserted_parent_uuid, cbtutil.set_cbt_child,
+                         inserted_parent_logpath, inserted.uuid)
+
+        self._reset_cbt_log(consistent=cbt_consistency_state)
+        dest._reset_cbt_log()
+
+        self._cbt_op(inserted.uuid, cbtutil.set_cbt_child, inserted_logpath, dest.uuid)
+        self._cbt_op(dest.uuid, cbtutil.set_cbt_parent, dest_logpath, inserted.uuid)
+
+        util.SMlog("CBT revert: chain wired successfully")
+
     def disable_leaf_on_secondary(self, vdi_uuid, secondary=None):
         vdi_ref = self.session.xenapi.VDI.get_by_uuid(vdi_uuid)
         self.session.xenapi.VDI.remove_from_other_config(
