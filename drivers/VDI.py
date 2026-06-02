@@ -273,6 +273,12 @@ class VDI(object):
         if self.vdi_type != dest.vdi_type:
             raise util.SMException(f"{self.uuid} and {dest.uuid} has incompatible types {self.vdi_type} != {dest.vdi_type}")
 
+        for vdi in [self, dest]:
+            if not VdiType.isCowImage(vdi.vdi_type):
+                raise xs_errors.XenError(
+                    "Unimplemented", opterr=f"VDI {vdi.uuid} is not a COW image"
+                )
+
         if self._get_blocktracking_status():
             cbtlog = self._get_cbt_logpath(self.uuid)
         else:
