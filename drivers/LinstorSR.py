@@ -506,7 +506,8 @@ class LinstorSR(SR.SR):
                         'vdi_attach', 'vdi_detach',
                         'vdi_activate', 'vdi_deactivate',
                         'vdi_epoch_begin', 'vdi_epoch_end',
-                        'vdi_update', 'vdi_destroy'
+                        'vdi_update', 'vdi_destroy',
+                        'nop' # Deal with `SR.from_uuid` that emits a fake `nop` command.
                     ]:
                         load_vdis = (
                             self.cmd == 'sr_scan' or
