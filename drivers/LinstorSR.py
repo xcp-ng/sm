@@ -446,10 +446,6 @@ class LinstorSR(SR.SR):
                                 opterr='No valid controller URI to attach/detach from config'
                             )
 
-                    self._journaler = LinstorJournaler(
-                        controller_uri, self._group_name, logger=util.SMlog
-                    )
-
                 return wrapped_method(self, *args, **kwargs)
 
             if not self.is_master():
@@ -509,13 +505,14 @@ class LinstorSR(SR.SR):
                         'vdi_update', 'vdi_destroy',
                         'nop' # Deal with `SR.from_uuid` that emits a fake `nop` command.
                     ]:
+                        journaler = self._get_journaler()
                         load_vdis = (
                             self.cmd == 'sr_scan' or
                             self.cmd == 'sr_attach'
                         ) or len(
-                            self._journaler.get_all(LinstorJournaler.INFLATE)
+                            journaler.get_all(LinstorJournaler.INFLATE)
                         ) or len(
-                            self._journaler.get_all(LinstorJournaler.CLONE)
+                            journaler.get_all(LinstorJournaler.CLONE)
                         )
 
                         if load_vdis:
@@ -1094,7 +1091,7 @@ class LinstorSR(SR.SR):
 
         # Try to introduce VDIs only during scan/attach.
         if self.cmd == 'sr_scan' or self.cmd == 'sr_attach':
-            has_clone_entries = list(self._journaler.get_all(
+            has_clone_entries = list(self._get_journaler().get_all(
                 LinstorJournaler.CLONE
             ).items())
 
@@ -1305,6 +1302,13 @@ class LinstorSR(SR.SR):
     # Journals.
     # --------------------------------------------------------------------------
 
+    def _get_journaler(self):
+        if not self._journaler:
+            self._journaler = LinstorJournaler(
+                self._linstor.uri, self._group_name, logger=util.SMlog
+            )
+        return self._journaler
+
     def _get_vdi_path_and_parent(self, vdi_uuid, volume_name):
         try:
             device_path = self._linstor.build_device_path(volume_name)
@@ -1336,23 +1340,25 @@ class LinstorSR(SR.SR):
         util.SMlog('Undoing all journal transactions...')
         self.lock.acquire()
         try:
-            self._handle_interrupted_inflate_ops()
-            self._handle_interrupted_clone_ops()
-            pass
+            # Ensure journaler cache is clean. We MUST not rollback from invalid cache.
+            self._journaler = None
+            journaler = self._get_journaler()
+            self._handle_interrupted_inflate_ops(journaler)
+            self._handle_interrupted_clone_ops(journaler)
         finally:
             self.lock.release()
 
-    def _handle_interrupted_inflate_ops(self):
-        transactions = self._journaler.get_all(LinstorJournaler.INFLATE)
+    def _handle_interrupted_inflate_ops(self, journaler):
+        transactions = journaler.get_all(LinstorJournaler.INFLATE)
         for vdi_uuid, old_size in transactions.items():
             self._handle_interrupted_inflate(vdi_uuid, old_size)
-            self._journaler.remove(LinstorJournaler.INFLATE, vdi_uuid)
+            journaler.remove(LinstorJournaler.INFLATE, vdi_uuid)
 
-    def _handle_interrupted_clone_ops(self):
-        transactions = self._journaler.get_all(LinstorJournaler.CLONE)
+    def _handle_interrupted_clone_ops(self, journaler):
+        transactions = journaler.get_all(LinstorJournaler.CLONE)
         for vdi_uuid, old_size in transactions.items():
             self._handle_interrupted_clone(vdi_uuid, old_size)
-            self._journaler.remove(LinstorJournaler.CLONE, vdi_uuid)
+            journaler.remove(LinstorJournaler.CLONE, vdi_uuid)
 
     def _handle_interrupted_inflate(self, vdi_uuid, old_size):
         util.SMlog(
@@ -1486,7 +1492,7 @@ class LinstorSR(SR.SR):
             linstorcowutil = LinstorCowUtil(self.session, self._linstor, vdi.vdi_type)
             volume_size = linstorcowutil.compute_volume_size(vdi.size)
             linstorcowutil.inflate(
-                self._journaler, vdi_uuid, vdi.path,
+                self._get_journaler(), vdi_uuid, vdi.path,
                 volume_size, vdi.capacity
             )
             self.vdis[vdi_uuid] = vdi
@@ -1533,10 +1539,6 @@ class LinstorSR(SR.SR):
 
     def _reconnect(self):
         controller_uri = get_controller_uri()
-
-        self._journaler = LinstorJournaler(
-            controller_uri, self._group_name, logger=util.SMlog
-        )
 
         # Try to open SR if exists.
         # We can repair only if we are on the master AND if
@@ -1807,7 +1809,7 @@ class LinstorVDI(VDI.VDI):
         if (
             not attach_from_config or
             self.sr.srcmd.params['vdi_uuid'] != self.uuid
-        ) and self.sr._journaler.has_entries(self.uuid):
+        ) and self.sr._get_journaler().has_entries(self.uuid):
             raise xs_errors.XenError(
                 'VDIUnavailable',
                 opterr='Interrupted operation detected on this VDI, '
@@ -1971,7 +1973,7 @@ class LinstorVDI(VDI.VDI):
         else:
             if new_volume_size != old_volume_size:
                 self.linstorcowutil.inflate(
-                    self.sr._journaler, self.uuid, self.path,
+                    self.sr._get_journaler(), self.uuid, self.path,
                     new_volume_size, old_volume_size
                 )
             self.linstorcowutil.set_size_virt_fast(self.path, size)
@@ -2199,7 +2201,7 @@ class LinstorVDI(VDI.VDI):
         if self.sr.is_master():
             if attach:
                 attach_thin(
-                    self.session, self.sr._journaler, self._linstor,
+                    self.session, self.sr._get_journaler(), self._linstor,
                     self.sr.uuid, self.uuid
                 )
             else:
@@ -2417,7 +2419,9 @@ class LinstorVDI(VDI.VDI):
         clone_info = '{}_{}'.format(base_uuid, snap_uuid)
 
         active_uuid = self.uuid
-        self.sr._journaler.create(
+
+        journaler = self.sr._get_journaler()
+        journaler.create(
             LinstorJournaler.CLONE, active_uuid, clone_info
         )
 
@@ -2544,7 +2548,7 @@ class LinstorVDI(VDI.VDI):
                 self.sr._handle_interrupted_clone(
                     active_uuid, clone_info, force_undo=True
                 )
-                self.sr._journaler.remove(LinstorJournaler.CLONE, active_uuid)
+                journaler.remove(LinstorJournaler.CLONE, active_uuid)
             except Exception as clean_error:
                 util.SMlog(
                     'WARNING: Failed to clean up failed snapshot: {}'
@@ -2552,7 +2556,7 @@ class LinstorVDI(VDI.VDI):
                 )
             raise xs_errors.XenError('VDIClone', opterr=str(e))
 
-        self.sr._journaler.remove(LinstorJournaler.CLONE, active_uuid)
+        journaler.remove(LinstorJournaler.CLONE, active_uuid)
 
         return ret_vdi.get_params()
 
