@@ -543,6 +543,7 @@ class FileVDI(VDI.VDI):
                 self.sm_config_override = {'vhd-parent': self.parent}
             else:
                 self.sm_config_override = {'vhd-parent': None}
+            self.sm_config_override["image-format"] = getImageStringFromVdiType(self.vdi_type)
             return
 
         try:
@@ -593,6 +594,7 @@ class FileVDI(VDI.VDI):
                 else:
                     self.parent = ""
                     self.sm_config_override = {'vhd-parent': None}
+                self.sm_config_override["image-format"] = getImageStringFromVdiType(self.vdi_type)
                 self.size = image_info.sizeVirt
                 self.hidden = image_info.hidden
                 if self.hidden:
