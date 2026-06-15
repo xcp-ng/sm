@@ -1,0 +1,2 @@
+class Linstor(object):
+    pass
