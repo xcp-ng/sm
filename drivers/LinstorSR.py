@@ -819,7 +819,10 @@ class LinstorSR(SR.SR):
 
     @override
     def check_sr(self, sr_uuid) -> None:
-        self.database_backup("auto", delay=3600)
+        # Automatic backup if there were no backups for the last hour.
+        # Let it fail if needed, so full Traceback is on SMLog.
+        # Launch it only if we are on the controller.
+        self.database_backup("auto", delay=3600, fail=True, controller=True)
 
 
     @override
@@ -1575,10 +1578,28 @@ class LinstorSR(SR.SR):
         util.SMlog('Kicking GC')
         cleanup.start_gc_service(self.uuid)
 
-    def database_backup(self, name="", *, delay=0):
+    def database_backup(self, name="", *, delay=0, fail=False, controller=False):
+        """Generate a new database backup file.
+        This operation should not prevent the underlying action to be successful.
+        Hence all Exceptions are caught and re-raised only if asked to.
+        controller: operate only if the current host is the Linstor Controller.
+        """
         if not self._linstor:
             self._reconnect()
-        self._linstor.database_backup(name, delay=delay)
+        if controller:
+            if self._linstor.is_controller():
+                self._linstor.database_invalidation()
+            else:
+                return
+        try:
+            self._linstor.database_backup(name, delay=delay)
+        except Exception as e:
+            util.SMlog(
+                "[database_backup] Error during creation: {}".format(e),
+                priority=util.LOG_ERR,
+            )
+            if fail:
+                raise
 
 # ==============================================================================
 # LinstorSr VDI
