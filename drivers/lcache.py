@@ -221,7 +221,7 @@ class CacheFileSR(object):
 
     @classmethod
     def from_cli(cls):
-        with util.APISession("SM-lcache-CacheFileSR") as session:
+        with util.APISession("SM-local-cache") as session:
             return cls.from_session(session)
 
     def statvfs(self):

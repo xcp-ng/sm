@@ -301,10 +301,10 @@ class XAPI:
 
     def __init__(self, session, srUuid):
         self.session = session
-        self.apisession = None
+        self._api_session = None
         if self.session is None:
-            self.apisession = util.APISession("SM-cleanup-XAPI")
-            self.session = self.apisession.session
+            self._api_session = util.APISession("SM-cleanup-XAPI")
+            self.session = self._api_session.session
         self._srRef = self.session.xenapi.SR.get_by_uuid(srUuid)
         self.srRecord = self.session.xenapi.SR.get_record(self._srRef)
         self.hostUuid = util.get_this_host()
@@ -313,8 +313,8 @@ class XAPI:
         self.task_progress = {"coalescable": 0, "done": 0}
 
     def __del__(self):
-        if self.apisession:
-            self.apisession.logout()
+        if self._api_session:
+            self._api_session.logout()
 
     @property
     def srRef(self):
@@ -2121,7 +2121,7 @@ class SR(object):
         return msg is None
 
     def check_no_space_candidates(self):
-        with util.APISession("SM-cleanup-SR-check_no_space_candidates") as xapi_session:
+        with util.APISession("GC-check_no_space") as xapi_session:
             msg_id = self.xapi.srRecord["sm_config"].get(VDI.DB_GC_NO_SPACE)
             if self.no_space_candidates:
                 if msg_id is None or self.msg_cleared(xapi_session, msg_id):

@@ -222,8 +222,7 @@ def check_xapi_is_enabled():
 
 if __name__ == '__main__':
     try:
-        apisession = util.APISession("SM-mpathcount")
-        session = apisession.session
+        session = util.APISession("SM-mpathcount").session
     except xs_errors.XenError:
         sys.exit(-1)
 

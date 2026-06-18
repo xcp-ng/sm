@@ -469,9 +469,10 @@ def ioretry_stat(path, maxretry=IORETRY_MAX):
 
 def sr_get_capability(sr_uuid, session=None):
     result = []
+    api_session = None
     if session is None:
-        apisession = APISession("SM-util-sr_get_capability")
-        session = apisession.session
+        api_session = APISession("SM-sr-get-capability")
+        session = api_session.session
     sr_ref = session.xenapi.SR.get_by_uuid(sr_uuid)
     sm_type = session.xenapi.SR.get_record(sr_ref)['type']
     sm_rec = session.xenapi.SM.get_all_records_where(
@@ -480,7 +481,8 @@ def sr_get_capability(sr_uuid, session=None):
     # SM expects at least one entry of any SR type
     if len(sm_rec) > 0:
         result = list(sm_rec.values())[0]['capabilities']
-
+    if api_session:
+        session.logout()
     return result
 
 def sr_get_driver_info(driver_info):
@@ -773,19 +775,17 @@ def getrootdevID():
 class APISession(contextlib.AbstractContextManager):
     def __init__(self, originator="SM"):
         self.originator = originator
-        self.session = self.login()
-        SMlog("APISession [{}] login".format(self.originator), priority=LOG_DEBUG)
-        atexit.register(self.atexit)
-
-    def login(self):
         # First acquire a valid session
+        self.session = self._login()
+        SMlog("APISession [{}] login".format(self.originator), priority=LOG_DEBUG)
+        atexit.register(self._atexit)
+
+    def _login(self):
         session = XenAPI.xapi_local()
         try:
             session.xenapi.login_with_password('root', '', '', self.originator)
         except Exception as exc:
-            msg = f"APISession [{self.originator}] Unable to open local XAPI session"
-            SMlog(msg, priority=LOG_ERR)
-            raise xs_errors.XenError(msg) from exc
+            raise xs_errors.XenError(f"APISession [{self.originator}] Unable to open local XAPI session") from exc
         return session
 
     def _logout(self, log):
@@ -798,14 +798,14 @@ class APISession(contextlib.AbstractContextManager):
         self.session = None
 
     def logout(self, log="logout"):
-        atexit.unregister(self.atexit)
+        atexit.unregister(self._atexit)
         self._logout(log=log)
 
     def __del__(self):
         if self.session:
             self.logout(log="logout del")
 
-    def atexit(self):
+    def _atexit(self):
         self._logout(log="logout atexit")
 
     @override

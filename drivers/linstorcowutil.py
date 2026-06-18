@@ -678,8 +678,8 @@ class MultiLinstorCowUtil:
         return instance
 
     def _init_executor_thread(self):
-        apisession = util.APISession("SM-linstorvhdutil")
-        session = apisession.session
+        api_session = util.APISession("SM-linstorvhdutil")
+        session = api_session.session
         try:
             linstor = LinstorVolumeManager(
                 self._uri,
@@ -692,7 +692,7 @@ class MultiLinstorCowUtil:
         except:
             self._executor_data.clear()
             raise
-        self._loads.append(apisession)
+        self._loads.append(api_session)
 
     def _cleanup(self):
         for load in self._loads:
