@@ -1582,16 +1582,18 @@ class LinstorSR(SR.SR):
         """Generate a new database backup file.
         This operation should not prevent the underlying action to be successful.
         Hence all Exceptions are caught and re-raised only if asked to.
+        delay: skip backup if the last one was generated less than delay seconds ago.
+        fail: If fail is True, caught Exception are raised after being logged in SMlog.
         controller: operate only if the current host is the Linstor Controller.
+         > This will trigger controller-only operations like retention and validation.
         """
         if not self._linstor:
             self._reconnect()
-        if controller:
-            if self._linstor.is_controller():
-                self._linstor.database_invalidation()
-            else:
-                return
+        if controller and not self._linstor.is_controller():
+            return
         try:
+            if controller:
+                self._linstor.database_invalidation()
             self._linstor.database_backup(name, delay=delay)
         except Exception as e:
             util.SMlog(

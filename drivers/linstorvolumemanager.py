@@ -2711,18 +2711,18 @@ class LinstorVolumeManager(object):
 
     def _log_database_backup(self, date, name):
         """Log a database backup operation: "date name"
-        We cannot assume the pool-master is the same as the linstor-master,
-        this file is on the pool-master, and serves for the throttling."""
+        We cannot assume the Pool Master is the same as the Linstor Controller,
+        this file is on the Pool Master, and serves for the throttling."""
         os.makedirs(DATABASE_BACKUP_LOGDIR, mode=0o755, exist_ok=True)
         with open(DATABASE_BACKUP_LOGFILE, "a", encoding="utf8") as f:
-            f.write(f"{date} {name}\n")
+            f.write(f"{date} {name[:15]}\n")
 
     def _get_latest_logged_database_backup_date(self):
         # get last log line if it exists, and return the corresponding date
         try:
             with open(DATABASE_BACKUP_LOGFILE, "rb") as f:
-                # seek from the end, with 256 as a most-probable maximum line length
-                f.seek(-min(os.stat(DATABASE_BACKUP_LOGFILE).st_size, 256), os.SEEK_END)
+                # seek from the end, a line length can't be more than 32
+                f.seek(-min(os.stat(DATABASE_BACKUP_LOGFILE).st_size, 32), os.SEEK_END)
                 return f.read().decode().splitlines()[-1].split()[0]
         except FileNotFoundError:
             return "20000101_000000"
