@@ -46,9 +46,8 @@ DATABASE_VOLUME_NAME = PERSISTENT_PREFIX + 'database'
 DATABASE_SIZE = 1 << 30  # 1GB.
 DATABASE_PATH = '/var/lib/linstor'
 DATABASE_MKFS = 'mkfs.ext4'
-DATABASE_BACKUP_LOGDIR = Path('/var/lib/linstor.d/db-backups')
-DATABASE_BACKUP_RELATIVE = Path("../linstor.d/db-backups")
-DATABASE_BACKUP_LOGFILE = DATABASE_BACKUP_LOGDIR / "log.txt"
+DATABASE_BACKUP_DIR_MAIN = Path(DATABASE_PATH)
+DATABASE_BACKUP_DIR_SPARE = Path("/var/lib/linstor.d/db-backups")
 DATABASE_BACKUP_NAME_FORMAT = "linstor_database_backup-{}-{}"
 DATABASE_BACKUP_RETENTION = 10
 DATABASE_BACKUP_DATE_FORMAT = "%Y%m%d_%H%M%S"
@@ -1791,44 +1790,48 @@ class LinstorVolumeManager(object):
         """
         return self._request_database_path(self._linstor, activate=True)
 
-    def is_controller(self):
-        """Checks if the current host is the Linstor Controller.
-        This is done by checking that the Linstor database path is a mountpoint.
-        Which should only be the case on the Linstor Controller."""
-        return os.path.ismount(DATABASE_PATH)
+    @classmethod
+    def is_controller(cls):
+        return cls._is_mounted(DATABASE_PATH)
 
-    def database_backup(self, name="", *, delay=0):
-        now = datetime.now()
-        # Throttling to avoid too many backups on a short period
-        if delay:
-            latest = datetime.strptime(
-                self._get_latest_logged_database_backup_date(),
-                DATABASE_BACKUP_DATE_FORMAT)
-            if (now - latest).total_seconds() < delay:
-                return  # No backup for now
+    @classmethod
+    def database_backup_age(cls):
+        """
+        Return the latest backup age in seconds.
+        If not called on the Controller, since backups are not available,
+        returns a huge value (a timestamp of now).
+        """
+        return (datetime.now() - cls._get_latest_database_backup()).total_seconds()
+
+    def database_backup(self, name=""):
         # Create new backup
-        date = now.strftime(DATABASE_BACKUP_DATE_FORMAT)
+        date = datetime.now().strftime(DATABASE_BACKUP_DATE_FORMAT)
         filename = DATABASE_BACKUP_NAME_FORMAT.format(date, name)
         self._linstor.controller_backupdb(filename)
         # Relative path are ok for a secondary backup filename:
         # https://github.com/LINBIT/linstor-server/blob/3e9306a9d8215606544c64c50ced150625ee4926/controller/src/main/java/com/linbit/linstor/api/rest/v1/Controller.java#L408
-        self._linstor.controller_backupdb(str(DATABASE_BACKUP_RELATIVE / filename))
-        self._log_database_backup(date, name)
-        util.SMlog("[database_backup] Created: {}".format(filename), priority=util.LOG_INFO)
+        self._linstor.controller_backupdb(f"../linstor.d/db-backups/{filename}")
+        util.SMlog(f"[database_backup] Created: {filename}", priority=util.LOG_INFO)
 
-    def database_invalidation(self):
-        for directory in (Path(DATABASE_PATH), DATABASE_BACKUP_LOGDIR):
-            file_ok = 0
+    @classmethod
+    def database_invalidation(cls):
+        """
+        Removes old backup based on two criterias:
+        - Validity of the zipfile done by self._check_database_backup.
+        - Number of valid files found, only the nth latest are kept.
+        """
+        for directory in (DATABASE_BACKUP_DIR_MAIN, DATABASE_BACKUP_DIR_SPARE):
+            valid_backup_count = 0
             # Validate file and apply retention
-            for database_backup_file, _ in self._get_sorted_database_backup(directory):
+            for database_backup_file, _ in cls._get_sorted_database_backup(directory):
                 try:
-                    self._check_database_backup(database_backup_file)
-                    file_ok += 1
-                    if file_ok < DATABASE_BACKUP_RETENTION:
+                    cls._check_database_backup(database_backup_file)
+                    valid_backup_count += 1
+                    if valid_backup_count < DATABASE_BACKUP_RETENTION:
                         continue
                 except LinstorDatabaseBackupError as error:
-                    util.SMlog("[database_backup] Check failed: `{}` [{}]".format(
-                        error, database_backup_file), priority=util.LOG_ERR)
+                    util.SMlog(f"[database_backup] Check failed `{error}` [{database_backup_file}]",
+                               priority=util.LOG_ERR)
                 with contextlib.suppress(OSError):
                     os.unlink(database_backup_file)
 
@@ -2709,25 +2712,8 @@ class LinstorVolumeManager(object):
         properties.namespace = self._build_volume_namespace(volume_uuid)
         return properties
 
-    def _log_database_backup(self, date, name):
-        """Log a database backup operation: "date name"
-        We cannot assume the Pool Master is the same as the Linstor Controller,
-        this file is on the Pool Master, and serves for the throttling."""
-        os.makedirs(DATABASE_BACKUP_LOGDIR, mode=0o755, exist_ok=True)
-        with open(DATABASE_BACKUP_LOGFILE, "a", encoding="utf8") as f:
-            f.write(f"{date} {name[:15]}\n")
-
-    def _get_latest_logged_database_backup_date(self):
-        # get last log line if it exists, and return the corresponding date
-        try:
-            with open(DATABASE_BACKUP_LOGFILE, "rb") as f:
-                # seek from the end, a line length can't be more than 32
-                f.seek(-min(os.stat(DATABASE_BACKUP_LOGFILE).st_size, 32), os.SEEK_END)
-                return f.read().decode().splitlines()[-1].split()[0]
-        except FileNotFoundError:
-            return "20000101_000000"
-
-    def _list_database_backup(self, database_backup_dir):
+    @classmethod
+    def _list_database_backup(cls, database_backup_dir):
         for path in database_backup_dir.glob(DATABASE_BACKUP_NAME_FORMAT.format(
                 "20[0-9][0-9][01][0-9][0-3][0-9]_[0-2][0-9][0-5][0-9][0-5][0-9]", "*") + ".zip"):
             try:
@@ -2735,12 +2721,20 @@ class LinstorVolumeManager(object):
             except (ValueError, IndexError):
                 continue
 
-    def _get_sorted_database_backup(self, database_backup_dir):
-        return sorted(self._list_database_backup(database_backup_dir),
+    @classmethod
+    def _get_sorted_database_backup(cls, database_backup_dir):
+        return sorted(cls._list_database_backup(database_backup_dir),
                       reverse=True,
                       key=lambda p: p[1])
 
-    def _check_database_backup(self, database_backup_file):
+    @classmethod
+    def _get_latest_database_backup(cls):
+        return max(cls._list_database_backup(DATABASE_BACKUP_DIR_MAIN),
+                   default=(None, datetime.fromtimestamp(0)),
+                   key=lambda p: p[1])
+
+    @classmethod
+    def _check_database_backup(cls, database_backup_file):
         try:
             with zipfile.ZipFile(database_backup_file, mode="r") as archive:
                 if archive.testzip() is not None:
@@ -2753,7 +2747,7 @@ class LinstorVolumeManager(object):
                     raise LinstorDatabaseBackupError("linstordb.mv.db is empty")
         except LinstorDatabaseBackupError:
             raise
-        except Exception as e:
+        except (FileNotFoundError, zipfile.BadZipFile, zipfile.LargeZipFile) as e:
             raise LinstorDatabaseBackupError(e) from e
 
     @classmethod
