@@ -3627,6 +3627,7 @@ class LinstorSR(SR):
                 assert self.sr, "Cannot use `LinstorProxy` without valid `LinstorVolumeManager` instance"
                 return getattr(self.sr._linstor, attr)
 
+        self._linstor = None
         self._linstor_proxy = LinstorProxy(self)
         self._reloadLinstor(journaler_only=True)
 
@@ -3676,17 +3677,19 @@ class LinstorSR(SR):
         group_name = dconf['group-name']
 
         controller_uri = get_controller_uri()
+
+        if not journaler_only:
+            self._linstor = LinstorVolumeManager(
+                controller_uri,
+                group_name,
+                repair=True,
+                logger=util.SMlog
+            )
+
         self.journaler = LinstorJournaler(
-            controller_uri, group_name, logger=util.SMlog
-        )
-
-        if journaler_only:
-            return
-
-        self._linstor = LinstorVolumeManager(
-            controller_uri,
             group_name,
-            repair=True,
+            uri=None if self._linstor else controller_uri,
+            native_client=self._linstor.native_client if self._linstor else None,
             logger=util.SMlog
         )
 
