@@ -352,12 +352,14 @@ def attach(session, args):
         group_name = args['groupName']
 
         controller_uri = get_controller_uri()
-        journaler = LinstorJournaler(
-            controller_uri, group_name, logger=util.SMlog
-        )
         linstor = LinstorVolumeManager(
             controller_uri,
             group_name,
+            logger=util.SMlog
+        )
+        journaler = LinstorJournaler(
+            group_name,
+            native_client=linstor.native_client,
             logger=util.SMlog
         )
         LinstorSR.attach_thin(session, journaler, linstor, sr_uuid, vdi_uuid)
