@@ -50,13 +50,19 @@ class LinstorJournaler:
     def default_logger(*args):
         print(args)
 
-    def __init__(self, uri, group_name, logger=default_logger.__func__):
+    def __init__(
+        self,
+        group_name,
+        uri=None,
+        native_client=None,
+        logger=default_logger.__func__
+    ):
         self._namespace = '{}journal/'.format(
             LinstorVolumeManager._build_sr_namespace()
         )
         self._logger = logger
         self._journal = self._create_journal_instance(
-            uri, group_name, self._namespace
+            group_name, self._namespace, uri=uri, native_client=native_client
         )
 
     def create(self, type, identifier, value):
@@ -144,7 +150,19 @@ class LinstorJournaler:
         self._journal.namespace = self._namespace
 
     @classmethod
-    def _create_journal_instance(cls, uri, group_name, namespace):
+    def _create_journal_instance(cls, group_name, namespace, *, uri=None, native_client=None):
+        if not uri and not native_client:
+            raise LinstorVolumeManagerError(
+                'Either a URI to the LINSTOR controller or a LINSTOR client must be provided'
+            )
+
+        if native_client:
+            return linstor.KV(
+                LinstorVolumeManager._build_group_name(group_name),
+                existing_client=native_client,
+                namespace=namespace
+            )
+
         def connect(uri):
             if not uri:
                 uri = get_controller_uri()

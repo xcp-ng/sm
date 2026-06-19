@@ -1305,7 +1305,9 @@ class LinstorSR(SR.SR):
     def _get_journaler(self):
         if not self._journaler:
             self._journaler = LinstorJournaler(
-                self._linstor.uri, self._group_name, logger=util.SMlog
+                self._group_name,
+                native_client=self._linstor.native_client,
+                logger=util.SMlog
             )
         return self._journaler
 
