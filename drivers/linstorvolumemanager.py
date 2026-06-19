@@ -406,6 +406,10 @@ class LinstorVolumeManager(object):
         return self._uri
 
     @property
+    def native_client(self) -> linstor.Linstor:
+        return self._linstor
+
+    @property
     def group_name(self):
         """
         Give the used group name.
