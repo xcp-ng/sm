@@ -102,7 +102,7 @@ lvm_parse_pv(struct vg *vg, const char *name, int pvs, uint64_t start)
 	if (i == pvs)
 		return -ENOMEM;
 
-	err = lvm_copy_name(pv->name, name, sizeof(pv->name) - 1);
+	err = lvm_copy_name(pv->name, name, sizeof(pv->name));
 	if (err)
 		return err;
 
@@ -192,10 +192,11 @@ out:
 static int
 lvm_parse_lv_devices(struct vg *vg, struct lv_segment *seg, char *devices)
 {
-	int i;
+	int i, len;
 	uint64_t start, pe_start;
 
-	for (i = 0; i < strlen(devices); i++)
+	len = strlen(devices);
+	for (i = 0; i < len; i++)
 		if (strchr(",()", devices[i]))
 			devices[i] = ' ';
 
@@ -204,14 +205,14 @@ lvm_parse_lv_devices(struct vg *vg, struct lv_segment *seg, char *devices)
 		return -EINVAL;
 	}
 
-	pe_start = -1;
+	pe_start = UINT64_MAX;
 	for (i = 0; i < vg->pv_cnt; i++)
 		if (!strcmp(vg->pvs[i].name, seg->device)) {
 			pe_start = vg->pvs[i].start;
 			break;
 		}
 
-	if (pe_start == -1) {
+	if (pe_start == UINT64_MAX) {
 		EPRINTF("invalid pe_start value, device %s not found?\n",
 			seg->device);
 		EPRINTF("PVs known to VG %s, count %d -\n", vg->name, vg->pv_cnt);
@@ -286,7 +287,7 @@ lvm_scan_lvs(struct vg *vg)
 		lv->segments      = segs;
 		lv->first_segment = seg;
 
-		err = lvm_copy_name(lv->name, name, sizeof(lv->name) - 1);
+		err = lvm_copy_name(lv->name, name, sizeof(lv->name));
 		if (err)
 			goto out;
 		err = -EINVAL;

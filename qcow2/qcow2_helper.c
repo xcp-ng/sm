@@ -2,6 +2,7 @@
 
 #include "qcow_helper.h"
 #include "lvm-util.h"
+#include "util.h"
 
 static int compressed = 0;
 
@@ -49,10 +50,11 @@ char* qcow2_get_backing_file(struct qcow2_header* header, int fd, uint64_t devic
 }
 
 uint64_t* get_l1_offset(struct qcow2_header* header, int fd){
-    int i, err = 0;
+    int err = 0;
     uint64_t* raw_l1 = NULL;
     uint64_t l1_offset = header->l1_table_offset;
     uint32_t l1_table_size = sizeof(uint64_t) * header->l1_size;
+    uint32_t i;
 
     raw_l1 = malloc(l1_table_size);
     if(raw_l1 == NULL){
@@ -76,10 +78,10 @@ uint64_t* get_l1_offset(struct qcow2_header* header, int fd){
 }
 
 uint64_t* get_l2_table(struct qcow2_header* header, int fd, uint64_t offset, uint64_t nb_l2_entries, int extended_l2){
-    int i;
     ssize_t bytes_read;
     uint64_t* raw_l2 = NULL;
     uint64_t cluster_size = (1 << header->cluster_bits);
+    size_t i;
 
     raw_l2 = malloc(cluster_size);
     if(raw_l2 == NULL){
@@ -188,7 +190,8 @@ uint64_t get_allocated_l2_bytes(struct qcow2_header* header,
                                 int extended_l2)
 {
     uint64_t bytes = 0;
-    int j;
+    size_t j;
+
     for(j = 0; j < nb_l2_entries; j++){
         if (extended_l2) {
             // TODO:
@@ -201,10 +204,6 @@ uint64_t get_allocated_l2_bytes(struct qcow2_header* header,
 }
 
 
-void mark_l1_unallocated(char* bitmap, int i){}
-
-void mark_l2_unallocated(char* bitmap, int i, int j){}
-
 void set_bit(char* m, int bit, int val){
     *m |= (val << bit);
 }
@@ -215,7 +214,7 @@ void set_l1_bitmap(struct qcow2_header* header,
                    uint64_t nb_l2_entries,
                    int extended_l2)
 {
-    int j;
+    unsigned int j;
     int mementry;
     int bit;
 
@@ -237,7 +236,8 @@ void set_l1_bitmap(struct qcow2_header* header,
 }
 
 void dump_bitmap(struct qcow2_header* header, int fd, uint64_t *l1_table, uint64_t nb_l2_entries, int extended_l2){
-    int i, n;
+    size_t i;
+    int n;
     char* bitmap = NULL;
     uint64_t cluster_size = (1 << header->cluster_bits); //cluster size in bytes
     uint64_t total_blocks, bitmap_size;
@@ -265,7 +265,7 @@ void dump_bitmap(struct qcow2_header* header, int fd, uint64_t *l1_table, uint64
         }
         else{
             //Mark L1 (and subsequent L2) non allocated
-            mark_l1_unallocated(bitmap, i); // The bytes are already zeroed, we don't need to do anything
+            // mark_l1_unallocated(bitmap, i); // The bytes are already zeroed, we don't need to do anything
             // memset(base_l1_bitmap, 0, nb_byte_for_l1); //Mark the whole L1 as being unused
         }
     }
@@ -279,7 +279,7 @@ void dump_bitmap(struct qcow2_header* header, int fd, uint64_t *l1_table, uint64
 
 int get_allocated_bytes(struct qcow2_header* header, int fd, uint64_t *l1_table, uint64_t nb_l2_entries, int extended_l2){
     uint64_t bytes = 0;
-    int i;
+    size_t i;
 
     #pragma omp parallel for num_threads(4) reduction (+:bytes)
     for(i = 0; i < header->l1_size; i++){
@@ -505,8 +505,8 @@ size_t find_custom_header(struct qcow2_header* header, int fd, uint64_t device_o
 
     current_offset = header_length;
     current_offset += device_offset;
-    
-    do{
+
+    do {
         ext_type = read_data_from_qcow2_header(fd, current_offset);
         ext_len = read_data_from_qcow2_header(fd, current_offset+4);
         if(ext_type == CUSTOM_HEADER_TYPE){
@@ -522,7 +522,7 @@ size_t find_custom_header(struct qcow2_header* header, int fd, uint64_t device_o
 static int fill_scan_info_from_lv(struct lv *lv, struct scan_info *info) {
     int fd;
 
-    strncpy(info->name, lv->name, NAME_MAX_SIZE);
+    safe_strncpy(info->name, lv->name, MIN(sizeof(info->name), sizeof(lv->name)));
     info->size = lv->size;
 
     /* Getting header from the underlying device*/
@@ -539,20 +539,24 @@ static int fill_scan_info_from_lv(struct lv *lv, struct scan_info *info) {
     char* backing_file_name = get_backing_file_from_device(header, lv, fd);
     if(backing_file_name){
         char* parent_lv_name = basename(backing_file_name); //Transform the backing name from full path of the LV to just the LV name
-        strncpy(info->parent, parent_lv_name, NAME_MAX_SIZE);
+        safe_strncpy(info->parent, parent_lv_name, sizeof(info->parent));
         // strncpy(info->parent, backing_file_name, strlen(backing_file_name));
         //The existing code in qcow2util.py might need the full path though
         free(backing_file_name);
     }
-    else{
-        strncpy(info->parent, "none", 5);
+    else {
+        safe_strncpy(info->parent, "none", sizeof(info->parent));
     }
 
     /* Getting hidden from custom header */
     size_t custom_header_offset = find_custom_header(header, fd, lv->first_segment.pe_start);
     if(custom_header_offset){
         struct custom_header custom_header;
-        pread(fd, &custom_header, sizeof(struct custom_header), custom_header_offset);
+        int err;
+        err = pread(fd, &custom_header, sizeof(struct custom_header), custom_header_offset);
+        if(err < 0){
+            exit(EXIT_FAILURE); //TODO: Handle error correctly
+        }
         transform_custom_header_bswap(&custom_header);
         info->hidden = custom_header.data;
     }
@@ -678,14 +682,18 @@ static const command_t commands[] = {
 static void usage_help(void) { fprintf(stderr, "Usage: help\n"); }
 
 static void cmd_help(int argc, char **argv) {
-    int i;
+    size_t i;
+
+    (void)argc;
+    (void)argv;
+
     fprintf(stderr, "Usage: qcow2_helper <command> [options]\n\nCommands:\n");
     for (i = 0; i < ARRAY_SIZE(commands); i++)
         commands[i].usage();
 }
 
 int main(int argc, char *argv[]) {
-    int i;
+    size_t i;
 
     if (argc < 2) {
         fprintf(stderr, "Usage: %s <command> [options]\nRun '%s help' for a list of commands.\n", argv[0], argv[0]);
