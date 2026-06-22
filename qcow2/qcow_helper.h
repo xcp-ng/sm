@@ -10,13 +10,18 @@
 #include <string.h>
 #include <unistd.h>
 
-#define QCOW2_HEADER_SIZE 104
-#define QCOW2_MAGIC 0x514649FB
+#define QCOW2_HEADER_SIZE             104
+#define QCOW2_MAGIC                   0x514649FB
 
-#define L2_OFFSET_MASK 0x00FFFFFFFFFFFF00
-#define STANDARD_CLUSTER_OFFSET_MASK 0x00FFFFFFFFFFFF00 /* Bits 9-55 are offset of standard cluster */
-#define CLUSTER_TYPE_BIT (1UL << 62) /* 0 for standard, 1 for compressed cluster */
-#define ALLOCATED_ENTRY_BIT (1UL << 63) /* Bit 63 is the allocated bit for standard cluster */
+#define L2_OFFSET_MASK                0x00FFFFFFFFFFFF00
+#define STANDARD_CLUSTER_OFFSET_MASK  0x00FFFFFFFFFFFF00 /* Bits 9-55 are offset of standard cluster */
+
+#define COMPRESSED_SECTOR_SIZE     512
+#define COMPRESSED_SECTOR_MASK     (COMPRESSED_SECTOR_SIZE - 1)
+
+#define CLUSTER_TYPE_BIT           62
+#define CLUSTER_TYPE_MASK          (1UL << CLUSTER_TYPE_BIT) /* 0 for standard, 1 for compressed cluster */
+#define ALLOCATED_ENTRY_MASK       (1UL << 63)               /* Bit 63 is the allocated bit for standard cluster */
 
 /* Incompatible features */
 #define INCOMPATIBLE_FEATURE_EXTENDED_L2 0x0010

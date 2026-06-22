@@ -1,5 +1,9 @@
+#include <assert.h>
+
 #include "qcow_helper.h"
 #include "lvm-util.h"
+
+static int compressed = 0;
 
 static void transform_header_be_to_le(struct qcow2_header* header){
     SWAP_BE_TO_LE(32, magic);
@@ -98,16 +102,57 @@ uint64_t* get_l2_table(struct qcow2_header* header, int fd, uint64_t offset, uin
     return raw_l2;
 }
 
-int is_l2_allocated(uint64_t l2_entry){
-    if((l2_entry & CLUSTER_TYPE_BIT) != 0){
-        fprintf(stderr, "Cluster is compressed\n");
-        exit(EXIT_FAILURE); //TODO: Read compressed clusters
-    }
-    return ((l2_entry & ALLOCATED_ENTRY_BIT) != 0) || ((l2_entry & STANDARD_CLUSTER_OFFSET_MASK) != 0);
+size_t compressed_bytes(struct qcow2_header* header, uint64_t l2_entry)
+{
+    // Could be computed once, but it's cheap
+    uint64_t csize_shift = CLUSTER_TYPE_BIT - (header->cluster_bits - 8);
+    uint64_t csize_mask  = (1ULL << (header->cluster_bits - 8)) - 1;
+
+    // Ensure that shifting doesn't go beyond bit 55, and mask upper fields,
+    // if header is corrupted or forged
+    assert( ((1ULL << csize_shift) - 1) & ((1ULL << 56) - 1) );
+
+    uint64_t nb_csectors = ((l2_entry >> csize_shift) & csize_mask) + 1;
+    uint64_t coffset     = l2_entry & ((1ULL << csize_shift) - 1);
+
+    // compressed cluster are packed (not aligned), so they can start in middle of
+    // a sector
+    return (nb_csectors * COMPRESSED_SECTOR_SIZE) - (coffset % COMPRESSED_SECTOR_SIZE);
 }
 
-int is_extended_l2_allocated(uint64_t l2_entry_lo, uint64_t l2_entry_hi){
-    if((l2_entry_lo & CLUSTER_TYPE_BIT) != 0){
+size_t l2_allocated_bytes(struct qcow2_header* header, uint64_t l2_entry)
+{
+    // parse compressed (as in qcow2_parse_compressed_l2_entry())
+    if(l2_entry & CLUSTER_TYPE_MASK) {
+        assert((l2_entry & ALLOCATED_ENTRY_MASK) == 0);
+
+        if (compressed)
+            return compressed_bytes(header, l2_entry);
+        else
+            return (1 << header->cluster_bits);
+    }
+    else {
+        // A cluster can be allocated "directly" or could have been snapshoted:
+        // - if allocated != 0, offset != 0
+        // - if snapshoted internally, allocated == 0, offset != 0,
+        // - if snapshoted externally (whole L1/L2 structure is duplicated) :
+        //    - allocated != 0, offset != 0  => cluster is in this image
+        //    - allocated == 0               => backing file must be present
+        // NOTE: we don't use internal snapshot in XCP-ng, but we can't avoid users to
+        //       import images with internal snapshots.
+        int allocated =
+            (l2_entry & ALLOCATED_ENTRY_MASK) || (l2_entry & STANDARD_CLUSTER_OFFSET_MASK);
+
+        if (!allocated)
+            return 0;
+
+        return (1 << header->cluster_bits);
+    }
+}
+
+int is_extended_l2_allocated(uint64_t l2_entry_lo, uint64_t l2_entry_hi)
+{
+    if((l2_entry_lo & CLUSTER_TYPE_MASK) != 0){
         fprintf(stderr, "Cluster is compressed\n");
         exit(EXIT_FAILURE); //TODO: Read compressed clusters
     }
@@ -130,35 +175,31 @@ uint32_t count_set_bits(uint32_t alloc_status_bitmap)
 }
 
 uint32_t get_extended_l2_allocated(uint64_t l2_entry_lo, uint64_t l2_entry_hi){
-    if((l2_entry_lo & CLUSTER_TYPE_BIT) != 0){
+    if((l2_entry_lo & CLUSTER_TYPE_MASK) != 0){
         fprintf(stderr, "Cluster is compressed\n");
         exit(EXIT_FAILURE); //TODO: Read compressed clusters
     }
     return count_set_bits(l2_entry_hi & 0xffffffff);
 }
 
-uint64_t get_allocated_clusters(uint64_t nb_l2_entries, uint64_t *l2_table, int extended_l2)
+uint64_t get_allocated_l2_bytes(struct qcow2_header* header,
+                                uint64_t nb_l2_entries,
+                                uint64_t *l2_table,
+                                int extended_l2)
 {
-    uint64_t allocated_clusters = 0;
+    uint64_t bytes = 0;
     int j;
     for(j = 0; j < nb_l2_entries; j++){
         if (extended_l2) {
-            allocated_clusters += get_extended_l2_allocated(l2_table[j*2], l2_table[j*2+1]);
+            // TODO:
+            bytes += get_extended_l2_allocated(l2_table[j*2], l2_table[j*2+1]);
         } else {
-            if(is_l2_allocated(l2_table[j])){
-                allocated_clusters += 1;
-            }
+            bytes += l2_allocated_bytes(header, l2_table[j]);
         }
     }
-    return allocated_clusters;
+    return bytes;
 }
 
-uint64_t get_cluster_to_byte(uint64_t allocated_clusters, uint64_t cluster_size, int extended_l2){
-    if (extended_l2) {
-        return allocated_clusters * (cluster_size / 32);
-    }
-    return allocated_clusters * cluster_size;
-}
 
 void mark_l1_unallocated(char* bitmap, int i){}
 
@@ -168,7 +209,12 @@ void set_bit(char* m, int bit, int val){
     *m |= (val << bit);
 }
 
-void set_l1_bitmap(char *base_l1_bitmap, uint64_t *l2_table, uint64_t nb_l2_entries, int extended_l2) {
+void set_l1_bitmap(struct qcow2_header* header,
+                   char *base_l1_bitmap,
+                   uint64_t *l2_table,
+                   uint64_t nb_l2_entries,
+                   int extended_l2)
+{
     int j;
     int mementry;
     int bit;
@@ -179,7 +225,7 @@ void set_l1_bitmap(char *base_l1_bitmap, uint64_t *l2_table, uint64_t nb_l2_entr
                 continue;
             }
         } else {
-            if(!is_l2_allocated(l2_table[j])){
+            if(l2_allocated_bytes(header, l2_table[j]) == 0) {
                 continue;
             }
         }
@@ -214,7 +260,7 @@ void dump_bitmap(struct qcow2_header* header, int fd, uint64_t *l1_table, uint64
                 exit(EXIT_FAILURE);
             }
             char* base_l1_bitmap = bitmap + (i * nb_byte_for_l1);
-            set_l1_bitmap(base_l1_bitmap, l2_table, nb_l2_entries, extended_l2);
+            set_l1_bitmap(header, base_l1_bitmap, l2_table, nb_l2_entries, extended_l2);
             free(l2_table);
         }
         else{
@@ -231,11 +277,11 @@ void dump_bitmap(struct qcow2_header* header, int fd, uint64_t *l1_table, uint64
     free(bitmap);
 }
 
-int get_allocated_blocks(struct qcow2_header* header, int fd, uint64_t *l1_table, uint64_t nb_l2_entries, int extended_l2){
-    uint64_t allocated_clusters = 0;
+int get_allocated_bytes(struct qcow2_header* header, int fd, uint64_t *l1_table, uint64_t nb_l2_entries, int extended_l2){
+    uint64_t bytes = 0;
     int i;
 
-    #pragma omp parallel for num_threads(4) reduction (+:allocated_clusters)
+    #pragma omp parallel for num_threads(4) reduction (+:bytes)
     for(i = 0; i < header->l1_size; i++){
         uint64_t *l2_table = NULL;
         uint64_t l1_entry = l1_table[i];
@@ -245,11 +291,11 @@ int get_allocated_blocks(struct qcow2_header* header, int fd, uint64_t *l1_table
                 fprintf(stderr, "Couldn't get L2 Table");
                 exit(EXIT_FAILURE);
             }
-            allocated_clusters += get_allocated_clusters(nb_l2_entries, l2_table, extended_l2);
+            bytes += get_allocated_l2_bytes(header, nb_l2_entries, l2_table, extended_l2);
             free(l2_table);
         }
     }
-    return allocated_clusters;
+    return bytes;
 }
 
 static int qcow2_open(const char *filename, struct qcow2_header *header, int *fd_out) {
@@ -318,7 +364,7 @@ static void cmd_bitmap(int argc, char **argv) {
     close(fd);
 }
 
-static void usage_allocated(void) { fprintf(stderr, "Usage: allocated -f <file>\n"); }
+static void usage_allocated(void) { fprintf(stderr, "Usage: allocated -f <file> -c\n"); }
 
 static void cmd_allocated(int argc, char **argv) {
     char *filename = NULL;
@@ -326,9 +372,10 @@ static void cmd_allocated(int argc, char **argv) {
     struct qcow2_header header;
     uint64_t *l1_table;
 
-    while ((opt = getopt(argc, argv, "f:")) != -1) {
+    while ((opt = getopt(argc, argv, "f:c")) != -1) {
         switch (opt) {
         case 'f': filename = optarg; break;
+        case 'c': compressed = 1; break;
         default:
             usage_allocated();
             exit(EXIT_FAILURE);
@@ -351,8 +398,7 @@ static void cmd_allocated(int argc, char **argv) {
     }
     uint64_t cluster_size = qcow2_cluster_size(&header);
     int extended_l2 = qcow2_extended_l2(&header);
-    uint64_t clusters = get_allocated_blocks(&header, fd, l1_table, qcow2_nb_l2_entries(cluster_size, extended_l2), extended_l2);
-    uint64_t bytes = get_cluster_to_byte(clusters, cluster_size, extended_l2);
+    uint64_t bytes = get_allocated_bytes(&header, fd, l1_table, qcow2_nb_l2_entries(cluster_size, extended_l2), extended_l2);
     printf("%lu\n", bytes);
     free(l1_table);
     close(fd);
