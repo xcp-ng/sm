@@ -34,19 +34,23 @@
 #include <stddef.h>
 #include <string.h>
 
-#define ARRAY_SIZE(_a) (sizeof(_a)/sizeof((_a)[0]))
+#ifndef ARRAY_SIZE
+# define ARRAY_SIZE(_a) (sizeof(_a)/sizeof((_a)[0]))
+#endif
+
+#define MIN(a,b) ((a) < (b) ? (a) : (b))
 
 /*
  * Strncpy variant that guarantees to terminate the string
  */
-static inline char *
+static inline void
 safe_strncpy(char *dest, const char *src, size_t n)
 {
-	char *pdest;
-	pdest = strncpy(dest, src, n - 1);
-	if (n > 0)
-		dest[n - 1] = '\0';
-	return pdest;
+	if (n > 0) {
+		size_t len = strnlen(src, n - 1);
+		memcpy(dest, src, len);
+		dest[len] = '\0';
+	}
 }
 
 #endif /* __TAPDISK_UTIL_H__ */
