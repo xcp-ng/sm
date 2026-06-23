@@ -773,19 +773,23 @@ def getrootdevID():
 
 
 class APISession(contextlib.AbstractContextManager):
+    session=None
+
     def __init__(self, originator="SM"):
         self.originator = originator
         # First acquire a valid session
         self.session = self._login()
-        SMlog("APISession [{}] login".format(self.originator), priority=LOG_DEBUG)
         atexit.register(self._atexit)
 
     def _login(self):
+        if self.session:
+            return self.session
         session = XenAPI.xapi_local()
         try:
             session.xenapi.login_with_password('root', '', '', self.originator)
         except Exception as exc:
             raise xs_errors.XenError(f"APISession [{self.originator}] Unable to open local XAPI session") from exc
+        SMlog("APISession [{}] login".format(self.originator), priority=LOG_DEBUG)
         return session
 
     def _logout(self, log):
@@ -810,8 +814,7 @@ class APISession(contextlib.AbstractContextManager):
 
     @override
     def __enter__(self):
-        if not self.session:
-            raise SyntaxError("Session is already closed: wrong usage of context.")
+        self.session = self._login()
         return self.session
 
     @override
@@ -1488,7 +1491,7 @@ class FistPoint:
         return os.path.exists("/tmp/fist_%s" % name)
 
     def mark_sr(self, name, sruuid, started):
-        with APISession("SM-util-FistPoint-mark_sr") as session:
+        with APISession("SM-sr-fist-point") as session:
             sr = session.xenapi.SR.get_by_uuid(sruuid)
             if started:
                 session.xenapi.SR.add_to_other_config(sr, name, "active")

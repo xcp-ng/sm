@@ -220,12 +220,8 @@ def check_xapi_is_enabled():
         util.SMlog(f"XAPI health check failed: {stderr}")
     return returncode == 0
 
-if __name__ == '__main__':
-    try:
-        session = util.APISession("SM-mpathcount").session
-    except xs_errors.XenError:
-        sys.exit(-1)
-
+def main(session):
+    global mpath_enabled
     localhost = session.xenapi.host.get_by_uuid(get_localhost_uuid())
     check_xapi_is_enabled()
     # Check whether multipathing is enabled (either for root dev or SRs)
@@ -282,4 +278,10 @@ if __name__ == '__main__':
 
     util.SMlog("MPATH: Update done")
 
+if __name__ == '__main__':
+    try:
+        with util.APISession("SM-mpathcount") as api_session:
+            main(api_session)
+    except xs_errors.XenError:
+        sys.exit(-1)
     sys.exit(0)
