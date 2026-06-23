@@ -152,11 +152,10 @@ size_t l2_allocated_bytes(struct qcow2_header* header, uint64_t l2_entry)
     }
 }
 
-int is_extended_l2_allocated(uint64_t l2_entry_lo, uint64_t l2_entry_hi)
+int is_extended_l2_allocated(struct qcow2_header* header, uint64_t l2_entry_lo, uint64_t l2_entry_hi)
 {
-    if((l2_entry_lo & CLUSTER_TYPE_MASK) != 0){
-        fprintf(stderr, "Cluster is compressed\n");
-        exit(EXIT_FAILURE); //TODO: Read compressed clusters
+    if(l2_entry_lo & CLUSTER_TYPE_MASK) {
+        return l2_allocated_bytes(header, l2_entry_lo);
     }
     return l2_entry_hi & 0xffffffff;
 }
@@ -168,11 +167,11 @@ uint32_t count_set_bits(uint32_t bitmap)
 
 uint32_t extended_l2_allocated_bytes(struct qcow2_header* header, uint64_t l2_entry_lo, uint64_t l2_entry_hi)
 {
-    if(l2_entry_lo & CLUSTER_TYPE_MASK) {
-        fprintf(stderr, "Cluster is compressed\n");
-        exit(EXIT_FAILURE); //TODO: Read compressed clusters
-    }
-    return __builtin_popcount(l2_entry_hi & 0xffffffff) * (1 << header->cluster_bits) / 32;
+    // if compression enable, bitmap is ignored (see qcow2_get_subcluster_type())
+    if (l2_entry_lo & CLUSTER_TYPE_MASK)
+        return l2_allocated_bytes(header, l2_entry_lo);
+    else
+        return count_set_bits(l2_entry_hi & 0xffffffff) * (1 << header->cluster_bits) / 32;
 }
 
 uint64_t get_allocated_l2_bytes(struct qcow2_header* header,
@@ -210,7 +209,7 @@ void set_l1_bitmap(struct qcow2_header* header,
 
     for (j = 0; j < nb_l2_entries; j++) {
         if (extended_l2) {
-            if(!is_extended_l2_allocated(l2_table[j*2], l2_table[j*2+1])) {
+            if(!is_extended_l2_allocated(header, l2_table[j*2], l2_table[j*2+1])) {
                 continue;
             }
         } else {
