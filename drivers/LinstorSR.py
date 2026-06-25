@@ -1590,8 +1590,7 @@ class LinstorSR(SR.SR):
         """
         Generate a new database backup file.
         This operation should not prevent the underlying action to be successful.
-        Hence all Exceptions are caught and re-raised only if asked to.
-        delay: skip backup if the last one was generated less than delay seconds ago.
+        Hence all Exceptions are caught and logged.
         """
         if not self._linstor:
             self._reconnect()
@@ -1599,7 +1598,7 @@ class LinstorSR(SR.SR):
             self._linstor.database_backup(name)
         except Exception as e:
             util.SMlog(
-                "[database_backup] Error during creation: {}".format(e),
+                f"[database_backup] Error during creation: {e}",
                 priority=util.LOG_ERR,
             )
 

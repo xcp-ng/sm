@@ -1801,7 +1801,7 @@ class LinstorVolumeManager(object):
         If not called on the Controller, since backups are not available,
         returns a huge value (a timestamp of now).
         """
-        return (datetime.now() - cls._get_latest_database_backup()).total_seconds()
+        return (datetime.now() - cls._get_latest_database_backup()[1]).total_seconds()
 
     def database_backup(self, name=""):
         # Create new backup
@@ -2714,8 +2714,14 @@ class LinstorVolumeManager(object):
 
     @classmethod
     def _list_database_backup(cls, database_backup_dir):
+        """
+        List all visible backup files in database_backup_dir.
+        DATABASE_BACKUP_DIR_MAIN is only available on the Linstor Controller.
+        DATABASE_BACKUP_DIR_SPARE will list backups previously made when the Host was the Linstor Controller.
+        This may not be useful information if it is not the Controller anymore.
+        """
         for path in database_backup_dir.glob(DATABASE_BACKUP_NAME_FORMAT.format(
-                "20[0-9][0-9][01][0-9][0-3][0-9]_[0-2][0-9][0-5][0-9][0-5][0-9]", "*") + ".zip"):
+                "[0-9]" * 8 + "_" + "[0-9]" * 6, "*") + ".zip"):
             try:
                 yield path, datetime.strptime(path.name.split("-")[1], DATABASE_BACKUP_DATE_FORMAT)
             except (ValueError, IndexError):
@@ -2723,18 +2729,34 @@ class LinstorVolumeManager(object):
 
     @classmethod
     def _get_sorted_database_backup(cls, database_backup_dir):
+        """
+        Return list of backups in database_backup_dir, alongside their creation date.
+        Sorted by date from the more recent to the older one.
+        """
         return sorted(cls._list_database_backup(database_backup_dir),
                       reverse=True,
                       key=lambda p: p[1])
 
     @classmethod
     def _get_latest_database_backup(cls):
+        """
+        Return the latest backup in DATABASE_BACKUP_DIR_MAIN, and its creation date.
+        Returns (None, timestamp(0)) when none are found.
+        None will be found if it is not called on the Linstor Controller.
+        (cf _list_database_backup)
+        """
         return max(cls._list_database_backup(DATABASE_BACKUP_DIR_MAIN),
                    default=(None, datetime.fromtimestamp(0)),
                    key=lambda p: p[1])
 
     @classmethod
     def _check_database_backup(cls, database_backup_file):
+        """
+        Make some validation of a database backup zip-file.
+        Check its a valid zipfile, and CRC-test its content.
+        Check it contains a non-empty linstordb.mv.db file.
+        Always raises a LinstorDatabaseBackupError if checks failed.
+        """
         try:
             with zipfile.ZipFile(database_backup_file, mode="r") as archive:
                 if archive.testzip() is not None:
@@ -2745,8 +2767,6 @@ class LinstorVolumeManager(object):
                 linstordb = linstordb[0]
                 if linstordb.file_size == 0:
                     raise LinstorDatabaseBackupError("linstordb.mv.db is empty")
-        except LinstorDatabaseBackupError:
-            raise
         except (FileNotFoundError, zipfile.BadZipFile, zipfile.LargeZipFile) as e:
             raise LinstorDatabaseBackupError(e) from e
 
