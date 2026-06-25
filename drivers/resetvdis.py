@@ -58,6 +58,20 @@ def reset_sr(session, host_uuid, sr_uuid, is_sr_master):
     gc_lock.release()
 
 
+def log_msg(msg, term_output=False):
+    util.SMlog(msg)
+    if term_output:
+        print(msg)
+
+
+def clean_vdi_status(session, vdi_ref, vdi_uuid, sm_config):
+    for key in [cleanup.VDI.DB_VDI_ACTIVATING, cleanup.VDI.DB_VDI_PAUSED]:
+        if key in sm_config:
+            session.xenapi.VDI.remove_from_sm_config(vdi_ref, key)
+            sm_config.pop(key, None)
+            log_msg(f"Removed key {key} from VDI {vdi_uuid}")
+
+
 def reset_vdi(session, vdi_uuid, force, term_output=True, writable=True):
     vdi_ref = session.xenapi.VDI.get_by_uuid(vdi_uuid)
     vdi_rec = session.xenapi.VDI.get_record(vdi_ref)
@@ -75,57 +89,42 @@ def reset_vdi(session, vdi_uuid, force, term_output=True, writable=True):
                 host_uuid = host_rec["uuid"]
                 host_str = "%s (%s)" % (host_uuid, host_rec["name_label"])
             except XenAPI.Failure as e:
-                msg = "Invalid host: %s (%s)" % (host_ref, e)
-                util.SMlog(msg)
-                if term_output:
-                    print(msg)
+                log_msg(f"Invalid host: {host_ref} ({e})", term_output)
                 host_invalid = True
 
             if host_invalid:
                 session.xenapi.VDI.remove_from_sm_config(vdi_ref, key)
-                msg = "Invalid host: Force-cleared %s for %s on host %s" % \
-                        (val, vdi_uuid, host_str)
-                util.SMlog(msg)
-                if term_output:
-                    print(msg)
+                log_msg(f"Invalid host: Force-cleared {val} for {vdi_uuid} on host {host_str}", term_output)
+                # If the host was invalid, pretend we didn't find if after clearing it.
+                host_ref = None
                 continue
 
             if force:
                 session.xenapi.VDI.remove_from_sm_config(vdi_ref, key)
-                msg = "Force-cleared %s for %s on host %s" % \
-                        (val, vdi_uuid, host_str)
-                util.SMlog(msg)
-                if term_output:
-                    print(msg)
+                log_msg(f"Force-cleared {val} for {vdi_uuid} on host {host_str}", term_output)
+                # If "force" was specified, pretend we didn't find the host after clearing it.
+                host_ref = None
                 continue
 
-            ret = session.xenapi.host.call_plugin(
-                    host_ref, "on-slave", "is_open",
-                    {"vdiUuid": vdi_uuid, "srRef": vdi_rec["SR"]})
-            if ret != "False":
-                util.SMlog("VDI %s is still open on host %s, not resetting" % \
-                        (vdi_uuid, host_str))
+            ret = session.xenapi.host.call_plugin(host_ref, "on-slave", "is_open", {"vdiUuid": vdi_uuid, "srRef": vdi_rec["SR"]})
+            if ret == "False":
+                session.xenapi.VDI.remove_from_sm_config(vdi_ref, key)
+                log_msg(f"Cleared {val} for {vdi_uuid} on host {host_str}", term_output)
+                clean_vdi_status(session, vdi_ref, vdi_uuid, sm_config)
+            else:
+                util.SMlog(f"VDI {vdi_uuid} is still open on host {host_str}, not resetting")
                 if term_output:
-                    print("ERROR: VDI %s is still open on host %s" % \
-                            (vdi_uuid, host_str))
+                    print(f"ERROR: VDI {vdi_uuid} is still open on host {host_str}")
                 if writable:
                     return False
                 else:
                     clean = False
-            else:
-                session.xenapi.VDI.remove_from_sm_config(vdi_ref, key)
-                msg = "Cleared %s for %s on host %s" % \
-                        (val, vdi_uuid, host_str)
-                util.SMlog(msg)
-                if term_output:
-                    print(msg)
 
     if not host_ref:
-        msg = "VDI %s is not marked as attached anywhere, nothing to do" \
-            % vdi_uuid
-        util.SMlog(msg)
-        if term_output:
-            print(msg)
+        # Either we genuinely did not find a host record, or it was invalid or forcibly removed.
+        # Therefore we can consider the VDI as not attached and clear the status
+        clean_vdi_status(session, vdi_ref, vdi_uuid, sm_config)
+        log_msg(f"VDI {vdi_uuid} is not marked as attached anywhere", term_output)
     return clean
 
 
