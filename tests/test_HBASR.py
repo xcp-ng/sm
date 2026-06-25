@@ -2,13 +2,12 @@ import unittest.mock as mock
 import HBASR
 import unittest
 import SR
+from SRCommand import SRCommand
+from DummySR import DRIVER_INFO
 import xml.dom.minidom
 import util
 import xs_errors
-
-
-def mock_init(self):
-    pass
+import uuid
 
 
 def imp_fake_probe():
@@ -62,21 +61,33 @@ def fake_probe(self):
 
 
 class TestHBASR(unittest.TestCase):
+    def setUp(self):
+        self.addCleanup(mock.patch.stopall)
 
-    @mock.patch('HBASR.HBASR.__init__', mock_init)
+        adapters_patcher = mock.patch(
+            "HBASR.devscan.adapters", autospec=True)
+        self.mock_devscan_adapters = adapters_patcher.start()
+
+    def make_sr_cmd(self, command='sr_probe'):
+        sr_cmd = mock.Mock(spec=SRCommand(DRIVER_INFO))
+        sr_cmd.dconf = {}
+        sr_cmd.params = {'command': command}
+        return sr_cmd
+
     def test_handles(self):
+        sr_uuid = str(uuid.uuid4())
+        sr_cmd = self.make_sr_cmd()
 
-        sr = HBASR.HBASR()
+        sr = HBASR.HBASR(sr_cmd, sr_uuid)
 
         self.assertFalse(sr.handles("blah"))
         self.assertTrue(sr.handles("hba"))
 
-    @mock.patch('HBASR.HBASR.__init__', mock_init)
     def test_load(self):
-
         sr_uuid = 123
-        sr = HBASR.HBASR()
-        sr.dconf = {}
+        sr_cmd = self.make_sr_cmd()
+
+        sr = HBASR.HBASR(sr_cmd, sr_uuid)
         sr.load(sr_uuid)
 
         self.assertEqual(sr.sr_vditype, 'phy')
@@ -103,52 +114,52 @@ class TestHBASR(unittest.TestCase):
         self.assertEqual(sr.procname, "")
         self.assertEqual(sr.devs, {})
 
-    @mock.patch('HBASR.HBASR.__init__', mock_init)
-    @mock.patch('HBASR.devscan.adapters', autospec=True)
     @mock.patch('HBASR.scsiutil.cacheSCSIidentifiers', autospec=True)
-    def test__intit_bhadict_already_init(self, mock_cacheSCSIidentifiers,
-                                         mock_devscan_adapters):
-        sr = HBASR.HBASR()
+    def test__intit_bhadict_already_init(self, mock_cacheSCSIidentifiers):
+        sr_uuid = str(uuid.uuid4())
+        sr_cmd = self.make_sr_cmd()
+        sr = HBASR.HBASR(sr_cmd, sr_uuid)
         sr.hbas = {"Pitt": "The elder"}
         sr._init_hbadict()
         self.assertEqual(mock_cacheSCSIidentifiers.call_count, 0)
-        self.assertEqual(mock_devscan_adapters.call_count, 0)
+        self.assertEqual(self.mock_devscan_adapters.call_count, 0)
 
-    @mock.patch('HBASR.HBASR.__init__', mock_init)
-    @mock.patch('HBASR.devscan.adapters', autospec=True)
     @mock.patch('HBASR.scsiutil.cacheSCSIidentifiers', autospec=True)
-    def test__init_hbadict(self, mock_cacheSCSIidentifiers,
-                           mock_devscan_adapters):
-        sr = HBASR.HBASR()
+    def test__init_hbadict(self, mock_cacheSCSIidentifiers):
+        sr_uuid = str(uuid.uuid4())
+        sr_cmd = self.make_sr_cmd()
+        sr = HBASR.HBASR(sr_cmd, sr_uuid)
         sr.type = "foo"
-        mock_devscan_adapters.return_value = {"devs": "toaster", "adt": []}
+        self.mock_devscan_adapters.return_value = {
+            "devs": "toaster", "adt": []}
         sr._init_hbadict()
-        mock_devscan_adapters.assert_called_with(filterstr="foo")
+        self.mock_devscan_adapters.assert_called_with(filterstr="foo")
         self.assertEqual(mock_cacheSCSIidentifiers.call_count, 0)
-        self.assertEqual(mock_devscan_adapters.call_count, 1)
+        self.assertEqual(self.mock_devscan_adapters.call_count, 1)
         self.assertEqual(sr.hbas, [])
         self.assertEqual(sr.hbadict, "toaster")
 
         mock_cacheSCSIidentifiers.call_count = 0
-        mock_devscan_adapters.call_count = 0
+        self.mock_devscan_adapters.call_count = 0
         mock_cacheSCSIidentifiers.return_value = "123445"
-        sr2 = HBASR.HBASR()
+        sr2 = HBASR.HBASR(sr_cmd, sr_uuid)
         sr2.type = "foo"
-        mock_devscan_adapters.return_value = {"devs": "toaster",
-                                              "adt": ["dev1", "dev2"]}
+        self.mock_devscan_adapters.return_value = {"devs": "toaster",
+                                                   "adt": ["dev1", "dev2"]}
         sr2._init_hbadict()
         self.assertEqual(mock_cacheSCSIidentifiers.call_count, 1)
-        self.assertEqual(mock_devscan_adapters.call_count, 1)
+        self.assertEqual(self.mock_devscan_adapters.call_count, 1)
         self.assertEqual(sr2.hbas, ["dev1", "dev2"])
         self.assertEqual(sr2.hbadict, "toaster")
         self.assertTrue(sr2.attached)
         self.assertEqual(sr2.devs, "123445")
 
-    @mock.patch('HBASR.HBASR.__init__', mock_init)
     @mock.patch('HBASR.HBASR._probe_hba', autospec=True)
     @mock.patch('HBASR.xml.dom.minidom.parseString', autospec=True)
     def test__init_hbahostname_assert(self, mock_parseString, mock_probe_hba):
-        sr = HBASR.HBASR()
+        sr_uuid = str(uuid.uuid4())
+        sr_cmd = self.make_sr_cmd()
+        sr = HBASR.HBASR(sr_cmd, sr_uuid)
         mock_probe_hba.return_value = "blah"
         mock_parseString.side_effect = Exception("bad xml")
         with self.assertRaises(xs_errors.SROSError) as cm:
@@ -157,18 +168,20 @@ class TestHBASR(unittest.TestCase):
                          "Unable to parse XML "
                          "[opterr=HBA Host WWN scanning failed]")
 
-    @mock.patch('HBASR.HBASR.__init__', mock_init)
     @mock.patch('HBASR.HBASR._probe_hba', fake_probe)
     def test__init_hbahostname(self):
-        sr = HBASR.HBASR()
+        sr_uuid = str(uuid.uuid4())
+        sr_cmd = self.make_sr_cmd()
+        sr = HBASR.HBASR(sr_cmd, sr_uuid)
         res = sr._init_hba_hostname()
         self.assertEqual(res, "20-00-00-e0-8b-18-20-8b")
 
-    @mock.patch('HBASR.HBASR.__init__', mock_init)
     @mock.patch('HBASR.HBASR._probe_hba', autospec=True)
     @mock.patch('HBASR.xml.dom.minidom.parseString', autospec=True)
     def test__init_hbas_assert(self, mock_parseString, mock_probe_hba):
-        sr = HBASR.HBASR()
+        sr_uuid = str(uuid.uuid4())
+        sr_cmd = self.make_sr_cmd()
+        sr = HBASR.HBASR(sr_cmd, sr_uuid)
         mock_probe_hba.return_value = "blah"
         mock_parseString.side_effect = Exception("bad xml")
         with self.assertRaises(xs_errors.SROSError) as cm:
@@ -177,18 +190,20 @@ class TestHBASR(unittest.TestCase):
                          "Unable to parse XML "
                          "[opterr=HBA scanning failed]")
 
-    @mock.patch('HBASR.HBASR.__init__', mock_init)
     @mock.patch('HBASR.HBASR._probe_hba', fake_probe)
     def test__init_hbas(self):
-        sr = HBASR.HBASR()
+        sr_uuid = str(uuid.uuid4())
+        sr_cmd = self.make_sr_cmd()
+        sr = HBASR.HBASR(sr_cmd, sr_uuid)
         res = sr._init_hbas()
         self.assertEqual(res, {'host2': '50-01-43-80-24-26-ba-f4',
                                'host1': '50-01-43-80-24-26-ba-f4'})
 
-    @mock.patch('HBASR.HBASR.__init__', mock_init)
     @mock.patch('HBASR.util.pread', autospec=True)
     def test__probe_hba_assert(self, mock_pread):
-        sr = HBASR.HBASR()
+        sr_uuid = str(uuid.uuid4())
+        sr_cmd = self.make_sr_cmd()
+        sr = HBASR.HBASR(sr_cmd, sr_uuid)
         mock_pread.side_effect = Exception("bad")
         with self.assertRaises(xs_errors.SROSError) as cm:
             sr._probe_hba()
@@ -196,11 +211,12 @@ class TestHBASR(unittest.TestCase):
                          "Unable to parse XML "
                          "[opterr=HBA probe failed]")
 
-    @mock.patch('HBASR.HBASR.__init__', mock_init)
     @mock.patch('HBASR.util.pread', autospec=True)
     @mock.patch('HBASR.util.listdir', autospec=True)
     def test__probe_hba(self, mock_listdir, mock_pread):
-        sr = HBASR.HBASR()
+        sr_uuid = str(uuid.uuid4())
+        sr_cmd = self.make_sr_cmd()
+        sr = HBASR.HBASR(sr_cmd, sr_uuid)
         mock_listdir.return_value = iter(["host1", "host2"])
         # Output of preads sliced by _probe_hba to remove newlines.
         mock_pread.side_effect = iter(["nvme_special\n",
@@ -214,9 +230,10 @@ class TestHBASR(unittest.TestCase):
         res = sr._probe_hba()
         self.assertEqual(res, imp_fake_probe())
 
-    @mock.patch('HBASR.HBASR.__init__', mock_init)
     @mock.patch('HBASR.HBASR._mpathHandle', autospec=True)
     def test_attach(self, mock_mpath):
-        sr = HBASR.HBASR()
+        sr_uuid = str(uuid.uuid4())
+        sr_cmd = self.make_sr_cmd()
+        sr = HBASR.HBASR(sr_cmd, sr_uuid)
         sr.attach(1234)
         self.assertEqual(mock_mpath.call_count, 1)
