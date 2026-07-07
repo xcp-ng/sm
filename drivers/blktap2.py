@@ -881,7 +881,8 @@ class Tapdisk(object):
 
         openers = get_all_volume_openers(volume_name, "0")
 
-        session = util.timeout(5, util.get_localAPI_session)
+        api_session = util.timeout(5, util.APISession, "blktap-abort_linstor_gc")
+        session = api_session.session
         try:
             srs = util.get_linstor_srs_uuid(session)
             pbd_ref = util.find_pbd_ref_from_dconf_value(
@@ -901,7 +902,7 @@ class Tapdisk(object):
 
             util.SMlog(f"Unable to run tapdisk, openers of DRBD resource `{drbd_path}`: {openers}")
         finally:
-            session.xenapi.session.logout()
+            api_session.logout()
 
         return False
 
