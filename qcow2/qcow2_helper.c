@@ -6,25 +6,25 @@
 
 static int compressed = 0;
 
-static void transform_header_be_to_le(struct qcow2_header* header){
-    SWAP_BE_TO_LE(32, magic);
-    SWAP_BE_TO_LE(32, version);
-    SWAP_BE_TO_LE(64, backing_file_offset);
-    SWAP_BE_TO_LE(32, backing_file_size);
-    SWAP_BE_TO_LE(32, cluster_bits);
-    SWAP_BE_TO_LE(64, size);
-    SWAP_BE_TO_LE(32, crypt_method);
-    SWAP_BE_TO_LE(32, l1_size);
-    SWAP_BE_TO_LE(64, l1_table_offset);
-    SWAP_BE_TO_LE(64, refcount_table_offset);
-    SWAP_BE_TO_LE(32, refcount_table_clusters);
-    SWAP_BE_TO_LE(32, nb_snapshots);
-    SWAP_BE_TO_LE(64, snapshots_offset);
-    SWAP_BE_TO_LE(64, incompatible_features);
-    SWAP_BE_TO_LE(64, compatible_features);
-    SWAP_BE_TO_LE(64, autoclear_features);
-    SWAP_BE_TO_LE(32, refcount_order);
-    SWAP_BE_TO_LE(32, header_length);
+static void qcow2_header_to_host_order(struct qcow2_header* header){
+    BE_TO_HOST(32, magic);
+    BE_TO_HOST(32, version);
+    BE_TO_HOST(64, backing_file_offset);
+    BE_TO_HOST(32, backing_file_size);
+    BE_TO_HOST(32, cluster_bits);
+    BE_TO_HOST(64, size);
+    BE_TO_HOST(32, crypt_method);
+    BE_TO_HOST(32, l1_size);
+    BE_TO_HOST(64, l1_table_offset);
+    BE_TO_HOST(64, refcount_table_offset);
+    BE_TO_HOST(32, refcount_table_clusters);
+    BE_TO_HOST(32, nb_snapshots);
+    BE_TO_HOST(64, snapshots_offset);
+    BE_TO_HOST(64, incompatible_features);
+    BE_TO_HOST(64, compatible_features);
+    BE_TO_HOST(64, autoclear_features);
+    BE_TO_HOST(32, refcount_order);
+    BE_TO_HOST(32, header_length);
 }
 
 char* qcow2_get_backing_file(struct qcow2_header* header, int fd, uint64_t device_offset){
@@ -71,7 +71,7 @@ uint64_t* get_l1_offset(struct qcow2_header* header, int fd){
     }
 
     for(i = 0; i < header->l1_size; i++){
-        raw_l1[i] = (__builtin_bswap64(raw_l1[i]) & L2_OFFSET_MASK);
+        raw_l1[i] = (be64toh(raw_l1[i]) & L2_OFFSET_MASK);
     }
 
     return raw_l1;
@@ -98,7 +98,7 @@ uint64_t* get_l2_table(struct qcow2_header* header, int fd, uint64_t offset, uin
     }
 
     for(i = 0; i < nb_l2_entries * (extended_l2 ? 2 : 1); i++){
-        raw_l2[i] = __builtin_bswap64(raw_l2[i]);
+        raw_l2[i] = be64toh(raw_l2[i]);
     }
 
     return raw_l2;
@@ -302,7 +302,7 @@ static int qcow2_open(const char *filename, struct qcow2_header *header, int *fd
         close(fd);
         return -1;
     }
-    transform_header_be_to_le(header);
+    qcow2_header_to_host_order(header);
     if (header->magic != QCOW2_MAGIC) {
         fprintf(stderr, "MAGIC is wrong\n");
         close(fd);
@@ -454,7 +454,7 @@ struct qcow2_header* get_header_from_device(struct lv* lv, int fd){
         fprintf(stderr, "Failed reading file %s\n", lv->name);
         goto err_free_header;
     }
-    transform_header_be_to_le(header);
+    qcow2_header_to_host_order(header);
     if (header->magic != QCOW2_MAGIC) {
         fprintf(stderr, "MAGIC is wrong for %s\n", lv->name);
         goto err_free_header;
@@ -481,14 +481,14 @@ static uint32_t read_data_from_qcow2_header(int fd, size_t offset){
     if(pread(fd, &data, 4, offset) < 1){
         exit(EXIT_FAILURE); //TODO: Handle error correctly
     }
-    data = __builtin_bswap32(data);
+    data = be32toh(data);
     return data;
 }
 
 void transform_custom_header_bswap(struct custom_header* custom_header){
-    custom_header->type = __builtin_bswap32(custom_header->type);
-    custom_header->length = __builtin_bswap32(custom_header->length);
-    // custom_header->custom_header_data = __builtin_bswap64(custom_header->custom_header_data);
+    custom_header->type = be32toh(custom_header->type);
+    custom_header->length = be32toh(custom_header->length);
+    // custom_header->custom_header_data = be64toh(custom_header->custom_header_data);
     /**
      The data in the custom header is little endian when it should be big endian in qcow2
      It's because the python code writing the hidden status wrote directly at the offset of the data

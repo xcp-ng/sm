@@ -69,8 +69,8 @@ struct qcow2_header {
     uint32_t header_length;
 } __attribute__((packed));
 
-#define SWAP_BE_TO_LE(size, x) \
-    header->x = __builtin_bswap ##size(header->x)
+#define BE_TO_HOST(size, x) \
+    header->x = be ##size## toh(header->x)
 
 static inline uint64_t qcow2_cluster_size(const struct qcow2_header *header) {
     return (uint64_t)1 << header->cluster_bits;
