@@ -309,6 +309,18 @@ static int qcow2_open(const char *filename, struct qcow2_header *header, int *fd
         return -1;
     }
 
+    // XXX: do we want to support snapshots ?
+    //      currently result would silently undercount space
+    //      As with compression, XCP-ng doesn't support internal snapshots but
+    //      we can't avoid a user to import an image with snapshots
+    if (header->nb_snapshots != 0) {
+        fprintf(stderr,
+                "ERROR: %s: image has %u internal snapshot(s), not supported !\n",
+                filename, header->nb_snapshots);
+        close(fd);
+        return -1;
+    }
+
     *fd_out = fd;
     return 0;
 }
