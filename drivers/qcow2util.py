@@ -486,7 +486,6 @@ class QCowUtil(CowUtil):
         cowinfo.sizeVirt = self.header["virtual_disk_size"]
         cowinfo.sizePhys = self.getSizePhys(path)
         cowinfo.hidden = self.getHidden(path)
-        cowinfo.sizeAllocated = self.getAllocatedSize(path)
         if includeParent:
             parent_path = self.header["parent"]
             if parent_path != "":
