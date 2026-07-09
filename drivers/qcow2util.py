@@ -841,7 +841,7 @@ class QCowUtil(CowUtil):
 
     @override
     def canSnapshotRaw(self, size: int) -> bool:
-        return True
+        return size <= MAX_QCOW_SIZE
 
     @override
     def check(
