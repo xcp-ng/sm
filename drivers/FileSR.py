@@ -22,6 +22,7 @@ from sm_typing import Dict, Optional, List, override
 import SR
 import VDI
 import SRCommand
+import contextlib
 import util
 import scsiutil
 import lock
@@ -437,45 +438,35 @@ class FileSR(SR.SR):
         return True
 
 class FileVDI(VDI.VDI):
-    def _find_path_with_retries(self, vdi_uuid, maxretry=5, period=2.0):
-        vdi_uuid_str = str(vdi_uuid)
-        raw_path = os.path.join(self.sr.path, vdi_uuid_str + VdiTypeExtension.RAW)
-        vhd_path = os.path.join(self.sr.path, vdi_uuid_str + VdiTypeExtension.VHD)
-        qcow2_path = os.path.join(self.sr.path, vdi_uuid_str + VdiTypeExtension.QCOW2)
-        cbt_path = os.path.join(self.sr.path, vdi_uuid_str + VdiTypeExtension.CBTLOG)
-        found = False
-        tries = 0
-        while tries < maxretry and not found:
-            tries += 1
-            if util.ioretry(lambda: util.pathexists(vhd_path)):
-                self.vdi_type = VdiType.VHD
-                self.path = vhd_path
-                found = True
-            elif util.ioretry(lambda: util.pathexists(qcow2_path)):
-                self.vdi_type = VdiType.QCOW2
-                self.path = qcow2_path
-                found = True
-            elif util.ioretry(lambda: util.pathexists(raw_path)):
-                self.vdi_type = VdiType.RAW
-                self.path = raw_path
-                self.hidden = False
-                found = True
-            elif util.ioretry(lambda: util.pathexists(cbt_path)):
-                self.vdi_type = VdiType.CBTLOG
-                self.path = cbt_path
-                self.hidden = False
-                found = True
+    def _resolve_vdi_context_from_path(self, vdi_uuid, maxretry=5, period=2.0):
+        vdi_formats = (
+            (VdiTypeExtension.VHD, VdiType.VHD),
+            (VdiTypeExtension.QCOW2, VdiType.QCOW2),
+            (VdiTypeExtension.RAW, VdiType.RAW),
+            (VdiTypeExtension.CBTLOG, VdiType.CBTLOG)
+        )
 
-            if found:
-                try:
-                    self.cowutil = getCowUtil(self.vdi_type)
-                except:
-                    pass
-            else:
-                util.SMlog("VDI %s not found, retry %s of %s" % (vdi_uuid_str, tries, maxretry))
+        vdi_uuid_str = str(vdi_uuid)
+        for try_index in range(maxretry):
+            for vdi_extension, vdi_type in vdi_formats:
+                vdi_path = os.path.join(self.sr.path, vdi_uuid_str + vdi_extension)
+
+                if util.ioretry(lambda: util.pathexists(vdi_path)):
+                    self.vdi_type = vdi_type
+                    if vdi_type in (VdiType.RAW, VdiType.CBTLOG):
+                        self.hidden = False
+                    self.path = vdi_path
+
+                    with contextlib.suppress(Exception):
+                        self.cowutil = getCowUtil(self.vdi_type)
+
+                    return True
+
+            util.SMlog("VDI %s not found, try %s of %s" % (vdi_uuid_str, try_index + 1, maxretry))
+            if try_index + 1 < maxretry:
                 time.sleep(period)
 
-        return found
+        return False
 
     @override
     def load(self, vdi_uuid) -> None:
