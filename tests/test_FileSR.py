@@ -85,7 +85,7 @@ class TestFileVDI(unittest.TestCase):
         vdi.sr = sr
         mock_os_stat.side_effect = [os.stat_result((stat.S_IFREG, 0, 0, 0, 0, 0, 1024, 0, 0, 0))]
 
-        found = vdi._find_path_with_retries(vdi_uuid)
+        found = vdi._resolve_vdi_context_from_path(vdi_uuid)
 
         self.assertTrue(found)
         expected_path = 'sr_path/%s.vhd' % vdi_uuid
@@ -105,7 +105,7 @@ class TestFileVDI(unittest.TestCase):
             os.stat_result((stat.S_IFREG, 0, 0, 0, 0, 0, 1024, 0, 0, 0))
         ]
 
-        found = vdi._find_path_with_retries(vdi_uuid)
+        found = vdi._resolve_vdi_context_from_path(vdi_uuid)
 
         self.assertTrue(found)
         expected_path = 'sr_path/%s.raw' % vdi_uuid
@@ -128,7 +128,7 @@ class TestFileVDI(unittest.TestCase):
             os.stat_result((stat.S_IFREG, 0, 0, 0, 0, 0, 1024, 0, 0, 0))
         ]
 
-        found = vdi._find_path_with_retries(vdi_uuid)
+        found = vdi._resolve_vdi_context_from_path(vdi_uuid)
 
         self.assertTrue(found)
         expected_path = 'sr_path/%s.vhd' % vdi_uuid
@@ -144,7 +144,7 @@ class TestFileVDI(unittest.TestCase):
         vdi.sr = sr
         self.mock_os_stat.side_effect = OSError(errno.ENOENT)
 
-        found = vdi._find_path_with_retries(vdi_uuid)
+        found = vdi._resolve_vdi_context_from_path(vdi_uuid)
 
         self.assertFalse(found)
 
