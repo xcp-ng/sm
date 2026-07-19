@@ -437,19 +437,12 @@ class FileSR(SR.SR):
         return True
 
 class FileVDI(VDI.VDI):
-    PARAM_RAW = "raw"
-    PARAM_VHD = "vhd"
-    PARAM_QCOW2 = "qcow2"
-
     def _find_path_with_retries(self, vdi_uuid, maxretry=5, period=2.0):
-        raw_path = os.path.join(self.sr.path, "%s.%s" % \
-                                (vdi_uuid, self.PARAM_RAW))
-        vhd_path = os.path.join(self.sr.path, "%s.%s" % \
-                                (vdi_uuid, self.PARAM_VHD))
-        qcow2_path = os.path.join(self.sr.path, "%s.%s" % \
-                                (vdi_uuid, self.PARAM_QCOW2))
-        cbt_path = os.path.join(self.sr.path, "%s.%s" %
-                                (vdi_uuid, CBTLOG_TAG))
+        vdi_uuid_str = str(vdi_uuid)
+        raw_path = os.path.join(self.sr.path, vdi_uuid_str + VdiTypeExtension.RAW)
+        vhd_path = os.path.join(self.sr.path, vdi_uuid_str + VdiTypeExtension.VHD)
+        qcow2_path = os.path.join(self.sr.path, vdi_uuid_str + VdiTypeExtension.QCOW2)
+        cbt_path = os.path.join(self.sr.path, vdi_uuid_str + VdiTypeExtension.CBTLOG)
         found = False
         tries = 0
         while tries < maxretry and not found:
@@ -479,7 +472,7 @@ class FileVDI(VDI.VDI):
                 except:
                     pass
             else:
-                util.SMlog("VDI %s not found, retry %s of %s" % (vdi_uuid, tries, maxretry))
+                util.SMlog("VDI %s not found, retry %s of %s" % (vdi_uuid_str, tries, maxretry))
                 time.sleep(period)
 
         return found
@@ -562,7 +555,6 @@ class FileVDI(VDI.VDI):
             if self.vdi_type == VdiType.RAW:
                 self.exists = True
                 self.size = self.utilisation
-                self.sm_config_override = {'type': self.PARAM_RAW}
                 return
 
             if self.vdi_type == VdiType.CBTLOG:
@@ -620,9 +612,6 @@ class FileVDI(VDI.VDI):
 
         st = util.ioretry(lambda: os.stat(self.path))
         self.utilisation = int(st.st_size)
-        if self.vdi_type == VdiType.RAW:
-            # Legacy code.
-            self.sm_config = {"type": self.PARAM_RAW}
         if not hasattr(self, 'sm_config'):
             self.sm_config = {}
         self.sm_config["image-format"] = getImageStringFromVdiType(self.vdi_type)
