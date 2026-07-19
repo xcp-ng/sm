@@ -23,12 +23,12 @@ import SR
 import xmlrpc.client
 import xs_errors
 import util
-import vhdutil
 import cbtutil
 import os
 import base64
 from constants import CBTLOG_TAG
 from bitarray import bitarray
+from vditype import VdiType
 import uuid
 
 
@@ -38,27 +38,6 @@ SNAPSHOT_SINGLE = 1  # true snapshot: 1 leaf, 1 read-only parent
 SNAPSHOT_DOUBLE = 2  # regular snapshot/clone that creates 2 leaves
 SNAPSHOT_INTERNAL = 3  # SNAPSHOT_SINGLE but don't update SR's virtual allocation
 CBT_BLOCK_SIZE = (64 * 1024)
-
-
-def VDIMetadataSize(type, virtualsize):
-    size = 0
-    if type == 'vhd':
-        size_mb = virtualsize // (1024 * 1024)
-        #Footer + footer copy + header + possible CoW parent locator fields
-        size = 3 * 1024
-
-        # BAT 4 Bytes per block segment
-        size += (size_mb // 2) * 4
-        size = util.roundup(512, size)
-
-        # BATMAP 1 bit per block segment
-        size += (size_mb // 2) // 8
-        size = util.roundup(4096, size)
-
-        # Segment bitmaps + Page align offsets
-        size += (size_mb // 2) * 4096
-
-    return size
 
 
 class VDI(object):
@@ -512,7 +491,7 @@ class VDI(object):
         # List of sm-config keys that should not be modifed by db_update
         smconfig_protected_keys = [
             cleanup.VDI.DB_VDI_PAUSED,
-            cleanup.VDI.DB_VHD_BLOCKS,
+            cleanup.VDI.DB_VDI_BLOCKS,
             cleanup.VDI.DB_VDI_RELINKING,
             cleanup.VDI.DB_VDI_ACTIVATING]
 
@@ -586,7 +565,7 @@ class VDI(object):
         vdi_ref = self.sr.srcmd.params['vdi_ref']
 
         # Check if raw VDI or snapshot
-        if self.vdi_type == vhdutil.VDI_TYPE_RAW or \
+        if not VdiType.isCowImage(self.vdi_type) or \
             self.session.xenapi.VDI.get_is_a_snapshot(vdi_ref):
             raise xs_errors.XenError('VDIType',
                                      opterr='Raw VDI or snapshot not permitted')
@@ -648,7 +627,7 @@ class VDI(object):
     def data_destroy(self, sr_uuid, vdi_uuid):
         """Delete the data associated with a CBT enabled snapshot
 
-        Can only be called for a snapshot VDI on a VHD chain that has
+        Can only be called for a snapshot VDI on a COW chain that has
         had CBT enabled on it at some point. The latter is enforced
         by upper layers
         """
@@ -818,7 +797,7 @@ class VDI(object):
         """ Get blocktracking status """
         if not uuid:
             uuid = self.uuid
-        if self.vdi_type == vhdutil.VDI_TYPE_RAW:
+        if not VdiType.isCowImage(self.vdi_type):
             return False
         elif 'VDI_CONFIG_CBT' not in util.sr_get_capability(
                 self.sr.uuid, session=self.sr.session):

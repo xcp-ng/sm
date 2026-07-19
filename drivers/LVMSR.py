@@ -15,7 +15,7 @@
 # along with this program; if not, write to the Free Software Foundation, Inc.,
 # 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 #
-# LVHDSR: VHD on LVM storage repository
+# LVMSR: VHD and QCOW2 on LVM storage repository
 #
 
 from sm_typing import Dict, List, override
@@ -27,9 +27,8 @@ import SRCommand
 import util
 import lvutil
 import lvmcache
-import vhdutil
-import lvhdutil
 import scsiutil
+import lock
 import os
 import sys
 import time
@@ -38,10 +37,13 @@ import xs_errors
 import cleanup
 import blktap2
 from journaler import Journaler
-from lock import Lock
 from refcounter import RefCounter
 from ipc import IPCFlag
+from constants import NS_PREFIX_LVM, VG_LOCATION, VG_PREFIX
+from cowutil import CowUtil, getCowUtil, getImageStringFromVdiType
+from lvmcowutil import LV_PREFIX, LvmCowUtil
 from lvmanager import LVActivator
+from vditype import VdiType
 import XenAPI # pylint: disable=import-error
 import re
 from srmetadata import ALLOCATION_TAG, NAME_LABEL_TAG, NAME_DESCRIPTION_TAG, \
@@ -54,7 +56,7 @@ from xmlrpc.client import DateTime
 import glob
 from constants import CBTLOG_TAG
 from fairlock import Fairlock
-DEV_MAPPER_ROOT = os.path.join('/dev/mapper', lvhdutil.VG_PREFIX)
+DEV_MAPPER_ROOT = os.path.join('/dev/mapper', VG_PREFIX)
 
 geneology: Dict[str, List[str]] = {}
 CAPABILITIES = ["SR_PROBE", "SR_UPDATE", "SR_TRIM",
@@ -66,8 +68,8 @@ CAPABILITIES = ["SR_PROBE", "SR_UPDATE", "SR_TRIM",
 CONFIGURATION = [['device', 'local device path (required) (e.g. /dev/sda3)']]
 
 DRIVER_INFO = {
-    'name': 'Local VHD on LVM',
-    'description': 'SR plugin which represents disks as VHD disks on ' + \
+    'name': 'Local VHD and QCOW2 on LVM',
+    'description': 'SR plugin which represents disks as VHD and QCOW2 disks on ' + \
             'Logical Volumes within a locally-attached Volume Group',
     'vendor': 'XenSource Inc',
     'copyright': '(C) 2008 XenSource Inc',
@@ -77,9 +79,6 @@ DRIVER_INFO = {
     'configuration': CONFIGURATION
     }
 
-PARAM_VHD = "vhd"
-PARAM_RAW = "raw"
-
 OPS_EXCLUSIVE = [
         "sr_create", "sr_delete", "sr_attach", "sr_detach", "sr_scan",
         "sr_update", "vdi_create", "vdi_delete", "vdi_resize", "vdi_snapshot",
@@ -88,7 +87,7 @@ OPS_EXCLUSIVE = [
 # Log if snapshot pauses VM for more than this many seconds
 LONG_SNAPTIME = 60
 
-class LVHDSR(SR.SR):
+class LVMSR(SR.SR):
     DRIVER_TYPE = 'lvhd'
 
     PROVISIONING_TYPES = ["thin", "thick"]
@@ -148,7 +147,11 @@ class LVHDSR(SR.SR):
             return type == "lvm"
         elif name.endswith("EXTSR"):
             return type == "ext"
-        return type == LVHDSR.DRIVER_TYPE
+        return type == LVMSR.DRIVER_TYPE
+
+    def __init__(self, srcmd, sr_uuid):
+        SR.SR.__init__(self, srcmd, sr_uuid)
+        self._init_image_formats()
 
     @override
     def load(self, sr_uuid) -> None:
@@ -158,11 +161,11 @@ class LVHDSR(SR.SR):
         if 'SRmaster' in self.dconf and self.dconf['SRmaster'] == 'true':
             self.isMaster = True
 
-        self.lock = Lock(vhdutil.LOCK_TYPE_SR, self.uuid)
+        self.lock = lock.Lock(lock.LOCK_TYPE_SR, self.uuid)
         self.sr_vditype = SR.DEFAULT_TAP
         self.uuid = sr_uuid
-        self.vgname = lvhdutil.VG_PREFIX + self.uuid
-        self.path = os.path.join(lvhdutil.VG_LOCATION, self.vgname)
+        self.vgname = VG_PREFIX + self.uuid
+        self.path = os.path.join(VG_LOCATION, self.vgname)
         self.mdpath = os.path.join(self.path, self.MDVOLUME_NAME)
         self.provision = self.PROVISIONING_DEFAULT
 
@@ -224,17 +227,11 @@ class LVHDSR(SR.SR):
             type = None
             vdi = None
             if contains_uuid_regex.search(key) is not None:
-                if key.startswith(lvhdutil.LV_PREFIX[vhdutil.VDI_TYPE_VHD]):
-                    type = vhdutil.VDI_TYPE_VHD
-                    vdi = key[len(lvhdutil.LV_PREFIX[type]):]
-                elif key.startswith(lvhdutil.LV_PREFIX[vhdutil.VDI_TYPE_RAW]):
-                    type = vhdutil.VDI_TYPE_RAW
-                    vdi = key[len(lvhdutil.LV_PREFIX[type]):]
-                else:
-                    continue
-
-            if type is not None:
-                self.storageVDIs[vdi] = type
+                for vdi_type, prefix in LV_PREFIX.items():
+                    if key.startswith(prefix):
+                        vdi = key[len(prefix):]
+                        self.storageVDIs[vdi] = vdi_type
+                        break
 
         # check if metadata volume exists
         try:
@@ -455,10 +452,10 @@ class LVHDSR(SR.SR):
         Return true if all paths/devices agree on the same size.
         """
         if hasattr(self, 'SCSIid'):
-            # LVHDoHBASR, LVHDoISCSISR
+            # LVMoHBASR, LVMoISCSISR
             return scsiutil.refresh_lun_size_by_SCSIid(getattr(self, 'SCSIid'))
         else:
-            # LVHDSR
+            # LVMSR
             devices = self.dconf['device'].split(',')
             scsiutil.refreshdev(devices)
             return True
@@ -479,21 +476,21 @@ class LVHDSR(SR.SR):
         if totaldevicesize >= (currentvgsize + resizethreshold):
             try:
                 if hasattr(self, 'SCSIid'):
-                    # LVHDoHBASR, LVHDoISCSISR might have slaves
+                    # LVMoHBASR, LVMoISCSISR might have slaves
                     scsiutil.refresh_lun_size_by_SCSIid_on_slaves(self.session,
                                                        getattr(self, 'SCSIid'))
-                util.SMlog("LVHDSR._expand_size for %s will resize the pv." %
+                util.SMlog("LVMSR._expand_size for %s will resize the pv." %
                            self.uuid)
                 for pv in lvutil.get_pv_for_vg(self.vgname):
                     lvutil.resizePV(pv)
             except:
-                util.logException("LVHDSR._expand_size for %s failed to resize"
+                util.logException("LVMSR._expand_size for %s failed to resize"
                                   " the PV" % self.uuid)
 
     @override
     @deviceCheck
     def create(self, uuid, size) -> None:
-        util.SMlog("LVHDSR.create for %s" % self.uuid)
+        util.SMlog("LVMSR.create for %s" % self.uuid)
         if not self.isMaster:
             util.SMlog('sr_create blocked for non-master')
             raise xs_errors.XenError('LVMMaster')
@@ -522,7 +519,7 @@ class LVHDSR(SR.SR):
 
     @override
     def delete(self, uuid) -> None:
-        util.SMlog("LVHDSR.delete for %s" % self.uuid)
+        util.SMlog("LVMSR.delete for %s" % self.uuid)
         if not self.isMaster:
             raise xs_errors.XenError('LVMMaster')
         cleanup.gc_force(self.session, self.uuid)
@@ -533,7 +530,7 @@ class LVHDSR(SR.SR):
                 continue
 
             if util.doesFileHaveOpenHandles(fileName):
-                util.SMlog("LVHDSR.delete: The dev mapper entry %s has open " \
+                util.SMlog("LVMSR.delete: The dev mapper entry %s has open " \
                            "handles" % fileName)
                 success = False
                 continue
@@ -550,7 +547,7 @@ class LVHDSR(SR.SR):
                 os.unlink(lpath)
             except OSError as e:
                 if e.errno != errno.ENOENT:
-                    util.SMlog("LVHDSR.delete: failed to remove the symlink for " \
+                    util.SMlog("LVMSR.delete: failed to remove the symlink for " \
                                "file %s. Error: %s" % (fileName, str(e)))
                     success = False
 
@@ -559,17 +556,17 @@ class LVHDSR(SR.SR):
                 if util.pathexists(self.path):
                     os.rmdir(self.path)
             except Exception as e:
-                util.SMlog("LVHDSR.delete: failed to remove the symlink " \
+                util.SMlog("LVMSR.delete: failed to remove the symlink " \
                            "directory %s. Error: %s" % (self.path, str(e)))
                 success = False
 
         self._removeMetadataVolume()
         self.lvmCache.refresh()
-        if len(lvhdutil.getLVInfo(self.lvmCache)) > 0:
+        if LvmCowUtil.getVolumeInfo(self.lvmCache):
             raise xs_errors.XenError('SRNotEmpty')
 
         if not success:
-            raise Exception("LVHDSR delete failed, please refer to the log " \
+            raise Exception("LVMSR delete failed, please refer to the log " \
                             "for details.")
 
         lvutil.removeVG(self.dconf['device'], self.vgname)
@@ -577,7 +574,7 @@ class LVHDSR(SR.SR):
 
     @override
     def attach(self, uuid) -> None:
-        util.SMlog("LVHDSR.attach for %s" % self.uuid)
+        util.SMlog("LVMSR.attach for %s" % self.uuid)
 
         self._cleanup(True)  # in case of host crashes, if detach wasn't called
 
@@ -600,11 +597,11 @@ class LVHDSR(SR.SR):
                 self.session, self.sr_ref,
                 scsiutil.devlist_to_serialstring(self.dconf['device'].split(',')))
 
-        # Test Legacy Mode Flag and update if VHD volumes exist
+        # Test Legacy Mode Flag and update if COW volumes exist
         if self.isMaster and self.legacyMode:
-            vdiInfo = lvhdutil.getVDIInfo(self.lvmCache)
+            vdiInfo = LvmCowUtil.getVDIInfo(self.lvmCache)
             for uuid, info in vdiInfo.items():
-                if info.vdiType == vhdutil.VDI_TYPE_VHD:
+                if VdiType.isCowImage(info.vdiType):
                     self.legacyMode = False
                     map = self.session.xenapi.SR.get_sm_config(self.sr_ref)
                     self._introduceMetaDataVolume()
@@ -616,7 +613,7 @@ class LVHDSR(SR.SR):
 
     @override
     def detach(self, uuid) -> None:
-        util.SMlog("LVHDSR.detach for %s" % self.uuid)
+        util.SMlog("LVMSR.detach for %s" % self.uuid)
         cleanup.abort(self.uuid)
 
         # Do a best effort cleanup of the dev mapper entries
@@ -631,7 +628,7 @@ class LVHDSR(SR.SR):
                 if util.doesFileHaveOpenHandles(fileName):
                     # if yes, log this and signal failure
                     util.SMlog(
-                        f"LVHDSR.detach: The dev mapper entry {fileName} has "
+                        f"LVMSR.detach: The dev mapper entry {fileName} has "
                         "open handles")
                     success = False
                     continue
@@ -648,7 +645,7 @@ class LVHDSR(SR.SR):
                 lvname = os.path.join(self.path, lvname)
                 util.force_unlink(lvname)
             except Exception as e:
-                util.SMlog("LVHDSR.detach: failed to remove the symlink for " \
+                util.SMlog("LVMSR.detach: failed to remove the symlink for " \
                            "file %s. Error: %s" % (fileName, str(e)))
                 success = False
 
@@ -659,7 +656,7 @@ class LVHDSR(SR.SR):
                 if util.pathexists(self.path):
                     os.rmdir(self.path)
             except Exception as e:
-                util.SMlog("LVHDSR.detach: failed to remove the symlink " \
+                util.SMlog("LVMSR.detach: failed to remove the symlink " \
                            "directory %s. Error: %s" % (self.path, str(e)))
                 success = False
 
@@ -677,13 +674,13 @@ class LVHDSR(SR.SR):
     def forget_vdi(self, uuid) -> None:
         if not self.legacyMode:
             LVMMetadataHandler(self.mdpath).deleteVdiFromMetadata(uuid)
-        super(LVHDSR, self).forget_vdi(uuid)
+        super(LVMSR, self).forget_vdi(uuid)
 
     @override
     def scan(self, uuid) -> None:
         activated_lvs = set()
         try:
-            util.SMlog("LVHDSR.scan for %s" % self.uuid)
+            util.SMlog("LVMSR.scan for %s" % self.uuid)
             if not self.isMaster:
                 util.SMlog('sr_scan blocked for non-master')
                 raise xs_errors.XenError('LVMMaster')
@@ -718,10 +715,10 @@ class LVHDSR(SR.SR):
                             vdiToSnaps[info[vdi][SNAPSHOT_OF_TAG]] = [vdi_uuid]
 
                     if vdi_uuid not in vdi_uuids:
+                        vdi_type = info[vdi][VDI_TYPE_TAG]
                         sm_config = {}
-                        sm_config['vdi_type'] = info[vdi][VDI_TYPE_TAG]
-                        lvname = "%s%s" % \
-                            (lvhdutil.LV_PREFIX[sm_config['vdi_type']], vdi_uuid)
+                        sm_config['vdi_type'] = vdi_type
+                        lvname = "%s%s" % (LV_PREFIX[sm_config['vdi_type']], vdi_uuid)
                         if not self.lvmCache.checkLV(lvname):
                             util.SMlog("VDI %s is present in metadata but "
                                        "its LV %s does not exist in the VG; "
@@ -737,27 +734,27 @@ class LVHDSR(SR.SR):
                         activated_lvs.add(vdi_uuid)
                         lvPath = os.path.join(self.path, lvname)
 
-                        if info[vdi][VDI_TYPE_TAG] == vhdutil.VDI_TYPE_RAW:
-                            size = self.lvmCache.getSize( \
-                                lvhdutil.LV_PREFIX[vhdutil.VDI_TYPE_RAW] + \
-                                    vdi_uuid)
+                        if not VdiType.isCowImage(vdi_type):
+                            size = self.lvmCache.getSize(LV_PREFIX[vdi_type] + vdi_uuid)
                             utilisation = \
                                         util.roundup(lvutil.LVM_SIZE_INCREMENT,
                                                        int(size))
                         else:
-                            parent = \
-                                vhdutil._getVHDParentNoCheck(lvPath)
+                            cowutil = getCowUtil(vdi_type)
+                            lvmcowutil = LvmCowUtil(cowutil)
+
+                            parent = cowutil.getParentNoCheck(lvPath)
 
                             if parent is not None:
-                                sm_config['vhd-parent'] = parent[len( \
-                                    lvhdutil.LV_PREFIX[vhdutil.VDI_TYPE_VHD]):]
-                            size = vhdutil.getSizeVirt(lvPath)
+                                sm_config['vhd-parent'] = parent[parent.find('-') + 1:]
+                            size = cowutil.getSizeVirt(lvPath)
                             if self.provision == "thin":
-                                utilisation = \
-                                    util.roundup(lvutil.LVM_SIZE_INCREMENT,
-                                      vhdutil.calcOverheadEmpty(lvhdutil.MSIZE))
+                                utilisation = util.roundup(
+                                    lvutil.LVM_SIZE_INCREMENT,
+                                    cowutil.calcOverheadEmpty(max(size, cowutil.getDefaultPreallocationSizeVirt()))
+                                )
                             else:
-                                utilisation = lvhdutil.calcSizeVHDLV(int(size))
+                                utilisation = lvmcowutil.calcVolumeSize(int(size))
 
                         vdi_ref = self.session.xenapi.VDI.db_introduce(
                                         vdi_uuid,
@@ -829,7 +826,7 @@ class LVHDSR(SR.SR):
                     new_vdi.cbt_enabled = True
                     self.vdis[cbt_uuid] = new_vdi
 
-            super(LVHDSR, self).scan(uuid)
+            super(LVMSR, self).scan(uuid)
             self._kickGC()
 
         finally:
@@ -871,18 +868,18 @@ class LVHDSR(SR.SR):
     @deviceCheck
     def probe(self) -> str:
         return lvutil.srlist_toxml(
-                lvutil.scan_srlist(lvhdutil.VG_PREFIX, self.dconf['device']),
-                lvhdutil.VG_PREFIX,
+                lvutil.scan_srlist(VG_PREFIX, self.dconf['device']),
+                VG_PREFIX,
                 ('metadata' in self.srcmd.params['sr_sm_config'] and \
                  self.srcmd.params['sr_sm_config']['metadata'] == 'true'))
 
     @override
     def vdi(self, uuid) -> VDI.VDI:
-        return LVHDVDI(self, uuid)
+        return LVMVDI(self, uuid)
 
     def _loadvdis(self):
         self.virtual_allocation = 0
-        self.vdiInfo = lvhdutil.getVDIInfo(self.lvmCache)
+        self.vdiInfo = LvmCowUtil.getVDIInfo(self.lvmCache)
         self.allVDIs = {}
 
         for uuid, info in self.vdiInfo.items():
@@ -919,12 +916,12 @@ class LVHDSR(SR.SR):
             raise xs_errors.XenError('SRNoSpace')
 
     def _handleInterruptedCloneOps(self):
-        entries = self.journaler.getAll(LVHDVDI.JRN_CLONE)
+        entries = self.journaler.getAll(LVMVDI.JRN_CLONE)
         for uuid, val in entries.items():
             util.fistpoint.activate("LVHDRT_clone_vdi_before_undo_clone", self.uuid)
             self._handleInterruptedCloneOp(uuid, val)
             util.fistpoint.activate("LVHDRT_clone_vdi_after_undo_clone", self.uuid)
-            self.journaler.remove(LVHDVDI.JRN_CLONE, uuid)
+            self.journaler.remove(LVMVDI.JRN_CLONE, uuid)
 
     def _handleInterruptedCoalesceLeaf(self):
         entries = self.journaler.getAll(cleanup.VDI.JRN_LEAF)
@@ -935,12 +932,12 @@ class LVHDSR(SR.SR):
 
     def _handleInterruptedCloneOp(self, origUuid, jval, forceUndo=False):
         """Either roll back or finalize the interrupted snapshot/clone
-        operation. Rolling back is unsafe if the leaf VHDs have already been
+        operation. Rolling back is unsafe if the leaf images have already been
         in use and written to. However, it is always safe to roll back while
         we're still in the context of the failed snapshot operation since the
         VBD is paused for the duration of the operation"""
         util.SMlog("*** INTERRUPTED CLONE OP: for %s (%s)" % (origUuid, jval))
-        lvs = lvhdutil.getLVInfo(self.lvmCache)
+        lvs = LvmCowUtil.getVolumeInfo(self.lvmCache)
         baseUuid, clonUuid = jval.split("_")
 
         # is there a "base copy" VDI?
@@ -952,48 +949,51 @@ class LVHDSR(SR.SR):
             raise util.SMException("base copy %s not present, " \
                     "but no original %s found" % (baseUuid, origUuid))
 
+        vdis = LvmCowUtil.getVDIInfo(self.lvmCache)
+        base = vdis[baseUuid]
+        cowutil = getCowUtil(base.vdiType)
+
         if forceUndo:
             util.SMlog("Explicit revert")
-            self._undoCloneOp(lvs, origUuid, baseUuid, clonUuid)
+            self._undoCloneOp(cowutil, lvs, origUuid, baseUuid, clonUuid)
             return
 
         if not lvs.get(origUuid) or (clonUuid and not lvs.get(clonUuid)):
             util.SMlog("One or both leaves missing => revert")
-            self._undoCloneOp(lvs, origUuid, baseUuid, clonUuid)
+            self._undoCloneOp(cowutil, lvs, origUuid, baseUuid, clonUuid)
             return
 
-        vdis = lvhdutil.getVDIInfo(self.lvmCache)
         if vdis[origUuid].scanError or (clonUuid and vdis[clonUuid].scanError):
             util.SMlog("One or both leaves invalid => revert")
-            self._undoCloneOp(lvs, origUuid, baseUuid, clonUuid)
+            self._undoCloneOp(cowutil, lvs, origUuid, baseUuid, clonUuid)
             return
 
         orig = vdis[origUuid]
-        base = vdis[baseUuid]
         self.lvActivator.activate(baseUuid, base.lvName, False)
         self.lvActivator.activate(origUuid, orig.lvName, False)
         if orig.parentUuid != baseUuid:
             parent = vdis[orig.parentUuid]
             self.lvActivator.activate(parent.uuid, parent.lvName, False)
         origPath = os.path.join(self.path, orig.lvName)
-        if not vhdutil.check(origPath):
-            util.SMlog("Orig VHD invalid => revert")
-            self._undoCloneOp(lvs, origUuid, baseUuid, clonUuid)
+
+        if cowutil.check(origPath) != CowUtil.CheckResult.Success:
+            util.SMlog("Orig image invalid => revert")
+            self._undoCloneOp(cowutil, lvs, origUuid, baseUuid, clonUuid)
             return
 
         if clonUuid:
             clon = vdis[clonUuid]
             clonPath = os.path.join(self.path, clon.lvName)
             self.lvActivator.activate(clonUuid, clon.lvName, False)
-            if not vhdutil.check(clonPath):
-                util.SMlog("Clon VHD invalid => revert")
-                self._undoCloneOp(lvs, origUuid, baseUuid, clonUuid)
+            if cowutil.check(clonPath) != CowUtil.CheckResult.Success:
+                util.SMlog("Clon image invalid => revert")
+                self._undoCloneOp(cowutil, lvs, origUuid, baseUuid, clonUuid)
                 return
 
         util.SMlog("Snapshot appears valid, will not roll back")
-        self._completeCloneOp(vdis, origUuid, baseUuid, clonUuid)
+        self._completeCloneOp(cowutil, vdis, origUuid, baseUuid, clonUuid)
 
-    def _undoCloneOp(self, lvs, origUuid, baseUuid, clonUuid):
+    def _undoCloneOp(self, cowutil, lvs, origUuid, baseUuid, clonUuid):
         base = lvs[baseUuid]
         basePath = os.path.join(self.path, base.name)
 
@@ -1001,24 +1001,24 @@ class LVHDSR(SR.SR):
         if base.readonly:
             self.lvmCache.setReadonly(base.name, False)
 
-        ns = lvhdutil.NS_PREFIX_LVM + self.uuid
+        ns = NS_PREFIX_LVM + self.uuid
         origRefcountBinary = RefCounter.check(origUuid, ns)[1]
         origRefcountNormal = 0
 
         # un-hide the parent
-        if base.vdiType == vhdutil.VDI_TYPE_VHD:
+        if VdiType.isCowImage(base.vdiType):
             self.lvActivator.activate(baseUuid, base.name, False)
             origRefcountNormal = 1
-            vhdInfo = vhdutil.getVHDInfo(basePath, lvhdutil.extractUuid, False)
-            if vhdInfo.hidden:
-                vhdutil.setHidden(basePath, False)
-        elif base.vdiType == vhdutil.VDI_TYPE_RAW and base.hidden:
+            imageInfo = cowutil.getInfo(basePath, LvmCowUtil.extractUuid, False)
+            if imageInfo.hidden:
+                cowutil.setHidden(basePath, False)
+        elif base.hidden:
             self.lvmCache.setHidden(base.name, False)
 
         # remove the child nodes
         if clonUuid and lvs.get(clonUuid):
-            if lvs[clonUuid].vdiType != vhdutil.VDI_TYPE_VHD:
-                raise util.SMException("clone %s not VHD" % clonUuid)
+            if not VdiType.isCowImage(lvs[clonUuid].vdiType):
+                raise util.SMException("clone %s not a COW image" % clonUuid)
             self.lvmCache.remove(lvs[clonUuid].name)
             if self.lvActivator.get(clonUuid, False):
                 self.lvActivator.remove(clonUuid, False)
@@ -1026,12 +1026,13 @@ class LVHDSR(SR.SR):
             self.lvmCache.remove(lvs[origUuid].name)
 
         # inflate the parent to fully-allocated size
-        if base.vdiType == vhdutil.VDI_TYPE_VHD:
-            fullSize = lvhdutil.calcSizeVHDLV(vhdInfo.sizeVirt)
-            lvhdutil.inflate(self.journaler, self.uuid, baseUuid, fullSize)
+        if VdiType.isCowImage(base.vdiType):
+            lvmcowutil = LvmCowUtil(cowutil)
+            fullSize = lvmcowutil.calcVolumeSize(imageInfo.sizeVirt)
+            lvmcowutil.inflate(self.journaler, self.uuid, baseUuid, base.vdiType, fullSize)
 
         # rename back
-        origLV = lvhdutil.LV_PREFIX[base.vdiType] + origUuid
+        origLV = LV_PREFIX[base.vdiType] + origUuid
         self.lvmCache.rename(base.name, origLV)
         RefCounter.reset(baseUuid, ns)
         if self.lvActivator.get(baseUuid, False):
@@ -1045,12 +1046,12 @@ class LVHDSR(SR.SR):
 
         # update LVM metadata on slaves
         slaves = util.get_slaves_attached_on(self.session, [origUuid])
-        lvhdutil.lvRefreshOnSlaves(self.session, self.uuid, self.vgname,
+        LvmCowUtil.refreshVolumeOnSlaves(self.session, self.uuid, self.vgname,
                 origLV, origUuid, slaves)
 
         util.SMlog("*** INTERRUPTED CLONE OP: rollback success")
 
-    def _completeCloneOp(self, vdis, origUuid, baseUuid, clonUuid):
+    def _completeCloneOp(self, cowutil, vdis, origUuid, baseUuid, clonUuid):
         """Finalize the interrupted snapshot/clone operation. This must not be
         called from the live snapshot op context because we attempt to pause/
         unpause the VBD here (the VBD is already paused during snapshot, so it
@@ -1064,11 +1065,11 @@ class LVHDSR(SR.SR):
 
         # make sure the parent is hidden and read-only
         if not base.hidden:
-            if base.vdiType == vhdutil.VDI_TYPE_RAW:
+            if not VdiType.isCowImage(base.vdiType):
                 self.lvmCache.setHidden(base.lvName)
             else:
                 basePath = os.path.join(self.path, base.lvName)
-                vhdutil.setHidden(basePath)
+                cowutil.setHidden(basePath)
         if not base.lvReadonly:
             self.lvmCache.setReadonly(base.lvName, True)
 
@@ -1081,7 +1082,7 @@ class LVHDSR(SR.SR):
             vdi_ref = self.session.xenapi.VDI.get_by_uuid(origUuid)
             sm_config = self.session.xenapi.VDI.get_sm_config(vdi_ref)
             type = self.session.xenapi.VDI.get_type(vdi_ref)
-            sm_config["vdi_type"] = vhdutil.VDI_TYPE_VHD
+            sm_config["vdi_type"] = vdis[origUuid].vdiType
             sm_config['vhd-parent'] = baseUuid
             self.session.xenapi.VDI.set_sm_config(vdi_ref, sm_config)
         except XenAPI.Failure:
@@ -1095,7 +1096,7 @@ class LVHDSR(SR.SR):
                 clon_vdi.location = clonUuid
                 clon_vdi.utilisation = clon.sizeLV
                 clon_vdi.sm_config = {
-                        "vdi_type": vhdutil.VDI_TYPE_VHD,
+                        "vdi_type": clon.vdiType,
                         "vhd-parent": baseUuid}
 
                 if not self.legacyMode:
@@ -1134,7 +1135,7 @@ class LVHDSR(SR.SR):
             base_vdi.utilisation = base.sizeLV
             base_vdi.managed = False
             base_vdi.sm_config = {
-                    "vdi_type": vhdutil.VDI_TYPE_VHD,
+                    "vdi_type": base.vdiType,
                     "vhd-parent": baseUuid}
 
             if not self.legacyMode:
@@ -1165,14 +1166,14 @@ class LVHDSR(SR.SR):
         util.SMlog("*** INTERRUPTED CLONE OP: complete")
 
     def _undoAllJournals(self):
-        """Undo all VHD & SM interrupted journaled operations. This call must
+        """Undo all COW image & SM interrupted journaled operations. This call must
         be serialized with respect to all operations that create journals"""
-        # undoing interrupted inflates must be done first, since undoing VHD
+        # undoing interrupted inflates must be done first, since undoing COW images
         # ops might require inflations
         self.lock.acquire()
         try:
             self._undoAllInflateJournals()
-            self._undoAllVHDJournals()
+            self._undoAllCowJournals()
             self._handleInterruptedCloneOps()
             self._handleInterruptedCoalesceLeaf()
         finally:
@@ -1180,7 +1181,7 @@ class LVHDSR(SR.SR):
             self.cleanup()
 
     def _undoAllInflateJournals(self):
-        entries = self.journaler.getAll(lvhdutil.JRN_INFLATE)
+        entries = self.journaler.getAll(LvmCowUtil.JOURNAL_INFLATE)
         if len(entries) == 0:
             return
         self._loadvdis()
@@ -1193,45 +1194,57 @@ class LVHDSR(SR.SR):
                     self.lvmCache.setReadonly(vdi.lvname, False)
                 self.lvActivator.activate(uuid, vdi.lvname, False)
                 currSizeLV = self.lvmCache.getSize(vdi.lvname)
-                util.zeroOut(vdi.path, currSizeLV - vhdutil.VHD_FOOTER_SIZE,
-                        vhdutil.VHD_FOOTER_SIZE)
-                lvhdutil.deflate(self.lvmCache, vdi.lvname, int(val))
+
+                cowutil = getCowUtil(vdi.vdi_type)
+                lvmcowutil = LvmCowUtil(cowutil)
+
+                footer_size = cowutil.getFooterSize()
+                util.zeroOut(vdi.path, currSizeLV - footer_size, footer_size)
+                lvmcowutil.deflate(self.lvmCache, vdi.lvname, int(val))
                 if vdi.readonly:
                     self.lvmCache.setReadonly(vdi.lvname, True)
                 if "true" == self.session.xenapi.SR.get_shared(self.sr_ref):
-                    lvhdutil.lvRefreshOnAllSlaves(self.session, self.uuid,
-                            self.vgname, vdi.lvname, uuid)
-            self.journaler.remove(lvhdutil.JRN_INFLATE, uuid)
+                    LvmCowUtil.refreshVolumeOnAllSlaves(
+                        self.session, self.uuid, self.vgname, vdi.lvname, uuid
+                    )
+            self.journaler.remove(LvmCowUtil.JOURNAL_INFLATE, uuid)
         delattr(self, "vdiInfo")
         delattr(self, "allVDIs")
 
-    def _undoAllVHDJournals(self):
-        """check if there are VHD journals in existence and revert them"""
-        journals = lvhdutil.getAllVHDJournals(self.lvmCache)
+    def _undoAllCowJournals(self):
+        """
+        Check if there are COW journals in existence and revert them.
+        """
+        journals = LvmCowUtil.getAllResizeJournals(self.lvmCache)
         if len(journals) == 0:
             return
         self._loadvdis()
+
         for uuid, jlvName in journals:
             vdi = self.vdis[uuid]
-            util.SMlog("Found VHD journal %s, reverting %s" % (uuid, vdi.path))
+            util.SMlog("Found COW journal %s, reverting %s" % (uuid, vdi.path))
+            cowutil = getCowUtil(vdi.vdi_type)
+            lvmcowutil = LvmCowUtil(cowutil)
+
             self.lvActivator.activate(uuid, vdi.lvname, False)
             self.lvmCache.activateNoRefcount(jlvName)
-            fullSize = lvhdutil.calcSizeVHDLV(vdi.size)
-            lvhdutil.inflate(self.journaler, self.uuid, vdi.uuid, fullSize)
+            fullSize = lvmcowutil.calcVolumeSize(vdi.size)
+            lvmcowutil.inflate(self.journaler, self.uuid, vdi.uuid, vdi.vdi_type, fullSize)
             try:
                 jFile = os.path.join(self.path, jlvName)
-                vhdutil.revert(vdi.path, jFile)
+                cowutil.revert(vdi.path, jFile)
             except util.CommandException:
-                util.logException("VHD journal revert")
-                vhdutil.check(vdi.path)
-                util.SMlog("VHD revert failed but VHD ok: removing journal")
+                util.logException("COW journal revert")
+                cowutil.check(vdi.path)
+                util.SMlog("COW image revert failed but COW image ok: removing journal")
             # Attempt to reclaim unused space
-            vhdInfo = vhdutil.getVHDInfo(vdi.path, lvhdutil.extractUuid, False)
-            NewSize = lvhdutil.calcSizeVHDLV(vhdInfo.sizeVirt)
+
+
+            imageInfo = cowutil.getInfo(vdi.path, LvmCowUtil.extractUuid, False)
+            NewSize = lvmcowutil.calcVolumeSize(imageInfo.sizeVirt)
             if NewSize < fullSize:
-                lvhdutil.deflate(self.lvmCache, vdi.lvname, int(NewSize))
-            lvhdutil.lvRefreshOnAllSlaves(self.session, self.uuid,
-                    self.vgname, vdi.lvname, uuid)
+                lvmcowutil.deflate(self.lvmCache, vdi.lvname, int(NewSize))
+            LvmCowUtil.refreshVolumeOnAllSlaves(self.session, self.uuid, self.vgname, vdi.lvname, uuid)
             self.lvmCache.remove(jlvName)
         delattr(self, "vdiInfo")
         delattr(self, "allVDIs")
@@ -1257,7 +1270,7 @@ class LVHDSR(SR.SR):
                 "action1": "refresh",
                 "lvName1": origLV,
                 "action2": "activate",
-                "ns2": lvhdutil.NS_PREFIX_LVM + self.uuid,
+                "ns2": NS_PREFIX_LVM + self.uuid,
                 "lvName2": baseLV,
                 "uuid2": baseUuid}
 
@@ -1280,7 +1293,7 @@ class LVHDSR(SR.SR):
         args = {"vgName": self.vgname,
                 "action1": "cleanupLockAndRefcount",
                 "uuid1": baseUuid,
-                "ns1": lvhdutil.NS_PREFIX_LVM + self.uuid}
+                "ns1": NS_PREFIX_LVM + self.uuid}
 
         message = f"Cleaning locks for {baseLV}"
         self.call_on_slave(args, hostRefs, message)
@@ -1297,11 +1310,11 @@ class LVHDSR(SR.SR):
 
     def _cleanup(self, skipLockCleanup=False):
         """delete stale refcounter, flag, and lock files"""
-        RefCounter.resetAll(lvhdutil.NS_PREFIX_LVM + self.uuid)
+        RefCounter.resetAll(NS_PREFIX_LVM + self.uuid)
         IPCFlag(self.uuid).clearAll()
         if not skipLockCleanup:
-            Lock.cleanupAll(self.uuid)
-            Lock.cleanupAll(lvhdutil.NS_PREFIX_LVM + self.uuid)
+            lock.Lock.cleanupAll(self.uuid)
+            lock.Lock.cleanupAll(NS_PREFIX_LVM + self.uuid)
 
     def _prepareTestMode(self):
         util.SMlog("Test mode: %s" % self.testMode)
@@ -1318,7 +1331,7 @@ class LVHDSR(SR.SR):
         self._ensureSpaceAvailable(self.journaler.LV_SIZE)
 
 
-class LVHDVDI(VDI.VDI):
+class LVMVDI(VDI.VDI):
 
     JRN_CLONE = "clone"  # journal entry type for the clone operation
 
@@ -1327,9 +1340,8 @@ class LVHDVDI(VDI.VDI):
         self.lock = self.sr.lock
         self.lvActivator = self.sr.lvActivator
         self.loaded = False
-        self.vdi_type = vhdutil.VDI_TYPE_VHD
         if self.sr.legacyMode or util.fistpoint.is_active("xenrt_default_vdi_type_legacy"):
-            self.vdi_type = vhdutil.VDI_TYPE_RAW
+            self._setType(VdiType.RAW)
         self.uuid = vdi_uuid
         self.location = self.uuid
         self.exists = True
@@ -1346,55 +1358,61 @@ class LVHDVDI(VDI.VDI):
         if self._determineType():
             return
 
+        image_format = None
+
         # the VDI must be in the process of being created
         self.exists = False
-        if "vdi_sm_config" in self.sr.srcmd.params and \
-                "type" in self.sr.srcmd.params["vdi_sm_config"]:
-            type = self.sr.srcmd.params["vdi_sm_config"]["type"]
-            if type == PARAM_RAW:
-                self.vdi_type = vhdutil.VDI_TYPE_RAW
-            elif type == PARAM_VHD:
-                self.vdi_type = vhdutil.VDI_TYPE_VHD
-                if self.sr.cmd == 'vdi_create' and self.sr.legacyMode:
-                    raise xs_errors.XenError('VDICreate', \
-                        opterr='Cannot create VHD type disk in legacy mode')
-            else:
-                raise xs_errors.XenError('VDICreate', opterr='bad type')
-        self.lvname = "%s%s" % (lvhdutil.LV_PREFIX[self.vdi_type], vdi_uuid)
+
+        vdi_sm_config = self.sr.srcmd.params.get("vdi_sm_config")
+        if vdi_sm_config:
+            image_format = self.sr.read_config_image_format(vdi_sm_config)
+
+        if not image_format:
+            image_format = self.sr.preferred_image_formats[0]
+        self._setType(self.sr._resolve_vdi_type_from_image_format(image_format))
+
+        if self.sr.legacyMode and self.sr.cmd == 'vdi_create' and VdiType.isCowImage(self.vdi_type):
+            raise xs_errors.XenError('VDICreate', opterr='Cannot create COW type disk in legacy mode')
+
+        self.lvname = "%s%s" % (LV_PREFIX[self.vdi_type], vdi_uuid)
         self.path = os.path.join(self.sr.path, self.lvname)
 
     @override
     def create(self, sr_uuid, vdi_uuid, size) -> str:
-        util.SMlog("LVHDVDI.create for %s" % self.uuid)
+        util.SMlog("LVMVDI.create for %s" % self.uuid)
         if not self.sr.isMaster:
             raise xs_errors.XenError('LVMMaster')
         if self.exists:
             raise xs_errors.XenError('VDIExists')
 
-        size = vhdutil.validate_and_round_vhd_size(int(size))
+        size = self.cowutil.validateAndRoundImageSize(int(size))
 
-        util.SMlog("LVHDVDI.create: type = %s, %s (size=%s)" % \
+        util.SMlog("LVMVDI.create: type = %s, %s (size=%s)" % \
                 (self.vdi_type, self.path, size))
         lvSize = 0
         self.sm_config = self.sr.srcmd.params["vdi_sm_config"]
-        if self.vdi_type == vhdutil.VDI_TYPE_RAW:
+        if not VdiType.isCowImage(self.vdi_type):
             lvSize = util.roundup(lvutil.LVM_SIZE_INCREMENT, int(size))
         else:
             if self.sr.provision == "thin":
-                lvSize = util.roundup(lvutil.LVM_SIZE_INCREMENT,
-                        vhdutil.calcOverheadEmpty(lvhdutil.MSIZE))
+                lvSize = util.roundup(
+                    lvutil.LVM_SIZE_INCREMENT,
+                    self.cowutil.calcOverheadEmpty(max(size, self.cowutil.getDefaultPreallocationSizeVirt()))
+                )
             elif self.sr.provision == "thick":
-                lvSize = lvhdutil.calcSizeVHDLV(int(size))
+                lvSize = self.lvmcowutil.calcVolumeSize(int(size))
 
         self.sr._ensureSpaceAvailable(lvSize)
 
         try:
             self.sr.lvmCache.create(self.lvname, lvSize)
-            if self.vdi_type == vhdutil.VDI_TYPE_RAW:
+            if not VdiType.isCowImage(self.vdi_type):
                 self.size = self.sr.lvmCache.getSize(self.lvname)
             else:
-                vhdutil.create(self.path, int(size), False, lvhdutil.MSIZE_MB)
-                self.size = vhdutil.getSizeVirt(self.path)
+                self.cowutil.create(
+                    self.path, int(size), False, self.cowutil.getDefaultPreallocationSizeVirt()
+                )
+                self.size = self.cowutil.getSizeVirt(self.path)
             self.sr.lvmCache.deactivateNoRefcount(self.lvname)
         except util.CommandException as e:
             util.SMlog("Unable to create VDI")
@@ -1403,6 +1421,7 @@ class LVHDVDI(VDI.VDI):
 
         self.utilisation = lvSize
         self.sm_config["vdi_type"] = self.vdi_type
+        self.sm_config["image-format"] = getImageStringFromVdiType(self.vdi_type)
 
         if not self.sr.legacyMode:
             LVMMetadataHandler(self.sr.mdpath).ensureSpaceIsAvailableForVdis(1)
@@ -1430,13 +1449,13 @@ class LVHDVDI(VDI.VDI):
 
     @override
     def delete(self, sr_uuid, vdi_uuid, data_only=False) -> None:
-        util.SMlog("LVHDVDI.delete for %s" % self.uuid)
+        util.SMlog("LVMVDI.delete for %s" % self.uuid)
         try:
             self._loadThis()
         except xs_errors.SRException as e:
             # Catch 'VDI doesn't exist' exception
             if e.errno == 46:
-                return super(LVHDVDI, self).delete(sr_uuid, vdi_uuid, data_only)
+                return super(LVMVDI, self).delete(sr_uuid, vdi_uuid, data_only)
             raise
 
         vdi_ref = self.sr.srcmd.params['vdi_ref']
@@ -1463,7 +1482,7 @@ class LVHDVDI(VDI.VDI):
 
         try:
             self.sr.lvmCache.remove(self.lvname)
-            self.sr.lock.cleanup(vdi_uuid, lvhdutil.NS_PREFIX_LVM + sr_uuid)
+            self.sr.lock.cleanup(vdi_uuid, NS_PREFIX_LVM + sr_uuid)
             self.sr.lock.cleanupAll(vdi_uuid)
         except xs_errors.SRException as e:
             util.SMlog(
@@ -1472,11 +1491,11 @@ class LVHDVDI(VDI.VDI):
 
         self.sr._updateStats(self.sr.uuid, -self.size)
         self.sr._kickGC()
-        return super(LVHDVDI, self).delete(sr_uuid, vdi_uuid, data_only)
+        return super(LVMVDI, self).delete(sr_uuid, vdi_uuid, data_only)
 
     @override
     def attach(self, sr_uuid, vdi_uuid) -> str:
-        util.SMlog("LVHDVDI.attach for %s" % self.uuid)
+        util.SMlog("LVMVDI.attach for %s" % self.uuid)
         if self.sr.journaler.hasJournals(self.uuid):
             raise xs_errors.XenError('VDIUnavailable',
                     opterr='Interrupted operation detected on this VDI, '
@@ -1485,16 +1504,16 @@ class LVHDVDI(VDI.VDI):
         writable = ('args' not in self.sr.srcmd.params) or \
                 (self.sr.srcmd.params['args'][0] == "true")
         needInflate = True
-        if self.vdi_type == vhdutil.VDI_TYPE_RAW or not writable:
+        if not VdiType.isCowImage(self.vdi_type) or not writable:
             needInflate = False
         else:
             self._loadThis()
-            if self.utilisation >= lvhdutil.calcSizeVHDLV(self.size):
+            if self.utilisation >= self.lvmcowutil.calcVolumeSize(self.size):
                 needInflate = False
 
         if needInflate:
             try:
-                self._prepareThin(True)
+                self._prepareThin(True, self.vdi_type)
             except:
                 util.logException("attach")
                 raise xs_errors.XenError('LVMProvisionAttach')
@@ -1507,12 +1526,12 @@ class LVHDVDI(VDI.VDI):
 
     @override
     def detach(self, sr_uuid, vdi_uuid) -> None:
-        util.SMlog("LVHDVDI.detach for %s" % self.uuid)
+        util.SMlog("LVMVDI.detach for %s" % self.uuid)
         self._loadThis()
         already_deflated = (self.utilisation < \
-                lvhdutil.calcSizeVHDLV(self.size))
+                self.lvmcowutil.calcVolumeSize(self.size))
         needDeflate = True
-        if self.vdi_type == vhdutil.VDI_TYPE_RAW or already_deflated:
+        if not VdiType.isCowImage(self.vdi_type) or already_deflated:
             needDeflate = False
         elif self.sr.provision == "thick":
             needDeflate = False
@@ -1525,7 +1544,7 @@ class LVHDVDI(VDI.VDI):
 
         if needDeflate:
             try:
-                self._prepareThin(False)
+                self._prepareThin(False, self.vdi_type)
             except:
                 util.logException("_prepareThin")
                 raise xs_errors.XenError('VDIUnavailable', opterr='deflate')
@@ -1539,7 +1558,7 @@ class LVHDVDI(VDI.VDI):
     # We only support offline resize
     @override
     def resize(self, sr_uuid, vdi_uuid, size) -> str:
-        util.SMlog("LVHDVDI.resize for %s" % self.uuid)
+        util.SMlog("LVMVDI.resize for %s" % self.uuid)
         if not self.sr.isMaster:
             raise xs_errors.XenError('LVMMaster')
 
@@ -1552,17 +1571,17 @@ class LVHDVDI(VDI.VDI):
                     '(current size: %d, new size: %d)' % (self.size, size))
             raise xs_errors.XenError('VDISize', opterr='shrinking not allowed')
 
-        size = vhdutil.validate_and_round_vhd_size(int(size))
+        size = self.cowutil.validateAndRoundImageSize(int(size))
 
         if size == self.size:
             return VDI.VDI.get_params(self)
 
-        if self.vdi_type == vhdutil.VDI_TYPE_RAW:
+        if not VdiType.isCowImage(self.vdi_type):
             lvSizeOld = self.size
             lvSizeNew = util.roundup(lvutil.LVM_SIZE_INCREMENT, size)
         else:
             lvSizeOld = self.utilisation
-            lvSizeNew = lvhdutil.calcSizeVHDLV(size)
+            lvSizeNew = self.lvmcowutil.calcVolumeSize(size)
             if self.sr.provision == "thin":
                 # VDI is currently deflated, so keep it deflated
                 lvSizeNew = lvSizeOld
@@ -1571,16 +1590,15 @@ class LVHDVDI(VDI.VDI):
         self.sr._ensureSpaceAvailable(spaceNeeded)
 
         oldSize = self.size
-        if self.vdi_type == vhdutil.VDI_TYPE_RAW:
+        if not VdiType.isCowImage(self.vdi_type):
             self.sr.lvmCache.setSize(self.lvname, lvSizeNew)
             self.size = self.sr.lvmCache.getSize(self.lvname)
             self.utilisation = self.size
         else:
             if lvSizeNew != lvSizeOld:
-                lvhdutil.inflate(self.sr.journaler, self.sr.uuid, self.uuid,
-                        lvSizeNew)
-            vhdutil.setSizeVirtFast(self.path, size)
-            self.size = vhdutil.getSizeVirt(self.path)
+                self.lvmcowutil.inflate(self.sr.journaler, self.sr.uuid, self.uuid, self.vdi_type, lvSizeNew)
+            self.cowutil.setSizeVirtFast(self.path, size)
+            self.size = self.cowutil.getSizeVirt(self.path)
             self.utilisation = self.sr.lvmCache.getSize(self.lvname)
 
         vdi_ref = self.sr.srcmd.params['vdi_ref']
@@ -1588,7 +1606,7 @@ class LVHDVDI(VDI.VDI):
         self.session.xenapi.VDI.set_physical_utilisation(vdi_ref,
                 str(self.utilisation))
         self.sr._updateStats(self.sr.uuid, self.size - oldSize)
-        super(LVHDVDI, self).resize_cbt(self.sr.uuid, self.uuid, self.size)
+        super(LVMVDI, self).resize_cbt(self.sr.uuid, self.uuid, self.size)
         return VDI.VDI.get_params(self)
 
     @override
@@ -1598,20 +1616,20 @@ class LVHDVDI(VDI.VDI):
 
     @override
     def compose(self, sr_uuid, vdi1, vdi2) -> None:
-        util.SMlog("LVHDSR.compose for %s -> %s" % (vdi2, vdi1))
-        if self.vdi_type != vhdutil.VDI_TYPE_VHD:
+        util.SMlog("LVMSR.compose for %s -> %s" % (vdi2, vdi1))
+        if not VdiType.isCowImage(self.vdi_type):
             raise xs_errors.XenError('Unimplemented')
 
         parent_uuid = vdi1
-        parent_lvname = lvhdutil.LV_PREFIX[vhdutil.VDI_TYPE_VHD] + parent_uuid
+        parent_lvname = LV_PREFIX[self.vdi_type] + parent_uuid
         assert(self.sr.lvmCache.checkLV(parent_lvname))
         parent_path = os.path.join(self.sr.path, parent_lvname)
 
         self.sr.lvActivator.activate(self.uuid, self.lvname, False)
         self.sr.lvActivator.activate(parent_uuid, parent_lvname, False)
 
-        vhdutil.setParent(self.path, parent_path, False)
-        vhdutil.setHidden(parent_path)
+        self.cowutil.setParent(self.path, parent_path, False)
+        self.cowutil.setHidden(parent_path)
         self.sr.session.xenapi.VDI.set_managed(self.sr.srcmd.params['args'][0], False)
 
         if not blktap2.VDI.tap_refresh(self.session, self.sr.uuid, self.uuid,
@@ -1621,18 +1639,18 @@ class LVHDVDI(VDI.VDI):
         util.SMlog("Compose done")
 
     def reset_leaf(self, sr_uuid, vdi_uuid):
-        util.SMlog("LVHDSR.reset_leaf for %s" % vdi_uuid)
-        if self.vdi_type != vhdutil.VDI_TYPE_VHD:
+        util.SMlog("LVMSR.reset_leaf for %s" % vdi_uuid)
+        if not VdiType.isCowImage(self.vdi_type):
             raise xs_errors.XenError('Unimplemented')
 
         self.sr.lvActivator.activate(self.uuid, self.lvname, False)
 
         # safety check
-        if not vhdutil.hasParent(self.path):
+        if not self.cowutil.hasParent(self.path):
             raise util.SMException("ERROR: VDI %s has no parent, " + \
                     "will not reset contents" % self.uuid)
 
-        vhdutil.killData(self.path)
+        self.cowutil.killData(self.path)
 
     def _attach(self):
         self._chainSetActive(True, True, True)
@@ -1695,7 +1713,7 @@ class LVHDVDI(VDI.VDI):
         return snapResult
 
     def _snapshot(self, snapType, cloneOp=False, cbtlog=None, cbt_consistency=None):
-        util.SMlog("LVHDVDI._snapshot for %s (type %s)" % (self.uuid, snapType))
+        util.SMlog("LVMVDI._snapshot for %s (type %s)" % (self.uuid, snapType))
 
         if not self.sr.isMaster:
             raise xs_errors.XenError('LVMMaster')
@@ -1706,6 +1724,8 @@ class LVHDVDI(VDI.VDI):
         if self.hidden:
             raise xs_errors.XenError('VDISnapshot', opterr='hidden VDI')
 
+        snapVdiType = self.sr._get_snap_vdi_type(self.vdi_type, self.size)
+
         self.sm_config = self.session.xenapi.VDI.get_sm_config( \
                 self.sr.srcmd.params['vdi_ref'])
         if "type" in self.sm_config and self.sm_config['type'] == 'raw':
@@ -1713,27 +1733,29 @@ class LVHDVDI(VDI.VDI):
                 raise xs_errors.XenError('Unimplemented', \
                         opterr='Raw VDI, snapshot or clone not permitted')
 
-        # we must activate the entire VHD chain because the real parent could
-        # theoretically be anywhere in the chain if all VHDs under it are empty
+        # we must activate the entire image chain because the real parent could
+        # theoretically be anywhere in the chain if all images under it are empty
         self._chainSetActive(True, False)
         if not util.pathexists(self.path):
             raise xs_errors.XenError('VDIUnavailable', \
                     opterr='VDI unavailable: %s' % (self.path))
 
-        if self.vdi_type == vhdutil.VDI_TYPE_VHD:
-            depth = vhdutil.getDepth(self.path)
+        if VdiType.isCowImage(self.vdi_type):
+            depth = self.cowutil.getDepth(self.path)
             if depth == -1:
                 raise xs_errors.XenError('VDIUnavailable', \
-                        opterr='failed to get VHD depth')
-            elif depth >= vhdutil.MAX_CHAIN_SIZE:
+                        opterr='failed to get COW depth')
+            elif depth >= self.cowutil.getMaxChainLength():
                 raise xs_errors.XenError('SnapshotChainTooLong')
 
         self.issnap = self.session.xenapi.VDI.get_is_a_snapshot( \
                                                 self.sr.srcmd.params['vdi_ref'])
 
-        fullpr = lvhdutil.calcSizeVHDLV(self.size)
-        thinpr = util.roundup(lvutil.LVM_SIZE_INCREMENT, \
-                vhdutil.calcOverheadEmpty(lvhdutil.MSIZE))
+        fullpr = self.lvmcowutil.calcVolumeSize(self.size)
+        thinpr = util.roundup(
+            lvutil.LVM_SIZE_INCREMENT,
+            self.cowutil.calcOverheadEmpty(max(self.size, self.cowutil.getDefaultPreallocationSizeVirt()))
+        )
         lvSizeOrig = thinpr
         lvSizeClon = thinpr
 
@@ -1756,9 +1778,8 @@ class LVHDVDI(VDI.VDI):
         # inflate journal (for the failure handling
         size_req = lvSizeOrig + lvSizeClon + 2 * self.sr.journaler.LV_SIZE
         lvSizeBase = self.size
-        if self.vdi_type == vhdutil.VDI_TYPE_VHD:
-            lvSizeBase = util.roundup(lvutil.LVM_SIZE_INCREMENT,
-                    vhdutil.getSizePhys(self.path))
+        if VdiType.isCowImage(self.vdi_type):
+            lvSizeBase = util.roundup(lvutil.LVM_SIZE_INCREMENT, self.cowutil.getSizePhys(self.path))
             size_req -= (self.utilisation - lvSizeBase)
         self.sr._ensureSpaceAvailable(size_req)
 
@@ -1777,10 +1798,10 @@ class LVHDVDI(VDI.VDI):
         try:
             # self becomes the "base vdi"
             origOldLV = self.lvname
-            baseLV = lvhdutil.LV_PREFIX[self.vdi_type] + baseUuid
+            baseLV = LV_PREFIX[self.vdi_type] + baseUuid
             self.sr.lvmCache.rename(self.lvname, baseLV)
             self.sr.lvActivator.replace(self.uuid, baseUuid, baseLV, False)
-            RefCounter.set(baseUuid, 1, 0, lvhdutil.NS_PREFIX_LVM + self.sr.uuid)
+            RefCounter.set(baseUuid, 1, 0, NS_PREFIX_LVM + self.sr.uuid)
             self.uuid = baseUuid
             self.lvname = baseLV
             self.path = os.path.join(self.sr.path, baseLV)
@@ -1791,16 +1812,16 @@ class LVHDVDI(VDI.VDI):
 
             # shrink the base copy to the minimum - we do it before creating
             # the snapshot volumes to avoid requiring double the space
-            if self.vdi_type == vhdutil.VDI_TYPE_VHD:
-                lvhdutil.deflate(self.sr.lvmCache, self.lvname, lvSizeBase)
+            if VdiType.isCowImage(self.vdi_type):
+                self.lvmcowutil.deflate(self.sr.lvmCache, self.lvname, lvSizeBase)
                 self.utilisation = lvSizeBase
             util.fistpoint.activate("LVHDRT_clone_vdi_after_shrink_parent", self.sr.uuid)
 
-            snapVDI = self._createSnap(origUuid, lvSizeOrig, False)
+            snapVDI = self._createSnap(origUuid, snapVdiType, lvSizeOrig, False)
             util.fistpoint.activate("LVHDRT_clone_vdi_after_first_snap", self.sr.uuid)
             snapVDI2 = None
             if snapType == VDI.SNAPSHOT_DOUBLE:
-                snapVDI2 = self._createSnap(clonUuid, lvSizeClon, True)
+                snapVDI2 = self._createSnap(clonUuid, snapVdiType, lvSizeClon, True)
                 # If we have CBT enabled on the VDI,
                 # set CBT status for the new snapshot disk
                 if cbtlog:
@@ -1808,13 +1829,13 @@ class LVHDVDI(VDI.VDI):
             util.fistpoint.activate("LVHDRT_clone_vdi_after_second_snap", self.sr.uuid)
 
             # note: it is important to mark the parent hidden only AFTER the
-            # new VHD children have been created, which are referencing it;
+            # new image children have been created, which are referencing it;
             # otherwise we would introduce a race with GC that could reclaim
             # the parent before we snapshot it
-            if self.vdi_type == vhdutil.VDI_TYPE_RAW:
+            if not VdiType.isCowImage(self.vdi_type):
                 self.sr.lvmCache.setHidden(self.lvname)
             else:
-                vhdutil.setHidden(self.path)
+                self.cowutil.setHidden(self.path)
             util.fistpoint.activate("LVHDRT_clone_vdi_after_parent_hidden", self.sr.uuid)
 
             # set the base copy to ReadOnly
@@ -1840,7 +1861,7 @@ class LVHDVDI(VDI.VDI):
                         pass
 
         except (util.SMException, XenAPI.Failure) as e:
-            util.logException("LVHDVDI._snapshot")
+            util.logException("LVMVDI._snapshot")
             self._failClone(origUuid, jval, str(e))
         util.fistpoint.activate("LVHDRT_clone_vdi_before_remove_journal", self.sr.uuid)
 
@@ -1848,20 +1869,23 @@ class LVHDVDI(VDI.VDI):
 
         return self._finishSnapshot(snapVDI, snapVDI2, hostRefs, cloneOp, snapType)
 
-    def _createSnap(self, snapUuid, snapSizeLV, isNew):
+    def _createSnap(self, snapUuid, snapVdiType, snapSizeLV, isNew):
         """Snapshot self and return the snapshot VDI object"""
-        snapLV = lvhdutil.LV_PREFIX[vhdutil.VDI_TYPE_VHD] + snapUuid
+
+        snapLV = LV_PREFIX[snapVdiType] + snapUuid
         snapPath = os.path.join(self.sr.path, snapLV)
         self.sr.lvmCache.create(snapLV, int(snapSizeLV))
         util.fistpoint.activate("LVHDRT_clone_vdi_after_lvcreate", self.sr.uuid)
         if isNew:
-            RefCounter.set(snapUuid, 1, 0, lvhdutil.NS_PREFIX_LVM + self.sr.uuid)
+            RefCounter.set(snapUuid, 1, 0, NS_PREFIX_LVM + self.sr.uuid)
         self.sr.lvActivator.add(snapUuid, snapLV, False)
-        parentRaw = (self.vdi_type == vhdutil.VDI_TYPE_RAW)
-        vhdutil.snapshot(snapPath, self.path, parentRaw, lvhdutil.MSIZE_MB)
-        snapParent = vhdutil.getParent(snapPath, lvhdutil.extractUuid)
+        parentRaw = (self.vdi_type == VdiType.RAW)
+        self.cowutil.snapshot(
+            snapPath, self.path, parentRaw, max(self.size, self.cowutil.getDefaultPreallocationSizeVirt())
+        )
+        snapParent = self.cowutil.getParent(snapPath, LvmCowUtil.extractUuid)
 
-        snapVDI = LVHDVDI(self.sr, snapUuid)
+        snapVDI = LVMVDI(self.sr, snapUuid)
         snapVDI.read_only = False
         snapVDI.location = snapUuid
         snapVDI.size = self.size
@@ -1872,7 +1896,7 @@ class LVHDVDI(VDI.VDI):
                     "type", "vdi_type", "vhd-parent", "paused", "relinking", "activating"] and \
                     not key.startswith("host_"):
                 snapVDI.sm_config[key] = val
-        snapVDI.sm_config["vdi_type"] = vhdutil.VDI_TYPE_VHD
+        snapVDI.sm_config["vdi_type"] = snapVdiType
         snapVDI.sm_config["vhd-parent"] = snapParent
         snapVDI.lvname = snapLV
         return snapVDI
@@ -1892,7 +1916,7 @@ class LVHDVDI(VDI.VDI):
                 (not snapVDI2 or snap2Parent != self.uuid):
             util.SMlog("%s != %s != %s => deleting unused base %s" % \
                     (snapParent, self.uuid, snap2Parent, self.lvname))
-            RefCounter.put(self.uuid, False, lvhdutil.NS_PREFIX_LVM + self.sr.uuid)
+            RefCounter.put(self.uuid, False, NS_PREFIX_LVM + self.sr.uuid)
 
             # The removed LV could still be activated on a slave host if it's
             # part of a VM currently running there, we need to deactivate it
@@ -1911,7 +1935,7 @@ class LVHDVDI(VDI.VDI):
             # for leaf nodes). The normal refcount of the child is not
             # transferred to to the base VDI because normal refcounts are
             # incremented and decremented individually, and not based on the
-            # VHD chain (i.e., the child's normal refcount will be decremented
+            # image chain (i.e., the child's normal refcount will be decremented
             # independently of its parent situation). Add 1 for this clone op.
             # Note that we do not need to do protect the refcount operations
             # below with per-VDI locking like we do in lvutil because at this
@@ -1922,7 +1946,7 @@ class LVHDVDI(VDI.VDI):
             # cannot affect the VDIs here because they cannot  possibly be
             # involved in coalescing at this point, and at the relinkSkip step
             # that activates the children, which takes the SR lock.)
-            ns = lvhdutil.NS_PREFIX_LVM + self.sr.uuid
+            ns = NS_PREFIX_LVM + self.sr.uuid
             (cnt, bcnt) = RefCounter.check(snapVDI.uuid, ns)
             RefCounter.set(self.uuid, bcnt + 1, 0, ns)
 
@@ -2010,14 +2034,19 @@ class LVHDVDI(VDI.VDI):
             if not basePresent:
                 # a single-snapshot of an empty VDI will be a noop, resulting
                 # in no new VDIs, so return the existing one. The GC wouldn't
-                # normally try to single-snapshot an empty VHD of course, but
+                # normally try to single-snapshot an empty image of course, but
                 # if an external snapshot operation manages to sneak in right
                 # before a snapshot-coalesce phase, we would get here
                 snap = snapVDI
         return snap.get_params()
 
+    def _setType(self, vdiType: str) -> None:
+        self.vdi_type = vdiType
+        self.cowutil = getCowUtil(self.vdi_type)
+        self.lvmcowutil = LvmCowUtil(self.cowutil)
+
     def _initFromVDIInfo(self, vdiInfo):
-        self.vdi_type = vdiInfo.vdiType
+        self._setType(vdiInfo.vdiType)
         self.lvname = vdiInfo.lvName
         self.size = vdiInfo.sizeVirt
         self.utilisation = vdiInfo.sizeLV
@@ -2035,7 +2064,7 @@ class LVHDVDI(VDI.VDI):
         self.loaded = True
 
     def _initFromLVInfo(self, lvInfo):
-        self.vdi_type = lvInfo.vdiType
+        self._setType(lvInfo.vdiType)
         self.lvname = lvInfo.name
         self.size = lvInfo.size
         self.utilisation = lvInfo.size
@@ -2050,25 +2079,26 @@ class LVHDVDI(VDI.VDI):
             self.sm_config_override = {'vdi_type': self.vdi_type}
         if 'vhd-parent' in self.sm_config_override:
             self.parent = self.sm_config_override['vhd-parent']
-        if self.vdi_type == vhdutil.VDI_TYPE_RAW:
+        if not VdiType.isCowImage(self.vdi_type):
             self.loaded = True
 
-    def _initFromVHDInfo(self, vhdInfo):
-        self.size = vhdInfo.sizeVirt
-        if (self.parent == '' or (vhdInfo.parentUuid != ''
-                                  and vhdInfo.parentUuid != self.parent)):
-            self.parent = vhdInfo.parentUuid
-        self.hidden = vhdInfo.hidden
+    def _initFromImageInfo(self, imageInfo):
+        self.size = imageInfo.sizeVirt
+        if self.parent == '' or (imageInfo.parentUuid != '' and imageInfo.parentUuid != self.parent):
+            self.parent = imageInfo.parentUuid
+        self.hidden = imageInfo.hidden
         self.loaded = True
 
     def _determineType(self):
-        """Determine whether this is a raw or a VHD VDI"""
+        """
+        Determine whether this is a RAW or a COW VDI.
+        """
         if "vdi_ref" in self.sr.srcmd.params:
             vdi_ref = self.sr.srcmd.params["vdi_ref"]
             sm_config = self.session.xenapi.VDI.get_sm_config(vdi_ref)
             if sm_config.get("vdi_type"):
-                self.vdi_type = sm_config["vdi_type"]
-                prefix = lvhdutil.LV_PREFIX[self.vdi_type]
+                self._setType(sm_config["vdi_type"])
+                prefix = LV_PREFIX[self.vdi_type]
                 self.lvname = "%s%s" % (prefix, self.uuid)
                 self.path = os.path.join(self.sr.path, self.lvname)
                 self.sm_config_override = sm_config
@@ -2077,15 +2107,15 @@ class LVHDVDI(VDI.VDI):
         # LVM commands can be costly, so check the file directly first in case
         # the LV is active
         found = False
-        for t in lvhdutil.VDI_TYPES:
-            lvname = "%s%s" % (lvhdutil.LV_PREFIX[t], self.uuid)
+        for vdi_type, prefix in LV_PREFIX.items():
+            lvname = "%s%s" % (prefix, self.uuid)
             path = os.path.join(self.sr.path, lvname)
             if util.pathexists(path):
                 if found:
                     raise xs_errors.XenError('VDILoad',
                             opterr="multiple VDI's: uuid %s" % self.uuid)
                 found = True
-                self.vdi_type = t
+                self._setType(vdi_type)
                 self.lvname = lvname
                 self.path = path
         if found:
@@ -2096,47 +2126,47 @@ class LVHDVDI(VDI.VDI):
             # when doing attach_from_config, the VG won't be there yet
             return False
 
-        lvs = lvhdutil.getLVInfo(self.sr.lvmCache)
+        lvs = LvmCowUtil.getVolumeInfo(self.sr.lvmCache)
         if lvs.get(self.uuid):
             self._initFromLVInfo(lvs[self.uuid])
             return True
         return False
 
     def _loadThis(self):
-        """Load VDI info for this VDI and activate the LV if it's VHD. We
-        don't do it in VDI.load() because not all VDI operations need it."""
+        """
+        Load VDI info for this VDI and activate the LV if it's COW. We
+        don't do it in VDI.load() because not all VDI operations need it.
+        """
         if self.loaded:
-            if self.vdi_type == vhdutil.VDI_TYPE_VHD:
+            if VdiType.isCowImage(self.vdi_type):
                 self.sr.lvActivator.activate(self.uuid, self.lvname, False)
             return
         try:
-            lvs = lvhdutil.getLVInfo(self.sr.lvmCache, self.lvname)
+            lvs = LvmCowUtil.getVolumeInfo(self.sr.lvmCache, self.lvname)
         except util.CommandException as e:
             raise xs_errors.XenError('VDIUnavailable',
                     opterr='%s (LV scan error)' % os.strerror(abs(e.code)))
         if not lvs.get(self.uuid):
             raise xs_errors.XenError('VDIUnavailable', opterr='LV not found')
         self._initFromLVInfo(lvs[self.uuid])
-        if self.vdi_type == vhdutil.VDI_TYPE_VHD:
+        if VdiType.isCowImage(self.vdi_type):
             self.sr.lvActivator.activate(self.uuid, self.lvname, False)
-            vhdInfo = vhdutil.getVHDInfo(self.path, lvhdutil.extractUuid, False)
-            if not vhdInfo:
-                raise xs_errors.XenError('VDIUnavailable', \
-                        opterr='getVHDInfo failed')
-            self._initFromVHDInfo(vhdInfo)
+            imageInfo = self.cowutil.getInfo(self.path, LvmCowUtil.extractUuid, False)
+            if not imageInfo:
+                raise xs_errors.XenError('VDIUnavailable', opterr='getInfo failed')
+            self._initFromImageInfo(imageInfo)
         self.loaded = True
 
     def _chainSetActive(self, active, binary, persistent=False):
         if binary:
             (count, bcount) = RefCounter.checkLocked(self.uuid,
-                lvhdutil.NS_PREFIX_LVM + self.sr.uuid)
+                NS_PREFIX_LVM + self.sr.uuid)
             if (active and bcount > 0) or (not active and bcount == 0):
                 return  # this is a redundant activation/deactivation call
 
         vdiList = {self.uuid: self.lvname}
-        if self.vdi_type == vhdutil.VDI_TYPE_VHD:
-            vdiList = vhdutil.getParentChain(self.lvname,
-                    lvhdutil.extractUuid, self.sr.vgname)
+        if VdiType.isCowImage(self.vdi_type):
+            vdiList = self.cowutil.getParentChain(self.lvname, LvmCowUtil.extractUuid, self.sr.vgname)
         for uuid, lvName in vdiList.items():
             binaryParam = binary
             if uuid != self.uuid:
@@ -2160,21 +2190,20 @@ class LVHDVDI(VDI.VDI):
         raise xs_errors.XenError('VDIClone', opterr=msg)
 
     def _markHidden(self):
-        if self.vdi_type == vhdutil.VDI_TYPE_RAW:
+        if not VdiType.isCowImage(self.vdi_type):
             self.sr.lvmCache.setHidden(self.lvname)
         else:
-            vhdutil.setHidden(self.path)
+            self.cowutil.setHidden(self.path)
         self.hidden = 1
 
-    def _prepareThin(self, attach):
+    def _prepareThin(self, attach, vdiType):
         origUtilisation = self.sr.lvmCache.getSize(self.lvname)
         if self.sr.isMaster:
             # the master can prepare the VDI locally
             if attach:
-                lvhdutil.attachThin(self.sr.journaler, self.sr.uuid, self.uuid)
+                self.lvmcowutil.attachThin(self.sr.journaler, self.sr.uuid, self.uuid, self.vdi_type)
             else:
-                lvhdutil.detachThin(self.session, self.sr.lvmCache,
-                        self.sr.uuid, self.uuid)
+                self.lvmcowutil.detachThin(self.session, self.sr.lvmCache, self.sr.uuid, self.uuid, self.vdi_type)
         else:
             fn = "attach"
             if not attach:
@@ -2182,8 +2211,15 @@ class LVHDVDI(VDI.VDI):
             pools = self.session.xenapi.pool.get_all()
             master = self.session.xenapi.pool.get_master(pools[0])
             rv = self.session.xenapi.host.call_plugin(
-                    master, self.sr.THIN_PLUGIN, fn,
-                    {"srUuid": self.sr.uuid, "vdiUuid": self.uuid})
+                master,
+                self.sr.THIN_PLUGIN,
+                fn,
+                {
+                    "srUuid": self.sr.uuid,
+                    "vdiUuid": self.uuid,
+                    "vdiType": vdiType
+                }
+            )
             util.SMlog("call-plugin returned: %s" % rv)
             if not rv:
                 raise Exception('plugin %s failed' % self.sr.THIN_PLUGIN)
@@ -2229,7 +2265,7 @@ class LVHDVDI(VDI.VDI):
     def _create_cbt_log(self) -> str:
         logname = self._get_cbt_logname(self.uuid)
         self.sr.lvmCache.create(logname, self.sr.journaler.LV_SIZE, CBTLOG_TAG)
-        logpath = super(LVHDVDI, self)._create_cbt_log()
+        logpath = super(LVMVDI, self)._create_cbt_log()
         self.sr.lvmCache.deactivateNoRefcount(logname)
         return logpath
 
@@ -2286,6 +2322,6 @@ class LVHDVDI(VDI.VDI):
         return lvutil.exists(logpath)
 
 if __name__ == '__main__':
-    SRCommand.run(LVHDSR, DRIVER_INFO)
+    SRCommand.run(LVMSR, DRIVER_INFO)
 else:
-    SR.registerSR(LVHDSR)
+    SR.registerSR(LVMSR)

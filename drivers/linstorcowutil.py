@@ -26,9 +26,12 @@ import json
 import socket
 import threading
 import time
+
+from cowutil import CowImageInfo, CowUtil, getCowUtil
 import util
-import vhdutil
 import xs_errors
+
+from vditype import VdiType
 
 MANAGER_PLUGIN = 'linstor-manager'
 
@@ -49,16 +52,6 @@ def call_remote_method(session, host_ref, method, args):
     ))
 
     return response
-
-
-def check_ex(path, ignoreMissingFooter = False, fast = False):
-    cmd = [vhdutil.VHD_UTIL, "check", vhdutil.OPT_LOG_ERR, "-n", path]
-    if ignoreMissingFooter:
-        cmd.append("-i")
-    if fast:
-        cmd.append("-B")
-
-    vhdutil.ioretry(cmd)
 
 
 class LinstorCallException(util.SMException):
@@ -87,7 +80,10 @@ def log_failed_call(target_host, next_target, device_path, vdi_uuid, remote_meth
         target_host, device_path, vdi_uuid, remote_method, next_target, e
     ), priority=util.LOG_DEBUG)
 
-def linstorhostcall(local_method, remote_method):
+def linstorhostcall(local_method, remote_method=None):
+    if not remote_method:
+        remote_method = local_method
+
     def decorated(response_parser):
         def wrapper(*args, **kwargs):
             self = args[0]
@@ -102,7 +98,8 @@ def linstorhostcall(local_method, remote_method):
 
             remote_args = {
                 'devicePath': device_path,
-                'groupName': self._linstor.group_name
+                'groupName': self._linstor.group_name,
+                'vdiType': self._vdi_type
             }
             remote_args.update(**kwargs)
             remote_args = {str(key): str(value) for key, value in remote_args.items()}
@@ -165,15 +162,19 @@ def linstormodifier():
     return decorated
 
 
-class LinstorVhdUtil:
-    MAX_SIZE = 2 * 1024 * 1024 * 1024 * 1024  # Max VHD size.
-
-    def __init__(self, session, linstor):
+class LinstorCowUtil(object):
+    def __init__(self, session, linstor, vdi_type: str):
         self._session = session
         self._linstor = linstor
+        self._cowutil = getCowUtil(vdi_type)
+        self._vdi_type = vdi_type
+
+    @property
+    def cowutil(self) -> CowUtil:
+        return self._cowutil
 
     def create_chain_paths(self, vdi_uuid, readonly=False):
-        # OPTIMIZE: Add a limit_to_first_allocated_block param to limit vhdutil calls.
+        # OPTIMIZE: Add a limit_to_first_allocated_block param to limit cowutil calls.
         # Useful for the snapshot code algorithm.
 
         leaf_vdi_path = self._linstor.get_device_path(vdi_uuid)
@@ -202,7 +203,7 @@ class LinstorVhdUtil:
                     break
             util.retry(check_volume_usable, 15, 2)
 
-            vdi_uuid = self.get_vhd_info(vdi_uuid).parentUuid
+            vdi_uuid = self.get_info(vdi_uuid).parentUuid
             if not vdi_uuid:
                 break
             path = self._linstor.get_device_path(vdi_uuid)
@@ -219,75 +220,70 @@ class LinstorVhdUtil:
             'ignoreMissingFooter': ignore_missing_footer,
             'fast': fast
         }
-        try:
-            self._check(vdi_uuid, **kwargs)
-            return True
-        except Exception as e:
-            util.SMlog('Call to `check` failed: {}'.format(e))
-            return False
+        return self._check(vdi_uuid, **kwargs)
 
-    @linstorhostcall(check_ex, 'check')
+    @linstorhostcall('check')
     def _check(self, vdi_uuid, response):
-        return util.strtobool(response)
+        return CowUtil.CheckResult(response)
 
-    def get_vhd_info(self, vdi_uuid, include_parent=True):
+    def get_info(self, vdi_uuid, include_parent=True):
         kwargs = {
             'includeParent': include_parent,
             'resolveParent': False
         }
-        return self._get_vhd_info(vdi_uuid, self._extract_uuid, **kwargs)
+        return self._get_info(vdi_uuid, self._extract_uuid, **kwargs)
 
-    @linstorhostcall(vhdutil.getVHDInfo, 'getVHDInfo')
-    def _get_vhd_info(self, vdi_uuid, response):
+    @linstorhostcall('getInfo')
+    def _get_info(self, vdi_uuid, response):
         obj = json.loads(response)
 
-        vhd_info = vhdutil.VHDInfo(vdi_uuid)
-        vhd_info.sizeVirt = obj['sizeVirt']
-        vhd_info.sizePhys = obj['sizePhys']
+        image_info = CowImageInfo(vdi_uuid)
+        image_info.sizeVirt = obj['sizeVirt']
+        image_info.sizePhys = obj['sizePhys']
         if 'parentPath' in obj:
-            vhd_info.parentPath = obj['parentPath']
-            vhd_info.parentUuid = obj['parentUuid']
-        vhd_info.hidden = obj['hidden']
-        vhd_info.path = obj['path']
+            image_info.parentPath = obj['parentPath']
+            image_info.parentUuid = obj['parentUuid']
+        image_info.hidden = obj['hidden']
+        image_info.path = obj['path']
 
-        return vhd_info
+        return image_info
 
-    @linstorhostcall(vhdutil.hasParent, 'hasParent')
+    @linstorhostcall('hasParent')
     def has_parent(self, vdi_uuid, response):
         return util.strtobool(response)
 
     def get_parent(self, vdi_uuid):
         return self._get_parent(vdi_uuid, self._extract_uuid)
 
-    @linstorhostcall(vhdutil.getParent, 'getParent')
+    @linstorhostcall('getParent')
     def _get_parent(self, vdi_uuid, response):
         return response
 
-    @linstorhostcall(vhdutil.getSizeVirt, 'getSizeVirt')
+    @linstorhostcall('getSizeVirt')
     def get_size_virt(self, vdi_uuid, response):
         return int(response)
 
-    @linstorhostcall(vhdutil.getMaxResizeSize, 'getMaxResizeSize')
+    @linstorhostcall('getMaxResizeSize')
     def get_max_resize_size(self, vdi_uuid, response):
         return int(response)
 
-    @linstorhostcall(vhdutil.getSizePhys, 'getSizePhys')
+    @linstorhostcall('getSizePhys')
     def get_size_phys(self, vdi_uuid, response):
         return int(response)
 
-    @linstorhostcall(vhdutil.getAllocatedSize, 'getAllocatedSize')
+    @linstorhostcall('getAllocatedSize')
     def get_allocated_size(self, vdi_uuid, response):
         return int(response)
 
-    @linstorhostcall(vhdutil.getDepth, 'getDepth')
+    @linstorhostcall('getDepth')
     def get_depth(self, vdi_uuid, response):
         return int(response)
 
-    @linstorhostcall(vhdutil.getKeyHash, 'getKeyHash')
+    @linstorhostcall('getKeyHash')
     def get_key_hash(self, vdi_uuid, response):
         return response or None
 
-    @linstorhostcall(vhdutil.getBlockBitmap, 'getBlockBitmap')
+    @linstorhostcall('getBlockBitmap')
     def get_block_bitmap(self, vdi_uuid, response):
         return base64.b64decode(response)
 
@@ -307,31 +303,31 @@ class LinstorVhdUtil:
 
     @linstormodifier()
     def create(self, path, size, static, msize=0):
-        return self._call_local_method_or_fail(vhdutil.create, path, size, static, msize)
+        return self._call_local_method_or_fail(self._cowutil.create, path, size, static, msize)
 
     @linstormodifier()
     def set_size_phys(self, path, size, debug=True):
-        return self._call_local_method_or_fail(vhdutil.setSizePhys, path, size, debug)
+        return self._call_local_method_or_fail(self._cowutil.setSizePhys, path, size, debug)
 
     @linstormodifier()
     def set_parent(self, path, parentPath, parentRaw=False):
-        return self._call_local_method_or_fail(vhdutil.setParent, path, parentPath, parentRaw)
+        return self._call_local_method_or_fail(self._cowutil.setParent, path, parentPath, parentRaw)
 
     @linstormodifier()
     def set_hidden(self, path, hidden=True):
-        return self._call_local_method_or_fail(vhdutil.setHidden, path, hidden)
+        return self._call_local_method_or_fail(self._cowutil.setHidden, path, hidden)
 
     @linstormodifier()
     def set_key(self, path, key_hash):
-        return self._call_local_method_or_fail(vhdutil.setKey, path, key_hash)
+        return self._call_local_method_or_fail(self._cowutil.setKey, path, key_hash)
 
     @linstormodifier()
     def kill_data(self, path):
-        return self._call_local_method_or_fail(vhdutil.killData, path)
+        return self._call_local_method_or_fail(self._cowutil.killData, path)
 
     @linstormodifier()
     def snapshot(self, path, parent, parentRaw, msize=0, checkEmpty=True):
-        return self._call_local_method_or_fail(vhdutil.snapshot, path, parent, parentRaw, msize, checkEmpty)
+        return self._call_local_method_or_fail(self._cowutil.snapshot, path, parent, parentRaw, msize, checkEmpty)
 
     def inflate(self, journaler, vdi_uuid, vdi_path, new_size, old_size):
         # Only inflate if the LINSTOR volume capacity is not enough.
@@ -356,14 +352,14 @@ class LinstorVhdUtil:
                 .format(new_size, result_size)
             )
 
-        self._zeroize(vdi_path, result_size - vhdutil.VHD_FOOTER_SIZE)
+        self._zeroize(vdi_path, result_size - self._cowutil.getFooterSize())
         self.set_size_phys(vdi_path, result_size, False)
         journaler.remove(LinstorJournaler.INFLATE, vdi_uuid)
 
     def deflate(self, vdi_path, new_size, old_size, zeroize=False):
         if zeroize:
-            assert old_size > vhdutil.VHD_FOOTER_SIZE
-            self._zeroize(vdi_path, old_size - vhdutil.VHD_FOOTER_SIZE)
+            assert old_size > self._cowutil.getFooterSize()
+            self._zeroize(vdi_path, old_size - self._cowutil.getFooterSize())
 
         new_size = LinstorVolumeManager.round_up_volume_size(new_size)
         if new_size >= old_size:
@@ -382,19 +378,19 @@ class LinstorVhdUtil:
     # --------------------------------------------------------------------------
 
     @linstormodifier()
-    def set_size_virt(self, path, size, jfile):
+    def set_size_virt(self, path, size, jFile):
         kwargs = {
             'size': size,
-            'jfile': jfile
+            'jFile': jFile
         }
-        return self._call_method(vhdutil.setSizeVirt, 'setSizeVirt', path, use_parent=False, **kwargs)
+        return self._call_method(self._cowutil.setSizeVirt, 'setSizeVirt', path, use_parent=False, **kwargs)
 
     @linstormodifier()
     def set_size_virt_fast(self, path, size):
         kwargs = {
             'size': size
         }
-        return self._call_method(vhdutil.setSizeVirtFast, 'setSizeVirtFast', path, use_parent=False, **kwargs)
+        return self._call_method(self._cowutil.setSizeVirtFast, 'setSizeVirtFast', path, use_parent=False, **kwargs)
 
     @linstormodifier()
     def force_parent(self, path, parentPath, parentRaw=False):
@@ -402,15 +398,15 @@ class LinstorVhdUtil:
             'parentPath': str(parentPath),
             'parentRaw': parentRaw
         }
-        return self._call_method(vhdutil.setParent, 'setParent', path, use_parent=False, **kwargs)
+        return self._call_method(self._cowutil.setParent, 'setParent', path, use_parent=False, **kwargs)
 
     @linstormodifier()
     def force_coalesce(self, path):
-        return int(self._call_method(vhdutil.coalesce, 'coalesce', path, use_parent=True))
+        return int(self._call_method(self._cowutil.coalesce, 'coalesce', path, use_parent=True))
 
     @linstormodifier()
     def force_repair(self, path):
-        return self._call_method(vhdutil.repair, 'repair', path, use_parent=False)
+        return self._call_method(self._cowutil.repair, 'repair', path, use_parent=False)
 
     @linstormodifier()
     def force_deflate(self, path, newSize, oldSize, zeroize):
@@ -425,25 +421,23 @@ class LinstorVhdUtil:
         self.deflate(path, newSize, oldSize, zeroize)
 
     # --------------------------------------------------------------------------
-    # Static helpers.
-    # --------------------------------------------------------------------------
-
-    @classmethod
-    def compute_volume_size(cls, virtual_size, image_type):
-        if image_type == vhdutil.VDI_TYPE_VHD:
-            # All LINSTOR VDIs have the metadata area preallocated for
-            # the maximum possible virtual size (for fast online VDI.resize).
-            meta_overhead = vhdutil.calcOverheadEmpty(cls.MAX_SIZE)
-            bitmap_overhead = vhdutil.calcOverheadBitmap(virtual_size)
-            virtual_size += meta_overhead + bitmap_overhead
-        elif image_type != vhdutil.VDI_TYPE_RAW:
-            raise Exception('Invalid image type: {}'.format(image_type))
-
-        return LinstorVolumeManager.round_up_volume_size(virtual_size)
-
-    # --------------------------------------------------------------------------
     # Helpers.
     # --------------------------------------------------------------------------
+
+    def compute_volume_size(self, virtual_size: int) -> int:
+        volume_size = virtual_size
+        if VdiType.isCowImage(self._vdi_type):
+            # All LINSTOR VDIs have the metadata area preallocated for
+            # the maximum possible virtual size (for fast online VDI.resize).
+            meta_overhead = self._cowutil.calcOverheadEmpty(
+                max(virtual_size, self._cowutil.getDefaultPreallocationSizeVirt())
+            )
+            bitmap_overhead = self._cowutil.calcOverheadBitmap(virtual_size)
+            volume_size += meta_overhead + bitmap_overhead
+        else:
+            raise Exception('Invalid image type: {}'.format(self._vdi_type))
+
+        return LinstorVolumeManager.round_up_volume_size(volume_size)
 
     def _extract_uuid(self, device_path):
         # TODO: Remove new line in the vhdutil module. Not here.
@@ -457,7 +451,7 @@ class LinstorVhdUtil:
         except Exception as e:
             raise xs_errors.XenError(
                 'VDIUnavailable',
-                opterr='Unable to get host list to run vhdutil command `{}` (path={}): {}'
+                opterr='Unable to get host list to run cowutil command `{}` (path={}): {}'
                 .format(remote_method, device_path, e)
             )
 
@@ -489,9 +483,13 @@ class LinstorVhdUtil:
         util.SMlog('raise opener exception: {}'.format(e_wrapper))
         raise e_wrapper  # pylint: disable = E0702
 
-    def _call_local_method(self, local_method, device_path, *args, **kwargs):
+    def _sanitize_local_method(self, local_method):
         if isinstance(local_method, str):
-            local_method = getattr(self, local_method)
+            return getattr(self if local_method.startswith('_') else self._cowutil, local_method)
+        return local_method
+
+    def _call_local_method(self, local_method, device_path, *args, **kwargs):
+        local_method = self._sanitize_local_method(local_method)
 
         try:
             def local_call():
@@ -506,7 +504,7 @@ class LinstorVhdUtil:
             # Retry only locally if it's not an EROFS exception.
             return util.retry(local_call, 5, 2, exceptions=[util.CommandException])
         except util.CommandException as e:
-            util.SMlog('failed to execute locally vhd-util (sys {})'.format(e.code))
+            util.SMlog('failed to execute locally CowUtil (sys {})'.format(e.code))
             raise e
 
     def _call_local_method_or_fail(self, local_method, device_path, *args, **kwargs):
@@ -517,13 +515,12 @@ class LinstorVhdUtil:
             self._raise_openers_exception(device_path, e.cmd_err)
 
     def _call_method(self, local_method, remote_method, device_path, use_parent, *args, **kwargs):
-        # Note: `use_parent` exists to know if the VHD parent is used by the local/remote method.
+        # Note: `use_parent` exists to know if the COW image parent is used by the local/remote method.
         # Normally in case of failure, if the parent is unused we try to execute the method on
         # another host using the DRBD opener list. In the other case, if the parent is required,
         # we must check where this last one is open instead of the child.
 
-        if isinstance(local_method, str):
-            local_method = getattr(self, local_method)
+        local_method = self._sanitize_local_method(local_method)
 
         # A. Try to write locally...
         try:
@@ -540,7 +537,8 @@ class LinstorVhdUtil:
         # B.2. Prepare remote args.
         remote_args = {
             'devicePath': device_path,
-            'groupName': self._linstor.group_name
+            'groupName': self._linstor.group_name,
+            'vdiType': self._vdi_type
         }
         remote_args.update(**kwargs)
         remote_args = {str(key): str(value) for key, value in remote_args.items()}
@@ -561,7 +559,7 @@ class LinstorVhdUtil:
             except Exception as e:
                 raise xs_errors.XenError(
                     'VDIUnavailable',
-                    opterr='Unable to get DRBD openers to run vhd-util command `{}` (path={}): {}'
+                    opterr='Unable to get DRBD openers to run CowUtil command `{}` (path={}): {}'
                     .format(remote_method, device_path, e)
                 )
 
@@ -588,20 +586,19 @@ class LinstorVhdUtil:
 
             raise xs_errors.XenError(
                 'VDIUnavailable',
-                opterr='No valid host found to run vhd-util command `{}` (path=`{}`, openers=`{}`)'
+                opterr='No valid host found to run CowUtil command `{}` (path=`{}`, openers=`{}`)'
                 .format(remote_method, device_path, openers)
             )
         return util.retry(remote_call, 5, 2)
 
-    @staticmethod
-    def _zeroize(path, size):
-        if not util.zeroOut(path, size, vhdutil.VHD_FOOTER_SIZE):
+    def _zeroize(self, path, size):
+        if not util.zeroOut(path, size, self._cowutil.getFooterSize()):
             raise xs_errors.XenError(
                 'EIO',
-                opterr='Failed to zero out VHD footer {}'.format(path)
+                opterr='Failed to zero out COW image footer {}'.format(path)
             )
 
-class MultiLinstorVhdUtil:
+class MultiLinstorCowUtil:
     class ExecutorData(threading.local):
         def __init__(self):
             self.clear()
@@ -609,7 +606,7 @@ class MultiLinstorVhdUtil:
         def clear(self):
             self.session = None
             self.linstor = None
-            self.vhdutil = None
+            self.vdi_type_to_cowutil = {}
 
     class Load:
         def __init__(self, session):
@@ -623,24 +620,31 @@ class MultiLinstorVhdUtil:
     def __init__(self, uri, group_name) -> None:
         self._uri = uri
         self._group_name = group_name
-        self._loads: List[MultiLinstorVhdUtil.Load] = []
+        self._loads: List[MultiLinstorCowUtil.Load] = []
         self._executor_data = self.ExecutorData()
 
     def __del__(self):
         self._cleanup()
 
-    def run(self, func, vdi_uuids):
-        def wrapper(func, vdi_uuid):
+    def run(self, func, user_data_list):
+        def wrapper(func, user_data):
             if not self._executor_data.session:
                 self._init_executor_thread()
-            return func(vdi_uuid, self._executor_data.vhdutil)
+            return func(user_data, self)
 
-        with ThreadPoolExecutor(thread_name_prefix="VhdUtil") as executor:
-            return executor.map(lambda vdi_uuid: wrapper(func, vdi_uuid), vdi_uuids)
+        with ThreadPoolExecutor(thread_name_prefix="CowUtil") as executor:
+            return executor.map(lambda user_data: wrapper(func, user_data), user_data_list)
 
-    @property
-    def local_vhdutil(self):
-        return self._executor_data.vhdutil
+    def get_local_cowutil(self, vdi_type):
+        instance = self._executor_data.vdi_type_to_cowutil.get(vdi_type)
+        if not instance:
+            instance = LinstorCowUtil(
+                self._executor_data.session,
+                self._executor_data.linstor,
+                vdi_type
+            )
+            self._executor_data.vdi_type_to_cowutil[vdi_type] = instance
+        return instance
 
     def _init_executor_thread(self):
         session = util.get_localAPI_session()
@@ -653,7 +657,6 @@ class MultiLinstorVhdUtil:
                 logger=util.SMlog
             )
             self._executor_data.linstor = linstor
-            self._executor_data.vhdutil = LinstorVhdUtil(session, linstor)
             self._executor_data.session = session
         except:
             self._executor_data.clear()

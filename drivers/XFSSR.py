@@ -29,10 +29,9 @@ import util
 import lvutil
 import scsiutil
 
+import lock
 import os
 import xs_errors
-import vhdutil
-from lock import Lock
 from constants import EXT_PREFIX
 
 CAPABILITIES = ["SR_PROBE", "SR_UPDATE", "SR_SUPPORTS_LOCAL_CACHING", \
@@ -45,8 +44,8 @@ CAPABILITIES = ["SR_PROBE", "SR_UPDATE", "SR_SUPPORTS_LOCAL_CACHING", \
 CONFIGURATION = [['device', 'local device path (required) (e.g. /dev/sda3)']]
 
 DRIVER_INFO = {
-    'name': 'Local XFS VHD',
-    'description': 'SR plugin which represents disks as VHD files stored on a local XFS filesystem, created inside an LVM volume',
+    'name': 'Local XFS VHD and QCOW2',
+    'description': 'SR plugin which represents disks as VHD and QCOW2 files stored on a local XFS filesystem, created inside an LVM volume',
     'vendor': 'Vates SAS',
     'copyright': '(C) 2019 Vates SAS',
     'driver_version': '1.0',
@@ -77,7 +76,7 @@ class XFSSR(FileSR.FileSR):
             )
 
         self.ops_exclusive = FileSR.OPS_EXCLUSIVE
-        self.lock = Lock(vhdutil.LOCK_TYPE_SR, self.uuid)
+        self.lock = lock.Lock(lock.LOCK_TYPE_SR, self.uuid)
         self.sr_vditype = SR.DEFAULT_TAP
 
         self.path = os.path.join(SR.MOUNT_BASE, sr_uuid)

@@ -22,9 +22,10 @@ from sm_typing import Dict, Optional, List, override
 import SR
 import VDI
 import SRCommand
+import contextlib
 import util
 import scsiutil
-import vhdutil
+import lock
 import os
 import errno
 import xs_errors
@@ -33,7 +34,8 @@ import blktap2
 import time
 import glob
 from uuid import uuid4
-from lock import Lock
+from cowutil import getCowUtil, getImageStringFromVdiType
+from vditype import VdiType, VdiTypeExtension, VDI_COW_TYPES, VDI_TYPE_TO_EXTENSION
 import xmlrpc.client
 import XenAPI # pylint: disable=import-error
 from constants import CBTLOG_TAG
@@ -45,11 +47,14 @@ CAPABILITIES = ["SR_PROBE", "SR_UPDATE", \
                 "VDI_GENERATE_CONFIG", "ATOMIC_PAUSE", "VDI_CONFIG_CBT",
                 "VDI_ACTIVATE", "VDI_DEACTIVATE", "THIN_PROVISIONING"]
 
-CONFIGURATION = [['location', 'local directory path (required)']]
+CONFIGURATION = [
+    ['location', 'local directory path (required)'],
+    ['preferred-image-formats', 'list of preferred image formats to use (default: VHD,QCOW2)']
+]
 
 DRIVER_INFO = {
-    'name': 'Local Path VHD',
-    'description': 'SR plugin which represents disks as VHD files stored on a local path',
+    'name': 'Local Path VHD and QCOW2',
+    'description': 'SR plugin which represents disks as VHD and QCOW2 files stored on a local path',
     'vendor': 'Citrix Systems Inc',
     'copyright': '(C) 2008 Citrix Systems Inc',
     'driver_version': '1.0',
@@ -90,13 +95,15 @@ class FileSR(SR.SR):
         # We call SR.SR.__init__ explicitly because
         # "super" sometimes failed due to circular imports
         SR.SR.__init__(self, srcmd, sr_uuid)
+        self.image_info = {}
+        self._init_image_formats()
         self._check_o_direct()
 
     @override
     def load(self, sr_uuid) -> None:
         self.ops_exclusive = OPS_EXCLUSIVE
-        self.lock = Lock(vhdutil.LOCK_TYPE_SR, self.uuid)
-        self.sr_vditype = vhdutil.VDI_TYPE_VHD
+        self.lock = lock.Lock(lock.LOCK_TYPE_SR, self.uuid)
+        self.sr_vditype = SR.DEFAULT_TAP
         if 'location' not in self.dconf or  not self.dconf['location']:
             raise xs_errors.XenError('ConfigLocationMissing')
         self.remotepath = self.dconf['location']
@@ -108,7 +115,7 @@ class FileSR(SR.SR):
 
     @override
     def create(self, sr_uuid, size) -> None:
-        """ Create the SR.  The path must not already exist, or if it does, 
+        """ Create the SR.  The path must not already exist, or if it does,
         it must be empty.  (This accounts for the case where the user has
         mounted a device onto a directory manually and want to use this as the
         root of a file-based SR.) """
@@ -276,33 +283,47 @@ class FileSR(SR.SR):
         if self.vdis:
             return
 
-        pattern = os.path.join(self.path, "*%s" % vhdutil.FILE_EXTN_VHD)
-        try:
-            self.vhds = vhdutil.getAllVHDs(pattern, FileVDI.extractUuid)
-        except util.CommandException as inst:
-            raise xs_errors.XenError('SRScan', opterr="error VHD-scanning " \
-                    "path %s (%s)" % (self.path, inst))
-        try:
-            list_vhds = [FileVDI.extractUuid(v) for v in util.ioretry(lambda: glob.glob(pattern))]
-            if len(self.vhds) != len(list_vhds):
-                util.SMlog("VHD scan returns %d VHDs: %s" % (len(self.vhds), sorted(self.vhds)))
-                util.SMlog("VHD list returns %d VHDs: %s" % (len(list_vhds), sorted(list_vhds)))
-        except:
-            pass
-        for uuid in self.vhds.keys():
-            if self.vhds[uuid].error:
+        self.image_info = {}
+        for vdi_type in VDI_COW_TYPES:
+            extension = VDI_TYPE_TO_EXTENSION[vdi_type]
+
+            pattern = os.path.join(self.path, "*%s" % extension)
+            image_info = {}
+
+            cowutil = getCowUtil(vdi_type)
+            try:
+                image_info = cowutil.getAllInfoFromVG(pattern, FileVDI.extractUuid)
+            except util.CommandException as inst:
+                raise xs_errors.XenError('SRScan', opterr="error VDI-scanning " \
+                        "path %s (%s)" % (self.path, inst))
+            try:
+                vdi_uuids = [FileVDI.extractUuid(v) for v in util.ioretry(lambda: glob.glob(pattern))]
+                if len(image_info) != len(vdi_uuids):
+                    util.SMlog("VDI scan of %s returns %d VDIs: %s" % (extension, len(image_info), sorted(image_info)))
+                    util.SMlog("VDI list of %s returns %d VDIs: %s" % (extension, len(vdi_uuids), sorted(vdi_uuids)))
+            except:
+                pass
+
+            self.image_info.update(image_info)
+
+        for uuid, image_info in self.image_info.items():
+            if image_info.error:
                 raise xs_errors.XenError('SRScan', opterr='uuid=%s' % uuid)
-            self.vdis[uuid] = self.vdi(uuid)
+
+            file_vdi = self.vdi(uuid)
+            file_vdi.cowutil = cowutil
+            self.vdis[uuid] = file_vdi
+
             # Get the key hash of any encrypted VDIs:
-            vhd_path = os.path.join(self.path, self.vhds[uuid].path)
-            key_hash = vhdutil.getKeyHash(vhd_path)
+            vdi_path = os.path.join(self.path, image_info.path)
+            key_hash = cowutil.getKeyHash(vdi_path)
             self.vdis[uuid].sm_config_override['key_hash'] = key_hash
 
         # raw VDIs and CBT log files
         files = util.ioretry(lambda: util.listdir(self.path))
         for fn in files:
-            if fn.endswith(vhdutil.FILE_EXTN_RAW):
-                uuid = fn[:-(len(vhdutil.FILE_EXTN_RAW))]
+            if fn.endswith(VdiTypeExtension.RAW):
+                uuid = fn[:-(len(VdiTypeExtension.RAW))]
                 self.vdis[uuid] = self.vdi(uuid)
             elif fn.endswith(CBTLOG_TAG):
                 cbt_uuid = fn.split(".")[0]
@@ -417,44 +438,35 @@ class FileSR(SR.SR):
         return True
 
 class FileVDI(VDI.VDI):
-    PARAM_VHD = "vhd"
-    PARAM_RAW = "raw"
-    VDI_TYPE = {
-            PARAM_VHD: vhdutil.VDI_TYPE_VHD,
-            PARAM_RAW: vhdutil.VDI_TYPE_RAW
-    }
+    def _resolve_vdi_context_from_path(self, vdi_uuid, maxretry=5, period=2.0):
+        vdi_formats = (
+            (VdiTypeExtension.VHD, VdiType.VHD),
+            (VdiTypeExtension.QCOW2, VdiType.QCOW2),
+            (VdiTypeExtension.RAW, VdiType.RAW),
+            (VdiTypeExtension.CBTLOG, VdiType.CBTLOG)
+        )
 
-    def _find_path_with_retries(self, vdi_uuid, maxretry=5, period=2.0):
-        vhd_path = os.path.join(self.sr.path, "%s.%s" % \
-                                (vdi_uuid, self.PARAM_VHD))
-        raw_path = os.path.join(self.sr.path, "%s.%s" % \
-                                (vdi_uuid, self.PARAM_RAW))
-        cbt_path = os.path.join(self.sr.path, "%s.%s" %
-                                (vdi_uuid, CBTLOG_TAG))
-        found = False
-        tries = 0
-        while tries < maxretry and not found:
-            tries += 1
-            if util.ioretry(lambda: util.pathexists(vhd_path)):
-                self.vdi_type = vhdutil.VDI_TYPE_VHD
-                self.path = vhd_path
-                found = True
-            elif util.ioretry(lambda: util.pathexists(raw_path)):
-                self.vdi_type = vhdutil.VDI_TYPE_RAW
-                self.path = raw_path
-                self.hidden = False
-                found = True
-            elif util.ioretry(lambda: util.pathexists(cbt_path)):
-                self.vdi_type = CBTLOG_TAG
-                self.path = cbt_path
-                self.hidden = False
-                found = True
+        vdi_uuid_str = str(vdi_uuid)
+        for try_index in range(maxretry):
+            for vdi_extension, vdi_type in vdi_formats:
+                vdi_path = os.path.join(self.sr.path, vdi_uuid_str + vdi_extension)
 
-            if not found:
-                util.SMlog("VHD %s not found, retry %s of %s" % (vhd_path, tries, maxretry))
+                if util.ioretry(lambda: util.pathexists(vdi_path)):
+                    self.vdi_type = vdi_type
+                    if vdi_type in (VdiType.RAW, VdiType.CBTLOG):
+                        self.hidden = False
+                    self.path = vdi_path
+
+                    with contextlib.suppress(Exception):
+                        self.cowutil = getCowUtil(self.vdi_type)
+
+                    return True
+
+            util.SMlog("VDI %s not found, try %s of %s" % (vdi_uuid_str, try_index + 1, maxretry))
+            if try_index + 1 < maxretry:
                 time.sleep(period)
 
-        return found
+        return False
 
     @override
     def load(self, vdi_uuid) -> None:
@@ -463,44 +475,42 @@ class FileVDI(VDI.VDI):
         self.sr.srcmd.params['o_direct'] = self.sr.o_direct
 
         if self.sr.srcmd.cmd == "vdi_create":
-            self.vdi_type = vhdutil.VDI_TYPE_VHD
+            image_format = None
             self.key_hash = None
-            if "vdi_sm_config" in self.sr.srcmd.params:
-                if "key_hash" in self.sr.srcmd.params["vdi_sm_config"]:
-                    self.key_hash = self.sr.srcmd.params["vdi_sm_config"]["key_hash"]
 
-                if "type" in self.sr.srcmd.params["vdi_sm_config"]:
-                    vdi_type = self.sr.srcmd.params["vdi_sm_config"]["type"]
-                    if not self.VDI_TYPE.get(vdi_type):
-                        raise xs_errors.XenError('VDIType',
-                                opterr='Invalid VDI type %s' % vdi_type)
-                    self.vdi_type = self.VDI_TYPE[vdi_type]
+            vdi_sm_config = self.sr.srcmd.params.get("vdi_sm_config")
+            if vdi_sm_config:
+                image_format = self.sr.read_config_image_format(vdi_sm_config)
+                self.key_hash = vdi_sm_config.get("key_hash")
+
+            if not image_format:
+                image_format = self.sr.preferred_image_formats[0]
+            self.vdi_type = self.sr._resolve_vdi_type_from_image_format(image_format)
+
+            self.cowutil = getCowUtil(self.vdi_type)
             self.path = os.path.join(self.sr.path, "%s%s" %
-                (vdi_uuid, vhdutil.FILE_EXTN[self.vdi_type]))
+                (vdi_uuid, VDI_TYPE_TO_EXTENSION[self.vdi_type]))
         else:
-            found = self._find_path_with_retries(vdi_uuid)
+            found = self._resolve_vdi_context_from_path(vdi_uuid)
             if not found:
                 if self.sr.srcmd.cmd == "vdi_delete":
                     # Could be delete for CBT log file
-                    self.path = os.path.join(self.sr.path, "%s.%s" %
-                                             (vdi_uuid, self.PARAM_VHD))
+                    self.path = os.path.join(self.sr.path, f"{vdi_uuid}.deleted")
                     return
                 if self.sr.srcmd.cmd == "vdi_attach_from_config":
                     return
                 raise xs_errors.XenError('VDIUnavailable',
                                          opterr="VDI %s not found" % vdi_uuid)
 
-
-        if self.vdi_type == vhdutil.VDI_TYPE_VHD and \
-                self.sr.__dict__.get("vhds") and self.sr.vhds.get(vdi_uuid):
-            # VHD info already preloaded: use it instead of querying directly
-            vhdInfo = self.sr.vhds[vdi_uuid]
-            self.utilisation = vhdInfo.sizePhys
-            self.size = vhdInfo.sizeVirt
-            self.hidden = vhdInfo.hidden
+        image_info = VdiType.isCowImage(self.vdi_type) and self.sr.image_info.get(vdi_uuid)
+        if image_info:
+            # Image info already preloaded: use it instead of querying directly
+            self.utilisation = image_info.sizePhys
+            self.size = image_info.sizeVirt
+            self.hidden = image_info.hidden
             if self.hidden:
                 self.managed = False
-            self.parent = vhdInfo.parentUuid
+            self.parent = image_info.parentUuid
             if self.parent:
                 self.sm_config_override = {'vhd-parent': self.parent}
             else:
@@ -533,13 +543,12 @@ class FileVDI(VDI.VDI):
                     raise xs_errors.XenError('VDIType', \
                           opterr='Invalid VDI type %s' % self.vdi_type)
 
-            if self.vdi_type == vhdutil.VDI_TYPE_RAW:
+            if self.vdi_type == VdiType.RAW:
                 self.exists = True
                 self.size = self.utilisation
-                self.sm_config_override = {'type': self.PARAM_RAW}
                 return
 
-            if self.vdi_type == CBTLOG_TAG:
+            if self.vdi_type == VdiType.CBTLOG:
                 self.exists = True
                 self.size = self.utilisation
                 return
@@ -547,18 +556,16 @@ class FileVDI(VDI.VDI):
             try:
                 # The VDI might be activated in R/W mode so the VHD footer
                 # won't be valid, use the back-up one instead.
-                diskinfo = util.ioretry(
-                    lambda: self._query_info(self.path, True),
-                    errlist=[errno.EIO, errno.ENOENT])
+                image_info = self.cowutil.getInfo(self.path, FileVDI.extractUuid, useBackupFooter=True)
 
-                if 'parent' in diskinfo:
-                    self.parent = diskinfo['parent']
+                if image_info.parentUuid:
+                    self.parent = image_info.parentUuid
                     self.sm_config_override = {'vhd-parent': self.parent}
                 else:
+                    self.parent = ""
                     self.sm_config_override = {'vhd-parent': None}
-                    self.parent = ''
-                self.size = int(diskinfo['size']) * 1024 * 1024
-                self.hidden = int(diskinfo['hidden'])
+                self.size = image_info.sizeVirt
+                self.hidden = image_info.hidden
                 if self.hidden:
                     self.managed = False
                 self.exists = True
@@ -578,13 +585,11 @@ class FileVDI(VDI.VDI):
         if util.ioretry(lambda: util.pathexists(self.path)):
             raise xs_errors.XenError('VDIExists')
 
-        if self.vdi_type == vhdutil.VDI_TYPE_VHD:
+        if VdiType.isCowImage(self.vdi_type):
             try:
-                size = vhdutil.validate_and_round_vhd_size(int(size))
-                mb = 1024 * 1024
-                size_mb = size // mb
-                util.ioretry(lambda: self._create(str(size_mb), self.path))
-                self.size = util.ioretry(lambda: self._query_v(self.path))
+                size = self.cowutil.validateAndRoundImageSize(int(size))
+                util.ioretry(lambda: self._create(size, self.path))
+                self.size = self.cowutil.getSizeVirt(self.path)
             except util.CommandException as inst:
                 raise xs_errors.XenError('VDICreate',
                         opterr='error %d' % inst.code)
@@ -598,8 +603,9 @@ class FileVDI(VDI.VDI):
 
         st = util.ioretry(lambda: os.stat(self.path))
         self.utilisation = int(st.st_size)
-        if self.vdi_type == vhdutil.VDI_TYPE_RAW:
-            self.sm_config = {"type": self.PARAM_RAW}
+        if not hasattr(self, 'sm_config'):
+            self.sm_config = {}
+        self.sm_config["image-format"] = getImageStringFromVdiType(self.vdi_type)
 
         self._db_introduce()
         self.sr._update(self.sr.uuid, self.size)
@@ -632,7 +638,7 @@ class FileVDI(VDI.VDI):
     @override
     def attach(self, sr_uuid, vdi_uuid) -> str:
         if self.path is None:
-            self._find_path_with_retries(vdi_uuid)
+            self._resolve_vdi_context_from_path(vdi_uuid)
         if not self._checkpath(self.path):
             raise xs_errors.XenError('VDIUnavailable', \
                   opterr='VDI %s unavailable %s' % (vdi_uuid, self.path))
@@ -664,7 +670,7 @@ class FileVDI(VDI.VDI):
             raise xs_errors.XenError('VDIUnavailable', \
                   opterr='VDI %s unavailable %s' % (vdi_uuid, self.path))
 
-        if self.vdi_type != vhdutil.VDI_TYPE_VHD:
+        if not VdiType.isCowImage(self.vdi_type):
             raise xs_errors.XenError('Unimplemented')
 
         if self.hidden:
@@ -678,19 +684,19 @@ class FileVDI(VDI.VDI):
         if size == self.size:
             return VDI.VDI.get_params(self)
 
-        # We already checked it is a VDI_TYPE_VHD
-        size = vhdutil.validate_and_round_vhd_size(int(size))
-        
+        # We already checked it is a cow image.
+        size = self.cowutil.validateAndRoundImageSize(int(size))
+
         jFile = JOURNAL_FILE_PREFIX + self.uuid
         try:
-            vhdutil.setSizeVirt(self.path, size, jFile)
+            self.cowutil.setSizeVirt(self.path, size, jFile)
         except:
             # Revert the operation
-            vhdutil.revert(self.path, jFile)
+            self.cowutil.revert(self.path, jFile)
             raise xs_errors.XenError('VDISize', opterr='resize operation failed')
 
         old_size = self.size
-        self.size = vhdutil.getSizeVirt(self.path)
+        self.size = self.cowutil.getSizeVirt(self.path)
         st = util.ioretry(lambda: os.stat(self.path))
         self.utilisation = int(st.st_size)
 
@@ -705,31 +711,29 @@ class FileVDI(VDI.VDI):
 
     @override
     def compose(self, sr_uuid, vdi1, vdi2) -> None:
-        if self.vdi_type != vhdutil.VDI_TYPE_VHD:
+        if not VdiType.isCowImage(self.vdi_type):
             raise xs_errors.XenError('Unimplemented')
-        parent_fn = vdi1 + vhdutil.FILE_EXTN[vhdutil.VDI_TYPE_VHD]
+        parent_fn = vdi1 + VDI_TYPE_TO_EXTENSION[self.vdi_type]
         parent_path = os.path.join(self.sr.path, parent_fn)
         assert(util.pathexists(parent_path))
-        vhdutil.setParent(self.path, parent_path, False)
-        vhdutil.setHidden(parent_path)
+        self.cowutil.setParent(self.path, parent_path, False)
+        self.cowutil.setHidden(parent_path)
         self.sr.session.xenapi.VDI.set_managed(self.sr.srcmd.params['args'][0], False)
-        util.pread2([vhdutil.VHD_UTIL, "modify", "-p", parent_path,
-            "-n", self.path])
         # Tell tapdisk the chain has changed
         if not blktap2.VDI.tap_refresh(self.session, sr_uuid, vdi2):
             raise util.SMException("failed to refresh VDI %s" % self.uuid)
         util.SMlog("VDI.compose: relinked %s->%s" % (vdi2, vdi1))
 
     def reset_leaf(self, sr_uuid, vdi_uuid):
-        if self.vdi_type != vhdutil.VDI_TYPE_VHD:
+        if not VdiType.isCowImage(self.vdi_type):
             raise xs_errors.XenError('Unimplemented')
 
         # safety check
-        if not vhdutil.hasParent(self.path):
+        if not self.cowutil.hasParent(self.path):
             raise util.SMException("ERROR: VDI %s has no parent, " + \
                     "will not reset contents" % self.uuid)
 
-        vhdutil.killData(self.path)
+        self.cowutil.killData(self.path)
 
     @override
     def _do_snapshot(self, sr_uuid, vdi_uuid, snapType,
@@ -745,7 +749,7 @@ class FileVDI(VDI.VDI):
         else:
             consistency_state = None
 
-        if self.vdi_type != vhdutil.VDI_TYPE_VHD:
+        if not VdiType.isCowImage(self.vdi_type):
             raise xs_errors.XenError('Unimplemented')
 
         if not blktap2.VDI.tap_pause(self.session, sr_uuid, vdi_uuid):
@@ -776,7 +780,7 @@ class FileVDI(VDI.VDI):
             self._rename(src, newsrc)
 
     def __fist_enospace(self):
-        raise util.CommandException(28, "vhd-util snapshot", reason="No space")
+        raise util.CommandException(28, "cowutil snapshot", reason="No space")
 
     def _snapshot(self, snap_type, cbtlog=None, cbt_consistency=None):
         util.SMlog("FileVDI._snapshot for %s (type %s)" % (self.uuid, snap_type))
@@ -788,25 +792,26 @@ class FileVDI(VDI.VDI):
 
         dest = None
         dst = None
+        extension = VDI_TYPE_TO_EXTENSION[self.vdi_type]
         if snap_type == VDI.SNAPSHOT_DOUBLE:
             dest = util.gen_uuid()
-            dst = os.path.join(self.sr.path, "%s.%s" % (dest, self.vdi_type))
+            dst = os.path.join(self.sr.path, dest + extension)
             args.append(dest)
 
         if self.hidden:
             raise xs_errors.XenError('VDIClone', opterr='hidden VDI')
 
-        depth = vhdutil.getDepth(self.path)
+        depth = self.cowutil.getDepth(self.path)
         if depth == -1:
             raise xs_errors.XenError('VDIUnavailable', \
-                  opterr='failed to get VHD depth')
-        elif depth >= vhdutil.MAX_CHAIN_SIZE:
+                  opterr='failed to get image depth')
+        elif depth >= self.cowutil.getMaxChainLength():
             raise xs_errors.XenError('SnapshotChainTooLong')
 
         newuuid = util.gen_uuid()
         src = self.path
-        newsrc = os.path.join(self.sr.path, "%s.%s" % (newuuid, self.vdi_type))
-        newsrcname = "%s.%s" % (newuuid, self.vdi_type)
+        newsrcname = newuuid + extension
+        newsrc = os.path.join(self.sr.path, newsrcname)
 
         if not self._checkpath(src):
             raise xs_errors.XenError('VDIUnavailable', \
@@ -847,18 +852,18 @@ class FileVDI(VDI.VDI):
             #Verify parent locator field of both children and delete newsrc if unused
             introduce_parent = True
             try:
-                srcparent = util.ioretry(lambda: self._query_p_uuid(src))
+                srcparent = self.cowutil.getParent(src, FileVDI.extractUuid)
                 dstparent = None
                 if snap_type == VDI.SNAPSHOT_DOUBLE:
-                    dstparent = util.ioretry(lambda: self._query_p_uuid(dst))
+                    dstparent = self.cowutil.getParent(dst, FileVDI.extractUuid)
                 if srcparent != newuuid and \
                         (snap_type == VDI.SNAPSHOT_SINGLE or \
                         snap_type == VDI.SNAPSHOT_INTERNAL or \
                         dstparent != newuuid):
                     util.ioretry(lambda: self._unlink(newsrc))
                     introduce_parent = False
-            except:
-                pass
+            except Exception as e:
+                raise
 
             # Introduce the new VDI records
             leaf_vdi = None
@@ -890,8 +895,8 @@ class FileVDI(VDI.VDI):
                 base_vdi.size = self.size
                 base_vdi.utilisation = self.utilisation
                 base_vdi.sm_config = {}
-                grandparent = util.ioretry(lambda: self._query_p_uuid(newsrc))
-                if grandparent.find("no parent") == -1:
+                grandparent = self.cowutil.getParent(newsrc, FileVDI.extractUuid)
+                if grandparent:
                     base_vdi.sm_config['vhd-parent'] = grandparent
 
             try:
@@ -949,8 +954,7 @@ class FileVDI(VDI.VDI):
         return super(FileVDI, self).get_params()
 
     def _snap(self, child, parent):
-        cmd = [SR.TAPDISK_UTIL, "snapshot", vhdutil.VDI_TYPE_VHD, child, parent]
-        text = util.pread(cmd)
+        self.cowutil.snapshot(child, parent, self.vdi_type == VdiType.RAW)
 
     def _clonecleanup(self, src, dst, newsrc):
         try:
@@ -978,48 +982,21 @@ class FileVDI(VDI.VDI):
             raise xs_errors.XenError('EIO', \
                   opterr='IO error checking path %s' % path)
 
-    def _query_v(self, path):
-        cmd = [SR.TAPDISK_UTIL, "query", vhdutil.VDI_TYPE_VHD, "-v", path]
-        return int(util.pread(cmd)) * 1024 * 1024
-
-    def _query_p_uuid(self, path):
-        cmd = [SR.TAPDISK_UTIL, "query", vhdutil.VDI_TYPE_VHD, "-p", path]
-        parent = util.pread(cmd)
-        parent = parent[:-1]
-        ls = parent.split('/')
-        return ls[len(ls) - 1].replace(vhdutil.FILE_EXTN_VHD, '')
-
-    def _query_info(self, path, use_bkp_footer=False):
-        diskinfo = {}
-        qopts = '-vpf'
-        if use_bkp_footer:
-            qopts += 'b'
-        cmd = [SR.TAPDISK_UTIL, "query", vhdutil.VDI_TYPE_VHD, qopts, path]
-        txt = util.pread(cmd).split('\n')
-        diskinfo['size'] = txt[0]
-        lst = [txt[1].split('/')[-1].replace(vhdutil.FILE_EXTN_VHD, "")]
-        for val in filter(util.exactmatch_uuid, lst):
-            diskinfo['parent'] = val
-        diskinfo['hidden'] = txt[2].split()[1]
-        return diskinfo
-
     def _create(self, size, path):
-        cmd = [SR.TAPDISK_UTIL, "create", vhdutil.VDI_TYPE_VHD, size, path]
-        text = util.pread(cmd)
+        self.cowutil.create(path, size, False)
         if self.key_hash:
-            vhdutil.setKey(path, self.key_hash)
+            self.cowutil.setKey(path, self.key_hash)
 
     def _mark_hidden(self, path):
-        vhdutil.setHidden(path, True)
+        self.cowutil.setHidden(path, True)
         self.hidden = 1
 
     def _is_hidden(self, path):
-        return vhdutil.getHidden(path) == 1
+        return self.cowutil.getHidden(path) == 1
 
     def extractUuid(path):
         fileName = os.path.basename(path)
-        uuid = fileName.replace(vhdutil.FILE_EXTN_VHD, "")
-        return uuid
+        return os.path.splitext(fileName)[0]
     extractUuid = staticmethod(extractUuid)
 
     @override

@@ -31,9 +31,8 @@ import os
 import sys
 import xmlrpc.client
 import xs_errors
+import lock
 import nfs
-import vhdutil
-from lock import Lock
 import cleanup
 
 CAPABILITIES = ["SR_PROBE", "SR_UPDATE", "SR_CACHING",
@@ -48,8 +47,8 @@ CONFIGURATION = [['server', 'hostname or IP address of NFS server (required)'],
                  nfs.NFS_VERSION]
 
 DRIVER_INFO = {
-    'name': 'NFS VHD',
-    'description': 'SR plugin which stores disks as VHD files on a remote NFS filesystem',
+    'name': 'NFS VHD and QCOW2',
+    'description': 'SR plugin which stores disks as VHD and QCOW2 files on a remote NFS filesystem',
     'vendor': 'Citrix Systems Inc',
     'copyright': '(C) 2008 Citrix Systems Inc',
     'driver_version': '1.0',
@@ -79,7 +78,7 @@ class NFSSR(FileSR.SharedFileSR):
     @override
     def load(self, sr_uuid) -> None:
         self.ops_exclusive = FileSR.OPS_EXCLUSIVE
-        self.lock = Lock(vhdutil.LOCK_TYPE_SR, self.uuid)
+        self.lock = lock.Lock(lock.LOCK_TYPE_SR, self.uuid)
         self.sr_vditype = SR.DEFAULT_TAP
         self.driver_config = DRIVER_CONFIG
         if 'server' not in self.dconf:

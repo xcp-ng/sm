@@ -33,10 +33,9 @@ import FileSR
 # end of careful
 import VDI
 import cleanup
+import lock
 import util
-import vhdutil
 import xs_errors
-from lock import Lock
 
 CAPABILITIES = ["SR_PROBE", "SR_UPDATE",
                 "VDI_CREATE", "VDI_DELETE", "VDI_ATTACH", "VDI_DETACH",
@@ -50,8 +49,8 @@ CONFIGURATION = [['server', 'Full path to share on gluster server (required, ex:
                  ]
 
 DRIVER_INFO = {
-    'name': 'GlusterFS VHD',
-    'description': 'SR plugin which stores disks as VHD files on a GlusterFS storage',
+    'name': 'GlusterFS VHD and QCOW2',
+    'description': 'SR plugin which stores disks as VHD and QCOW2 files on a GlusterFS storage',
     'vendor': 'Vates SAS',
     'copyright': '(C) 2020 Vates SAS',
     'driver_version': '1.0',
@@ -95,7 +94,7 @@ class GlusterFSSR(FileSR.FileSR):
             )
 
         self.ops_exclusive = FileSR.OPS_EXCLUSIVE
-        self.lock = Lock(vhdutil.LOCK_TYPE_SR, self.uuid)
+        self.lock = lock.Lock(lock.LOCK_TYPE_SR, self.uuid)
         self.sr_vditype = SR.DEFAULT_TAP
         self.driver_config = DRIVER_CONFIG
         if 'server' not in self.dconf:

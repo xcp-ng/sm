@@ -21,9 +21,9 @@ import os
 import time
 import util
 import lock
-import lvhdutil
-import vhdutil
 import lvutil
+
+from constants import VG_LOCATION, VG_PREFIX
 
 TRIM_LV_TAG = "_trim_lv"
 TRIM_CAP = "SR_TRIM"
@@ -37,11 +37,11 @@ MASTER_LVM_CONF = '/etc/lvm/master'
 
 
 def _vg_by_sr_uuid(sr_uuid):
-    return lvhdutil.VG_PREFIX + sr_uuid
+    return VG_PREFIX + sr_uuid
 
 
 def _lvpath_by_vg_lv_name(vg_name, lv_name):
-    return os.path.join(lvhdutil.VG_LOCATION, vg_name, lv_name)
+    return os.path.join(VG_LOCATION, vg_name, lv_name)
 
 
 def to_xml(d):
@@ -93,7 +93,7 @@ def _log_last_triggered(session, sr_uuid):
 
 
 def do_trim(session, args):
-    """Attempt to trim the given LVHDSR"""
+    """Attempt to trim the given LVMSR"""
     util.SMlog("do_trim: %s" % args)
     sr_uuid = args["sr_uuid"]
     os.environ['LVM_SYSTEM_DIR'] = MASTER_LVM_CONF
@@ -105,7 +105,7 @@ def do_trim(session, args):
         return to_xml(err_msg)
 
     # Lock SR, get vg empty space details
-    sr_lock = lock.Lock(vhdutil.LOCK_TYPE_SR, sr_uuid)
+    sr_lock = lock.Lock(lock.LOCK_TYPE_SR, sr_uuid)
     got_lock = False
     for i in range(LOCK_RETRY_ATTEMPTS):
         got_lock = sr_lock.acquireNoblock()

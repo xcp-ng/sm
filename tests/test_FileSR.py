@@ -15,18 +15,29 @@ import SR
 import SRCommand
 import testlib
 import util
-import vhdutil
+import cowutil
 import xs_errors
+from vditype import VdiType
 
 
 class FakeFileVDI(FileSR.FileVDI):
     @override
     def load(self, uuid) -> None:
-        self.vdi_type = vhdutil.VDI_TYPE_VHD
+        if not self.vdi_type:
+            self.vdi_type = VdiType.VHD
+        extension = "raw" if self.vdi_type == "aio" else self.vdi_type
+        self.cowutil = cowutil.getCowUtil(self.vdi_type)
         self.hidden = False
         self.path = os.path.join(self.sr.path, '%s.%s' % (
-               uuid, vhdutil.VDI_TYPE_VHD))
+               uuid, extension))
         self.key_hash = None
+
+def createFakeFileVDI(sr, vdi_uuid, vdi_type=VdiType.VHD):
+    vdi = FakeFileVDI(sr, vdi_uuid)
+    if vdi_type != VdiType.VHD:
+        vdi.vdi_type = vdi_type
+        vdi.load(vdi_uuid)
+    return vdi
 
 
 class TestFileVDI(unittest.TestCase):
@@ -48,8 +59,8 @@ class TestFileVDI(unittest.TestCase):
         self.mock_os_unlink = os_unlink_patcher.start()
         pread_patcher = mock.patch('FileSR.util.pread')
         self.mock_pread = pread_patcher.start()
-        gethidden_patch = mock.patch('FileSR.vhdutil.getHidden')
-        self.mock_gethidden = gethidden_patch.start()
+        gethidden_patcher = mock.patch('vhdutil.VhdUtil.getHidden')
+        self.mock_gethidden = gethidden_patcher.start()
 
         fist_patcher = mock.patch('FileSR.util.FistPoint.is_active',
                                   autospec=True)
@@ -70,11 +81,11 @@ class TestFileVDI(unittest.TestCase):
         vdi_uuid = uuid.uuid4()
         sr = mock.MagicMock()
         sr.path = "sr_path"
-        vdi = FakeFileVDI(sr, None)
+        vdi = createFakeFileVDI(sr, None)
         vdi.sr = sr
         mock_os_stat.side_effect = [os.stat_result((stat.S_IFREG, 0, 0, 0, 0, 0, 1024, 0, 0, 0))]
 
-        found = vdi._find_path_with_retries(vdi_uuid)
+        found = vdi._resolve_vdi_context_from_path(vdi_uuid)
 
         self.assertTrue(found)
         expected_path = 'sr_path/%s.vhd' % vdi_uuid
@@ -86,12 +97,15 @@ class TestFileVDI(unittest.TestCase):
         vdi_uuid = uuid.uuid4()
         sr = mock.MagicMock()
         sr.path = "sr_path"
-        vdi = FakeFileVDI(sr, None)
+        vdi = createFakeFileVDI(sr, None)
         vdi.sr = sr
-        mock_os_stat.side_effect = [OSError(errno.ENOENT),
-                                     os.stat_result((stat.S_IFREG, 0, 0, 0, 0, 0, 1024, 0, 0, 0))]
+        mock_os_stat.side_effect = [
+            OSError(errno.ENOENT),
+            OSError(errno.ENOENT),
+            os.stat_result((stat.S_IFREG, 0, 0, 0, 0, 0, 1024, 0, 0, 0))
+        ]
 
-        found = vdi._find_path_with_retries(vdi_uuid)
+        found = vdi._resolve_vdi_context_from_path(vdi_uuid)
 
         self.assertTrue(found)
         expected_path = 'sr_path/%s.raw' % vdi_uuid
@@ -104,14 +118,17 @@ class TestFileVDI(unittest.TestCase):
         vdi_uuid = uuid.uuid4()
         sr = mock.MagicMock()
         sr.path = "sr_path"
-        vdi = FakeFileVDI(sr, None)
+        vdi = createFakeFileVDI(sr, None)
         vdi.sr = sr
-        mock_os_stat.side_effect = [OSError(errno.ENOENT),
-                                     OSError(errno.ENOENT),
-                                     OSError(errno.ENOENT),
-                                     os.stat_result((stat.S_IFREG, 0, 0, 0, 0, 0, 1024, 0, 0, 0))]
+        mock_os_stat.side_effect = [
+            OSError(errno.ENOENT),
+            OSError(errno.ENOENT),
+            OSError(errno.ENOENT),
+            OSError(errno.ENOENT),
+            os.stat_result((stat.S_IFREG, 0, 0, 0, 0, 0, 1024, 0, 0, 0))
+        ]
 
-        found = vdi._find_path_with_retries(vdi_uuid)
+        found = vdi._resolve_vdi_context_from_path(vdi_uuid)
 
         self.assertTrue(found)
         expected_path = 'sr_path/%s.vhd' % vdi_uuid
@@ -123,11 +140,11 @@ class TestFileVDI(unittest.TestCase):
         vdi_uuid = uuid.uuid4()
         sr = mock.MagicMock()
         sr.path = "sr_path"
-        vdi = FakeFileVDI(sr, None)
+        vdi = createFakeFileVDI(sr, None)
         vdi.sr = sr
         self.mock_os_stat.side_effect = OSError(errno.ENOENT)
 
-        found = vdi._find_path_with_retries(vdi_uuid)
+        found = vdi._resolve_vdi_context_from_path(vdi_uuid)
 
         self.assertFalse(found)
 
@@ -141,18 +158,18 @@ class TestFileVDI(unittest.TestCase):
                for x in vdi.getElementsByTagName('member')}
 
     @mock.patch('FileSR.util.gen_uuid')
-    @mock.patch('FileSR.FileVDI._query_p_uuid')
+    @mock.patch('vhdutil.VhdUtil.getParent')
     @mock.patch('FileSR.util.pathexists', autospec=True)
-    @mock.patch('FileSR.vhdutil.getDepth', autospec=True)
+    @mock.patch('vhdutil.VhdUtil.getDepth', autospec=True)
     @mock.patch('FileSR.blktap2', autospec=True)
     def test_clone_success(self, mock_blktap, mock_getDepth, mock_pathexists,
-                            mock_query_p_uuid, mock_uuid):
+                            mock_getParent, mock_uuid):
         # Arrange
         sr_uuid = str(uuid.uuid4())
         vdi_uuid = str(uuid.uuid4())
         sr = mock.MagicMock()
         sr.path = "sr_path"
-        vdi = FakeFileVDI(sr, vdi_uuid)
+        vdi = createFakeFileVDI(sr, vdi_uuid)
         vdi.sr = sr
 
         mock_getDepth.return_value = 1
@@ -162,7 +179,7 @@ class TestFileVDI(unittest.TestCase):
         mock_uuid.side_effect = [clone_vdi_uuid, new_vdi_uuid]
         grandp_uuid = str(uuid.uuid4())
 
-        mock_query_p_uuid.side_effect = [new_vdi_uuid, new_vdi_uuid, grandp_uuid]
+        mock_getParent.side_effect = [new_vdi_uuid, new_vdi_uuid, grandp_uuid]
 
         # Act
         clone_xml = vdi.clone(sr_uuid, vdi_uuid)
@@ -180,20 +197,20 @@ class TestFileVDI(unittest.TestCase):
                          'sr_path/%s.vhd' % vdi_uuid)])
 
     @mock.patch('FileSR.util.gen_uuid')
-    @mock.patch('FileSR.FileVDI._query_p_uuid')
+    @mock.patch('vhdutil.VhdUtil.getParent')
     @mock.patch('FileSR.util.pathexists', autospec=True)
-    @mock.patch('FileSR.vhdutil.getDepth', autospec=True)
+    @mock.patch('vhdutil.VhdUtil.getDepth', autospec=True)
     @mock.patch('FileSR.blktap2', autospec=True)
     def test_clone_no_links_success(
             self, mock_blktap, mock_getDepth, mock_pathexists,
-            mock_query_p_uuid, mock_uuid):
+            mock_getParent, mock_uuid):
         # Arrange
         sr_uuid = str(uuid.uuid4())
         vdi_uuid = str(uuid.uuid4())
         sr = mock.MagicMock()
         sr.path = "sr_path"
         sr._check_hardlinks.return_value = False
-        vdi = FakeFileVDI(sr, vdi_uuid)
+        vdi = createFakeFileVDI(sr, vdi_uuid)
         vdi.sr = sr
 
         mock_getDepth.return_value = 1
@@ -203,7 +220,7 @@ class TestFileVDI(unittest.TestCase):
         mock_uuid.side_effect = [clone_vdi_uuid, new_vdi_uuid]
         grandp_uuid = str(uuid.uuid4())
 
-        mock_query_p_uuid.side_effect = [new_vdi_uuid, new_vdi_uuid, grandp_uuid]
+        mock_getParent.side_effect = [new_vdi_uuid, new_vdi_uuid, grandp_uuid]
 
         # Act
         clone_xml = vdi.clone(sr_uuid, vdi_uuid)
@@ -222,19 +239,19 @@ class TestFileVDI(unittest.TestCase):
 
     @mock.patch('FileSR.FileVDI._snap')
     @mock.patch('FileSR.util.gen_uuid')
-    @mock.patch('FileSR.FileVDI._query_p_uuid')
+    @mock.patch('vhdutil.VhdUtil.getParent')
     @mock.patch('FileSR.util.pathexists', autospec=True)
-    @mock.patch('FileSR.vhdutil.getDepth', autospec=True)
+    @mock.patch('vhdutil.VhdUtil.getDepth', autospec=True)
     @mock.patch('FileSR.blktap2', autospec=True)
     def test_clone_nospace_snap_1(
                self, mock_blktap, mock_getDepth, mock_pathexists,
-               mock_query_p_uuid, mock_uuid, mock_snap):
+               mock_getParent, mock_uuid, mock_snap):
         # Arrange
         sr_uuid = str(uuid.uuid4())
         vdi_uuid = str(uuid.uuid4())
         sr = mock.MagicMock()
         sr.path = "sr_path"
-        vdi = FakeFileVDI(sr, vdi_uuid)
+        vdi = createFakeFileVDI(sr, vdi_uuid)
         vdi.sr = sr
 
         mock_getDepth.return_value = 1
@@ -269,19 +286,19 @@ class TestFileVDI(unittest.TestCase):
 
     @mock.patch('FileSR.FileVDI._snap')
     @mock.patch('FileSR.util.gen_uuid')
-    @mock.patch('FileSR.FileVDI._query_p_uuid')
+    @mock.patch('vhdutil.VhdUtil.getParent')
     @mock.patch('FileSR.util.pathexists', autospec=True)
-    @mock.patch('FileSR.vhdutil.getDepth', autospec=True)
+    @mock.patch('vhdutil.VhdUtil.getDepth', autospec=True)
     @mock.patch('FileSR.blktap2', autospec=True)
     def test_clone_nospace_snap_2(
                self, mock_blktap, mock_getDepth, mock_pathexists,
-               mock_query_p_uuid, mock_uuid, mock_snap):
+               mock_getParent, mock_uuid, mock_snap):
         # Arrange
         sr_uuid = str(uuid.uuid4())
         vdi_uuid = str(uuid.uuid4())
         sr = mock.MagicMock()
         sr.path = "sr_path"
-        vdi = FakeFileVDI(sr, vdi_uuid)
+        vdi = createFakeFileVDI(sr, vdi_uuid)
         vdi.sr = sr
 
         mock_getDepth.return_value = 1
@@ -319,17 +336,13 @@ class TestFileVDI(unittest.TestCase):
                mock.call('sr_path/%s.vhd' % new_vdi_uuid,
                          'sr_path/%s.vhd' % vdi_uuid)])
 
-    @mock.patch('FileSR.vhdutil', spec=True)
-    def test_create_vdi_vhd(self, mock_vhdutil):
+    def test_create_vdi_vhd(self):
         # Arrange
-        mock_vhdutil.VDI_TYPE_VHD = vhdutil.VDI_TYPE_VHD
         sr_uuid = str(uuid.uuid4())
         vdi_uuid = str(uuid.uuid4())
         sr = mock.MagicMock()
         sr.path = "sr_path"
-        vdi = FakeFileVDI(sr, vdi_uuid)
-        vdi.vdi_type = vhdutil.VDI_TYPE_VHD
-        mock_vhdutil.validate_and_round_vhd_size.side_effect = vhdutil.validate_and_round_vhd_size
+        vdi = createFakeFileVDI(sr, vdi_uuid, VdiType.VHD)
 
         # Act
         vdi.create(sr_uuid, vdi_uuid, 20 * 1024 * 1024)
@@ -337,28 +350,23 @@ class TestFileVDI(unittest.TestCase):
         # Assert
         expected_path = f"sr_path/{vdi_uuid}.vhd"
         self.mock_pread.assert_has_calls([
-            mock.call(["/usr/sbin/td-util", "create", "vhd",
-                       "20", expected_path]),
-            mock.call(["/usr/sbin/td-util", "query", "vhd", "-v",
-                       expected_path])])
+            mock.call(["/usr/bin/vhd-util", "create", "--debug", "-n", expected_path, "-s", "20"], quiet=False, text=True),
+            mock.call(["/usr/bin/vhd-util", "query", "--debug", "-v", "-n", expected_path], quiet=False, text=True)])
 
-    @mock.patch('FileSR.vhdutil', spec=True)
     @mock.patch('builtins.open', new_callable=mock.mock_open())
-    def test_create_vdi_raw(self, mock_open, mock_vhdutil):
+    def test_create_vdi_raw(self, mock_open):
         # Arrange
-        mock_vhdutil.VDI_TYPE_RAW = vhdutil.VDI_TYPE_RAW
         sr_uuid = str(uuid.uuid4())
         vdi_uuid = str(uuid.uuid4())
         sr = mock.MagicMock()
         sr.path = "sr_path"
-        vdi = FakeFileVDI(sr, vdi_uuid)
-        vdi.vdi_type = vhdutil.VDI_TYPE_RAW
+        vdi = createFakeFileVDI(sr, vdi_uuid, VdiType.RAW)
 
         # Act
         vdi.create(sr_uuid, vdi_uuid, 20 * 1024 * 1024)
 
         # Assert
-        expected_path = f"sr_path/{vdi_uuid}.vhd"
+        expected_path = f"sr_path/{vdi_uuid}.raw"
         mock_open.assert_called_with(expected_path, 'w')
 
     @mock.patch("FileSR.util.pathexists", autospec=True)
@@ -366,8 +374,10 @@ class TestFileVDI(unittest.TestCase):
     def test_vdi_load_vhd(self, mock_chdir, mock_pathexists):
         # Arrange
         self.mock_pread.return_value = """10240
+10240
 /dev/VG_XenStorage-602fa2e9-2f9e-84af-ac1d-de4616cdcccb/VHD-155a6d00-2f70-411f-9bc7-3fa51fa543ca has no parent
 hidden: 0
+10240
 """
         sr_uuid = str(uuid.uuid4())
         vdi_uuid = str(uuid.uuid4())
@@ -379,7 +389,7 @@ hidden: 0
         }
         sr = FakeSharedFileSR(srcmd, sr_uuid)
         vdi = FileSR.FileVDI(sr, vdi_uuid)
-        vdi.vdi_type = vhdutil.VDI_TYPE_VHD
+        vdi.vdi_type = VdiType.VHD
         mock_pathexists.return_value = True
 
         # Act
@@ -403,7 +413,7 @@ hidden: 0
             'command': 'vdi_create'
         }
         sr = FakeSharedFileSR(srcmd, sr_uuid)
-        vdi = FakeFileVDI(sr, vdi_uuid)
+        vdi = createFakeFileVDI(sr, vdi_uuid)
         mock_pathexists.return_value = True
 
         # Act
@@ -447,6 +457,9 @@ class TestShareFileSR(unittest.TestCase):
 
     @override
     def setUp(self) -> None:
+        pread_patcher = mock.patch('FileSR.util.pread')
+        self.mock_pread = pread_patcher.start()
+
         util_patcher = mock.patch('FileSR.util', autospec=True)
         self.mock_util = util_patcher.start()
 
@@ -456,7 +469,7 @@ class TestShareFileSR(unittest.TestCase):
         unlink_patcher = mock.patch('FileSR.util.force_unlink')
         self.mock_unlink = unlink_patcher.start()
 
-        lock_patcher = mock.patch('FileSR.Lock')
+        lock_patcher = mock.patch('FileSR.lock.Lock')
         self.mock_lock = lock_patcher.start()
 
         lock_patcher_cleanup = mock.patch('cleanup.lock.Lock')
@@ -467,8 +480,8 @@ class TestShareFileSR(unittest.TestCase):
         self.mock_session = mock.MagicMock()
         self.mock_xapi.xapi_local.return_value = self.mock_session
 
-        vhdutil_patcher = mock.patch('FileSR.vhdutil', autospec=True)
-        self.mock_vhdutil = vhdutil_patcher.start()
+        getAllInfoFromVG_patcher = mock.patch('vhdutil.VhdUtil.getAllInfoFromVG')
+        self.mock_getAllInfoFromVG = getAllInfoFromVG_patcher.start()
         glob_patcher = mock.patch("FileSR.glob", autospec=True)
         self.mock_glob = glob_patcher.start()
 
@@ -553,7 +566,7 @@ class TestShareFileSR(unittest.TestCase):
         self.mock_util.ismount.return_value = True
 
         vdi1_uuid = str(uuid.uuid4())
-        vdi1_info = vhdutil.VHDInfo(vdi1_uuid)
+        vdi1_info = cowutil.CowImageInfo(vdi1_uuid)
         vdi1_info.error = False
         vdi1_info.path = f"sr_path/{vdi1_uuid}.vhd"
         test_vhds = {
@@ -561,7 +574,7 @@ class TestShareFileSR(unittest.TestCase):
         }
         self.mock_glob.glob.return_value = []
 
-        self.mock_vhdutil.getAllVHDs.return_value = test_vhds
+        self.mock_getAllInfoFromVG.return_value = test_vhds
 
         # Act
         test_sr.scan(self.sr_uuid)
@@ -578,6 +591,7 @@ class TestFileSR(unittest.TestCase):
         sr_init_patcher = mock.patch('SR.SR.__init__')
         def fake_sr_init(self, srcmd, sr_uuid):
             self.sr_ref = False
+            self.dconf = None
         self.mock_sr_init = sr_init_patcher.start()
         self.mock_sr_init.side_effect = fake_sr_init
 

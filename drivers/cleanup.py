@@ -15,10 +15,10 @@
 # along with this program; if not, write to the Free Software Foundation, Inc.,
 # 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 #
-# Script to coalesce and garbage collect VHD-based SR's in the background
+# Script to coalesce and garbage collect COW-based SR's in the background
 #
 
-from sm_typing import Optional, override
+from sm_typing import Any, Optional, List, override
 
 import os
 import os.path
@@ -37,8 +37,6 @@ import stat
 import XenAPI # pylint: disable=import-error
 import util
 import lvutil
-import vhdutil
-import lvhdutil
 import lvmcache
 import journaler
 import fjournaler
@@ -52,9 +50,14 @@ from srmetadata import LVMMetadataHandler, VDI_TYPE_TAG
 from functools import reduce
 from time import monotonic as _time
 
+from constants import NS_PREFIX_LVM, VG_LOCATION, VG_PREFIX
+from cowutil import CowImageInfo, CowUtil, getCowUtil
+from lvmcowutil import LV_PREFIX, LvmCowUtil
+from vditype import VdiType, VdiTypeExtension, VDI_COW_TYPES, VDI_TYPE_TO_EXTENSION
+
 try:
+    from linstorcowutil import LinstorCowUtil, MultiLinstorCowUtil
     from linstorjournaler import LinstorJournaler
-    from linstorvhdutil import LinstorVhdUtil, MultiLinstorVhdUtil
     from linstorvolumemanager import get_controller_uri
     from linstorvolumemanager import LinstorVolumeManager
     from linstorvolumemanager import LinstorVolumeManagerError
@@ -497,17 +500,16 @@ class XAPI:
 #  VDI
 #
 class VDI(object):
-    """Object representing a VDI of a VHD-based SR"""
+    """Object representing a VDI of a COW-based SR"""
 
     POLL_INTERVAL = 1
     POLL_TIMEOUT = 30
     DEVICE_MAJOR = 202
-    DRIVER_NAME_VHD = "vhd"
 
     # config keys & values
-    DB_VHD_PARENT = "vhd-parent"
+    DB_VDI_PARENT = "vhd-parent"
     DB_VDI_TYPE = "vdi_type"
-    DB_VHD_BLOCKS = "vhd-blocks"
+    DB_VDI_BLOCKS = "vhd-blocks"
     DB_VDI_PAUSED = "paused"
     DB_VDI_RELINKING = "relinking"
     DB_VDI_ACTIVATING = "activating"
@@ -526,9 +528,9 @@ class VDI(object):
     DB_ALLOW_CACHING = "allow_caching"
 
     CONFIG_TYPE = {
-            DB_VHD_PARENT: XAPI.CONFIG_SM,
+            DB_VDI_PARENT: XAPI.CONFIG_SM,
             DB_VDI_TYPE: XAPI.CONFIG_SM,
-            DB_VHD_BLOCKS: XAPI.CONFIG_SM,
+            DB_VDI_BLOCKS: XAPI.CONFIG_SM,
             DB_VDI_PAUSED: XAPI.CONFIG_SM,
             DB_VDI_RELINKING: XAPI.CONFIG_SM,
             DB_VDI_ACTIVATING: XAPI.CONFIG_SM,
@@ -551,20 +553,21 @@ class VDI(object):
 
     STR_TREE_INDENT = 4
 
-    def __init__(self, sr, uuid, raw):
+    def __init__(self, sr, uuid, vdi_type):
         self.sr = sr
         self.scanError = True
         self.uuid = uuid
-        self.raw = raw
+        self.vdi_type = vdi_type
         self.fileName = ""
         self.parentUuid = ""
         self.sizeVirt = -1
-        self._sizeVHD = -1
+        self._sizePhys = -1
         self._sizeAllocated = -1
         self._hidden = False
         self.parent = None
         self.children = []
         self._vdiRef = None
+        self.cowutil = getCowUtil(vdi_type)
         self._clearRef()
 
     @staticmethod
@@ -576,7 +579,7 @@ class VDI(object):
         pass
 
     def getDriverName(self) -> str:
-        return self.DRIVER_NAME_VHD
+        return self.vdi_type
 
     def getRef(self):
         if self._vdiRef is None:
@@ -654,7 +657,7 @@ class VDI(object):
         return util.is_attached_rw(
                 self.sr.xapi.session.xenapi.VDI.get_sm_config(self.getRef()))
 
-    def getVHDBlocks(self):
+    def getVDIBlocks(self):
         val = self.updateBlockInfo()
         bitmap = zlib.decompress(base64.b64decode(val))
         return bitmap
@@ -681,13 +684,13 @@ class VDI(object):
         feasibleSize = False
         allowedDownTime = \
                 self.TIMEOUT_SAFETY_MARGIN * self.LIVE_LEAF_COALESCE_TIMEOUT
-        vhd_size = self.getAllocatedSize()
+        allocated_size = self.getAllocatedSize()
         if speed:
             feasibleSize = \
-                vhd_size // speed < allowedDownTime
+                allocated_size // speed < allowedDownTime
         else:
             feasibleSize = \
-                vhd_size < self.LIVE_LEAF_COALESCE_MAX_SIZE
+                allocated_size < self.LIVE_LEAF_COALESCE_MAX_SIZE
 
         return (feasibleSize or
                 self.getConfig(self.DB_LEAFCLSC) == self.LEAFCLSC_FORCE)
@@ -728,8 +731,8 @@ class VDI(object):
             vdiList.append(self)
         return vdiList
 
-    def getSizeVHD(self) -> int:
-        return self._sizeVHD
+    def getSizePhys(self) -> int:
+        return self._sizePhys
 
     def getAllocatedSize(self) -> int:
         return self._sizeAllocated
@@ -765,8 +768,8 @@ class VDI(object):
         return leaves
 
     def updateBlockInfo(self) -> Optional[str]:
-        val = base64.b64encode(self._queryVHDBlocks()).decode()
-        self.setConfig(VDI.DB_VHD_BLOCKS, val)
+        val = base64.b64encode(self._queryCowBlocks()).decode()
+        self.setConfig(VDI.DB_VDI_BLOCKS, val)
         return val
 
     def rename(self, uuid) -> None:
@@ -782,15 +785,15 @@ class VDI(object):
 
     def delete(self) -> None:
         "Physically delete the VDI"
-        lock.Lock.cleanup(self.uuid, lvhdutil.NS_PREFIX_LVM + self.sr.uuid)
+        lock.Lock.cleanup(self.uuid, NS_PREFIX_LVM + self.sr.uuid)
         lock.Lock.cleanupAll(self.uuid)
         self._clear()
 
     def getParent(self) -> str:
-        return vhdutil.getParent(self.path, lambda x: x.strip())
+        return self.cowutil.getParent(self.path, lambda x: x.strip())
 
     def repair(self, parent) -> None:
-        vhdutil.repair(parent)
+        self.cowutil.repair(parent)
 
     @override
     def __str__(self) -> str:
@@ -800,23 +803,20 @@ class VDI(object):
         strSizeVirt = "?"
         if self.sizeVirt > 0:
             strSizeVirt = Util.num2str(self.sizeVirt)
-        strSizeVHD = "?"
-        if self._sizeVHD > 0:
-            strSizeVHD = "/%s" % Util.num2str(self._sizeVHD)
+        strSizePhys = "?"
+        if self._sizePhys > 0:
+            strSizePhys = "/%s" % Util.num2str(self._sizePhys)
         strSizeAllocated = "?"
         if self._sizeAllocated >= 0:
             strSizeAllocated = "/%s" % Util.num2str(self._sizeAllocated)
-        strType = ""
-        if self.raw:
-            strType = "[RAW]"
-            strSizeVHD = ""
+        strType = "[{}]".format(self.vdi_type)
 
         return "%s%s(%s%s%s)%s" % (strHidden, self.uuid[0:8], strSizeVirt,
-                strSizeVHD, strSizeAllocated, strType)
+                strSizePhys, strSizeAllocated, strType)
 
     def validate(self, fast=False) -> None:
-        if not vhdutil.check(self.path, fast=fast):
-            raise util.SMException("VHD %s corrupted" % self)
+        if self.cowutil.check(self.path, fast=fast) != CowUtil.CheckResult.Success:
+            raise util.SMException("COW image %s corrupted" % self)
 
     def _clear(self):
         self.uuid = ""
@@ -830,14 +830,14 @@ class VDI(object):
 
     def _doCoalesce(self) -> None:
         """Coalesce self onto parent. Only perform the actual coalescing of
-        VHD, but not the subsequent relinking. We'll do that as the next step,
+        an image, but not the subsequent relinking. We'll do that as the next step,
         after reloading the entire SR in case things have changed while we
         were coalescing"""
         self.validate()
         self.parent.validate(True)
         self.parent._increaseSizeVirt(self.sizeVirt)
         self.sr._updateSlavesOnResize(self.parent)
-        self._coalesceVHD(0)
+        self._coalesceCowImage(0)
         self.parent.validate(True)
         #self._verifyContents(0)
         self.parent.updateBlockInfo()
@@ -911,14 +911,13 @@ class VDI(object):
             xapi.message.create(msg_name, "3", "SR", vdi.sr.uuid, msg_body)
 
     def coalesce(self) -> int:
-        # size is returned in sectors
-        return vhdutil.coalesce(self.path) * 512
+        return self.cowutil.coalesce(self.path)
 
     @staticmethod
-    def _doCoalesceVHD(vdi):
+    def _doCoalesceCowImage(vdi):
         try:
             startTime = time.time()
-            vhdSize = vdi.getAllocatedSize()
+            allocated_size = vdi.getAllocatedSize()
             coalesced_size = vdi.coalesce()
             endTime = time.time()
             vdi.sr.recordStorageSpeed(startTime, endTime, coalesced_size)
@@ -940,20 +939,20 @@ class VDI(object):
         Given path to vdi determine if it is raw
         """
         uuid = self.extractUuid(vdi_path)
-        return self.sr.vdis[uuid].raw
+        return self.sr.vdis[uuid].vdi_type == VdiType.RAW
 
-    def _coalesceVHD(self, timeOut):
-        Util.log("  Running VHD coalesce on %s" % self)
+    def _coalesceCowImage(self, timeOut):
+        Util.log("  Running COW coalesce on %s" % self)
         abortTest = lambda: IPCFlag(self.sr.uuid).test(FLAG_TYPE_ABORT)
         try:
             util.fistpoint.activate_custom_fn(
                 "cleanup_coalesceVHD_inject_failure",
                 util.inject_failure)
-            Util.runAbortable(lambda: VDI._doCoalesceVHD(self), None,
+            Util.runAbortable(lambda: VDI._doCoalesceCowImage(self), None,
                     self.sr.uuid, abortTest, VDI.POLL_INTERVAL, timeOut)
         except:
-            #exception at this phase could indicate a failure in vhd coalesce
-            # or a kill of vhd coalesce by runAbortable due to  timeOut
+            # Exception at this phase could indicate a failure in COW coalesce
+            # or a kill of COW coalesce by runAbortable due to timeOut
             # Try a repair and reraise the exception
             parent = ""
             try:
@@ -985,7 +984,7 @@ class VDI(object):
 
     def _reloadChildren(self, vdiSkip):
         """Pause & unpause all VDIs in the subtree to cause blktap to reload
-        the VHD metadata for this file in any online VDI"""
+        the COW image metadata for this file in any online VDI"""
         abortFlag = IPCFlag(self.sr.uuid)
         for child in self.children:
             if child == vdiSkip:
@@ -996,7 +995,7 @@ class VDI(object):
             child._reload()
 
     def _reload(self):
-        """Pause & unpause to cause blktap to reload the VHD metadata"""
+        """Pause & unpause to cause blktap to reload the image metadata"""
         for child in self.children:
             child._reload()
 
@@ -1038,17 +1037,17 @@ class VDI(object):
             child._tagChildrenForRelink()
 
     def _loadInfoParent(self):
-        ret = vhdutil.getParent(self.path, lvhdutil.extractUuid)
+        ret = self.cowutil.getParent(self.path, LvmCowUtil.extractUuid)
         if ret:
             self.parentUuid = ret
 
     def _setParent(self, parent) -> None:
-        vhdutil.setParent(self.path, parent.path, False)
+        self.cowutil.setParent(self.path, parent.path, False)
         self.parent = parent
         self.parentUuid = parent.uuid
         parent.children.append(self)
         try:
-            self.setConfig(self.DB_VHD_PARENT, self.parentUuid)
+            self.setConfig(self.DB_VDI_PARENT, self.parentUuid)
             Util.log("Updated the vhd-parent field for child %s with %s" % \
                      (self.uuid, self.parentUuid))
         except:
@@ -1064,29 +1063,29 @@ class VDI(object):
         return self._hidden
 
     def _loadInfoHidden(self) -> None:
-        hidden = vhdutil.getHidden(self.path)
+        hidden = self.cowutil.getHidden(self.path)
         self._hidden = (hidden != 0)
 
     def _setHidden(self, hidden=True) -> None:
         self._hidden = None
-        vhdutil.setHidden(self.path, hidden)
+        self.cowutil.setHidden(self.path, hidden)
         self._hidden = hidden
 
     def _increaseSizeVirt(self, size, atomic=True) -> None:
         """ensure the virtual size of 'self' is at least 'size'. Note that
-        resizing a VHD must always be offline and atomically: the file must
+        resizing a COW image must always be offline and atomically: the file must
         not be open by anyone and no concurrent operations may take place.
         Thus we use the Agent API call for performing paused atomic
         operations. If the caller is already in the atomic context, it must
         call with atomic = False"""
         if self.sizeVirt >= size:
             return
-        Util.log("  Expanding VHD virt size for VDI %s: %s -> %s" % \
+        Util.log("  Expanding COW image virt size for VDI %s: %s -> %s" % \
                 (self, Util.num2str(self.sizeVirt), Util.num2str(size)))
 
-        msize = vhdutil.getMaxResizeSize(self.path) * 1024 * 1024
+        msize = self.cowutil.getMaxResizeSize(self.path)
         if (size <= msize):
-            vhdutil.setSizeVirtFast(self.path, size)
+            self.cowutil.setSizeVirtFast(self.path, size)
         else:
             if atomic:
                 vdiList = self._getAllSubtree()
@@ -1102,40 +1101,40 @@ class VDI(object):
             else:
                 self._setSizeVirt(size)
 
-        self.sizeVirt = vhdutil.getSizeVirt(self.path)
+        self.sizeVirt = self.cowutil.getSizeVirt(self.path)
 
     def _setSizeVirt(self, size) -> None:
         """WARNING: do not call this method directly unless all VDIs in the
         subtree are guaranteed to be unplugged (and remain so for the duration
-        of the operation): this operation is only safe for offline VHDs"""
+        of the operation): this operation is only safe for offline COW images"""
         jFile = os.path.join(self.sr.path, self.uuid)
-        vhdutil.setSizeVirt(self.path, size, jFile)
+        self.cowutil.setSizeVirt(self.path, size, jFile)
 
-    def _queryVHDBlocks(self) -> bytes:
-        return vhdutil.getBlockBitmap(self.path)
+    def _queryCowBlocks(self) -> bytes:
+        return self.cowutil.getBlockBitmap(self.path)
 
     def _getCoalescedSizeData(self):
-        """Get the data size of the resulting VHD if we coalesce self onto
-        parent. We calculate the actual size by using the VHD block allocation
-        information (as opposed to just adding up the two VHD sizes to get an
+        """Get the data size of the resulting image if we coalesce self onto
+        parent. We calculate the actual size by using the image block allocation
+        information (as opposed to just adding up the two image sizes to get an
         upper bound)"""
         # make sure we don't use stale BAT info from vdi_rec since the child
         # was writable all this time
-        self.delConfig(VDI.DB_VHD_BLOCKS)
-        blocksChild = self.getVHDBlocks()
-        blocksParent = self.parent.getVHDBlocks()
+        self.delConfig(VDI.DB_VDI_BLOCKS)
+        blocksChild = self.getVDIBlocks()
+        blocksParent = self.parent.getVDIBlocks()
         numBlocks = Util.countBits(blocksChild, blocksParent)
         Util.log("Num combined blocks = %d" % numBlocks)
-        sizeData = numBlocks * vhdutil.VHD_BLOCK_SIZE
+        sizeData = numBlocks * self.cowutil.getBlockSize(self.path)
         assert(sizeData <= self.sizeVirt)
         return sizeData
 
     def _calcExtraSpaceForCoalescing(self) -> int:
         sizeData = self._getCoalescedSizeData()
-        sizeCoalesced = sizeData + vhdutil.calcOverheadBitmap(sizeData) + \
-                vhdutil.calcOverheadEmpty(self.sizeVirt)
+        sizeCoalesced = sizeData + self.cowutil.calcOverheadBitmap(sizeData) + \
+                self.cowutil.calcOverheadEmpty(self.sizeVirt)
         Util.log("Coalesced size = %s" % Util.num2str(sizeCoalesced))
-        return sizeCoalesced - self.parent.getSizeVHD()
+        return sizeCoalesced - self.parent.getSizePhys()
 
     def _calcExtraSpaceForLeafCoalescing(self) -> int:
         """How much extra space in the SR will be required to
@@ -1147,7 +1146,7 @@ class VDI(object):
         """How much extra space in the SR will be required to
         snapshot-coalesce this VDI"""
         return self._calcExtraSpaceForCoalescing() + \
-                vhdutil.calcOverheadEmpty(self.sizeVirt)  # extra snap leaf
+                self.cowutil.calcOverheadEmpty(self.sizeVirt)  # extra snap leaf
 
     def _getAllSubtree(self):
         """Get self and all VDIs in the subtree of self as a flat list"""
@@ -1163,21 +1162,12 @@ class FileVDI(VDI):
     @override
     @staticmethod
     def extractUuid(path):
-        path = os.path.basename(path.strip())
-        if not (path.endswith(vhdutil.FILE_EXTN_VHD) or \
-                path.endswith(vhdutil.FILE_EXTN_RAW)):
-            return None
-        uuid = path.replace(vhdutil.FILE_EXTN_VHD, "").replace( \
-                vhdutil.FILE_EXTN_RAW, "")
-        # TODO: validate UUID format
-        return uuid
+        fileName = os.path.basename(path)
+        return os.path.splitext(fileName)[0]
 
-    def __init__(self, sr, uuid, raw):
-        VDI.__init__(self, sr, uuid, raw)
-        if self.raw:
-            self.fileName = "%s%s" % (self.uuid, vhdutil.FILE_EXTN_RAW)
-        else:
-            self.fileName = "%s%s" % (self.uuid, vhdutil.FILE_EXTN_VHD)
+    def __init__(self, sr, uuid, vdi_type):
+        VDI.__init__(self, sr, uuid, vdi_type)
+        self.fileName = "%s%s" % (self.uuid, VDI_TYPE_TO_EXTENSION[self.vdi_type])
 
     @override
     def load(self, info=None) -> None:
@@ -1185,26 +1175,26 @@ class FileVDI(VDI):
             if not util.pathexists(self.path):
                 raise util.SMException("%s not found" % self.path)
             try:
-                info = vhdutil.getVHDInfo(self.path, self.extractUuid)
+                info = self.cowutil.getInfo(self.path, self.extractUuid)
             except util.SMException:
-                Util.log(" [VDI %s: failed to read VHD metadata]" % self.uuid)
+                Util.log(" [VDI %s: failed to read COW image metadata]" % self.uuid)
                 return
         self.parent = None
         self.children = []
         self.parentUuid = info.parentUuid
         self.sizeVirt = info.sizeVirt
-        self._sizeVHD = info.sizePhys
+        self._sizePhys = info.sizePhys
         self._sizeAllocated = info.sizeAllocated
         self._hidden = info.hidden
         self.scanError = False
         self.path = os.path.join(self.sr.path, "%s%s" % \
-                (self.uuid, vhdutil.FILE_EXTN_VHD))
+                (self.uuid, VDI_TYPE_TO_EXTENSION[self.vdi_type]))
 
     @override
     def rename(self, uuid) -> None:
         oldPath = self.path
         VDI.rename(self, uuid)
-        self.fileName = "%s%s" % (self.uuid, vhdutil.FILE_EXTN_VHD)
+        self.fileName = "%s%s" % (self.uuid, VDI_TYPE_TO_EXTENSION[self.vdi_type])
         self.path = os.path.join(self.sr.path, self.fileName)
         assert(not util.pathexists(self.path))
         Util.log("Renaming %s -> %s" % (oldPath, self.path))
@@ -1229,23 +1219,22 @@ class FileVDI(VDI):
     @override
     def getAllocatedSize(self) -> int:
         if self._sizeAllocated == -1:
-            self._sizeAllocated = vhdutil.getAllocatedSize(self.path)
+            self._sizeAllocated = self.cowutil.getAllocatedSize(self.path)
         return self._sizeAllocated
 
 
-class LVHDVDI(VDI):
-    """Object representing a VDI in an LVHD SR"""
+class LVMVDI(VDI):
+    """Object representing a VDI in an LVM SR"""
 
     JRN_ZERO = "zero"  # journal entry type for zeroing out end of parent
-    DRIVER_NAME_RAW = "aio"
 
     @override
     def load(self, info=None) -> None:
         # `info` is always set. `None` default value is only here to match parent method.
-        assert info, "No info given to LVHDVDI.load"
+        assert info, "No info given to LVMVDI.load"
         self.parent = None
         self.children = []
-        self._sizeVHD = -1
+        self._sizePhys = -1
         self._sizeAllocated = -1
         self.scanError = info.scanError
         self.sizeLV = info.sizeLV
@@ -1257,54 +1246,49 @@ class LVHDVDI(VDI):
         self._hidden = info.hidden
         self.parentUuid = info.parentUuid
         self.path = os.path.join(self.sr.path, self.fileName)
+        self.lvmcowutil = LvmCowUtil(self.cowutil)
 
     @override
     @staticmethod
     def extractUuid(path):
-        return lvhdutil.extractUuid(path)
-
-    @override
-    def getDriverName(self) -> str:
-        if self.raw:
-            return self.DRIVER_NAME_RAW
-        return self.DRIVER_NAME_VHD
+        return LvmCowUtil.extractUuid(path)
 
     def inflate(self, size):
-        """inflate the LV containing the VHD to 'size'"""
-        if self.raw:
+        """inflate the LV containing the COW image to 'size'"""
+        if not VdiType.isCowImage(self.vdi_type):
             return
         self._activate()
         self.sr.lock()
         try:
-            lvhdutil.inflate(self.sr.journaler, self.sr.uuid, self.uuid, size)
+            self.lvmcowutil.inflate(self.sr.journaler, self.sr.uuid, self.uuid, self.vdi_type, size)
             util.fistpoint.activate("LVHDRT_inflating_the_parent", self.sr.uuid)
         finally:
             self.sr.unlock()
         self.sizeLV = self.sr.lvmCache.getSize(self.fileName)
-        self._sizeVHD = -1
+        self._sizePhys = -1
         self._sizeAllocated = -1
 
     def deflate(self):
-        """deflate the LV containing the VHD to minimum"""
-        if self.raw:
+        """deflate the LV containing the image to minimum"""
+        if not VdiType.isCowImage(self.vdi_type):
             return
         self._activate()
         self.sr.lock()
         try:
-            lvhdutil.deflate(self.sr.lvmCache, self.fileName, self.getSizeVHD())
+            self.lvmcowutil.deflate(self.sr.lvmCache, self.fileName, self.getSizePhys())
         finally:
             self.sr.unlock()
         self.sizeLV = self.sr.lvmCache.getSize(self.fileName)
-        self._sizeVHD = -1
+        self._sizePhys = -1
         self._sizeAllocated = -1
 
     def inflateFully(self):
-        self.inflate(lvhdutil.calcSizeVHDLV(self.sizeVirt))
+        self.inflate(self.lvmcowutil.calcVolumeSize(self.sizeVirt))
 
     def inflateParentForCoalesce(self):
         """Inflate the parent only as much as needed for the purposes of
         coalescing"""
-        if self.parent.raw:
+        if not VdiType.isCowImage(self.parent.vdi_type):
             return
         inc = self._calcExtraSpaceForCoalescing()
         if inc > 0:
@@ -1313,7 +1297,7 @@ class LVHDVDI(VDI):
 
     @override
     def updateBlockInfo(self) -> Optional[str]:
-        if not self.raw:
+        if VdiType.isCowImage(self.vdi_type):
             return VDI.updateBlockInfo(self)
         return None
 
@@ -1322,9 +1306,7 @@ class LVHDVDI(VDI):
         oldUuid = self.uuid
         oldLVName = self.fileName
         VDI.rename(self, uuid)
-        self.fileName = lvhdutil.LV_PREFIX[vhdutil.VDI_TYPE_VHD] + self.uuid
-        if self.raw:
-            self.fileName = lvhdutil.LV_PREFIX[vhdutil.VDI_TYPE_RAW] + self.uuid
+        self.fileName = LV_PREFIX[self.vdi_type] + self.uuid
         self.path = os.path.join(self.sr.path, self.fileName)
         assert(not self.sr.lvmCache.checkLV(self.fileName))
 
@@ -1332,7 +1314,7 @@ class LVHDVDI(VDI):
         if self.sr.lvActivator.get(oldUuid, False):
             self.sr.lvActivator.replace(oldUuid, self.uuid, self.fileName, False)
 
-        ns = lvhdutil.NS_PREFIX_LVM + self.sr.uuid
+        ns = NS_PREFIX_LVM + self.sr.uuid
         (cnt, bcnt) = RefCounter.check(oldUuid, ns)
         RefCounter.set(self.uuid, cnt, bcnt, ns)
         RefCounter.reset(oldUuid, ns)
@@ -1348,27 +1330,27 @@ class LVHDVDI(VDI):
             self.sr.forgetVDI(self.uuid)
         finally:
             self.sr.unlock()
-        RefCounter.reset(self.uuid, lvhdutil.NS_PREFIX_LVM + self.sr.uuid)
+        RefCounter.reset(self.uuid, NS_PREFIX_LVM + self.sr.uuid)
         VDI.delete(self)
 
     @override
-    def getSizeVHD(self) -> int:
-        if self._sizeVHD == -1:
-            self._loadInfoSizeVHD()
-        return self._sizeVHD
+    def getSizePhys(self) -> int:
+        if self._sizePhys == -1:
+            self._loadInfoSizePhys()
+        return self._sizePhys
 
-    def _loadInfoSizeVHD(self):
-        """Get the physical utilization of the VHD file. We do it individually
-        (and not using the VHD batch scanner) as an optimization: this info is
+    def _loadInfoSizePhys(self):
+        """Get the physical utilization of the COW image file. We do it individually
+        (and not using the COW batch scanner) as an optimization: this info is
         relatively expensive and we need it only for VDI's involved in
         coalescing."""
-        if self.raw:
+        if not VdiType.isCowImage(self.vdi_type):
             return
         self._activate()
-        self._sizeVHD = vhdutil.getSizePhys(self.path)
-        if self._sizeVHD <= 0:
+        self._sizePhys = self.cowutil.getSizePhys(self.path)
+        if self._sizePhys <= 0:
             raise util.SMException("phys size of %s = %d" % \
-                    (self, self._sizeVHD))
+                    (self, self._sizePhys))
 
     @override
     def getAllocatedSize(self) -> int:
@@ -1378,23 +1360,23 @@ class LVHDVDI(VDI):
 
     def _loadInfoSizeAllocated(self):
         """
-        Get the allocated size of the VHD volume.
+        Get the allocated size of the COW volume.
         """
-        if self.raw:
+        if not VdiType.isCowImage(self.vdi_type):
             return
         self._activate()
-        self._sizeAllocated = vhdutil.getAllocatedSize(self.path)
+        self._sizeAllocated = self.cowutil.getAllocatedSize(self.path)
 
     @override
     def _loadInfoHidden(self) -> None:
-        if self.raw:
+        if not VdiType.isCowImage(self.vdi_type):
             self._hidden = self.sr.lvmCache.getHidden(self.fileName)
         else:
             VDI._loadInfoHidden(self)
 
     @override
     def _setHidden(self, hidden=True) -> None:
-        if self.raw:
+        if not VdiType.isCowImage(self.vdi_type):
             self._hidden = None
             self.sr.lvmCache.setHidden(self.fileName, hidden)
             self._hidden = hidden
@@ -1403,15 +1385,15 @@ class LVHDVDI(VDI):
 
     @override
     def __str__(self) -> str:
-        strType = "VHD"
-        if self.raw:
+        strType = self.vdi_type
+        if self.vdi_type == VdiType.RAW:
             strType = "RAW"
         strHidden = ""
         if self.isHidden():
             strHidden = "*"
-        strSizeVHD = ""
-        if self._sizeVHD > 0:
-            strSizeVHD = Util.num2str(self._sizeVHD)
+        strSizePhys = ""
+        if self._sizePhys > 0:
+            strSizePhys = Util.num2str(self._sizePhys)
         strSizeAllocated = ""
         if self._sizeAllocated >= 0:
             strSizeAllocated = Util.num2str(self._sizeAllocated)
@@ -1421,17 +1403,17 @@ class LVHDVDI(VDI):
         if self.lvOpen:
             strActive += "o"
         return "%s%s[%s](%s/%s/%s/%s|%s)" % (strHidden, self.uuid[0:8], strType,
-                Util.num2str(self.sizeVirt), strSizeVHD, strSizeAllocated,
+                Util.num2str(self.sizeVirt), strSizePhys, strSizeAllocated,
                 Util.num2str(self.sizeLV), strActive)
 
     @override
     def validate(self, fast=False) -> None:
-        if not self.raw:
+        if VdiType.isCowImage(self.vdi_type):
             VDI.validate(self, fast)
 
     @override
     def _doCoalesce(self) -> None:
-        """LVHD parents must first be activated, inflated, and made writable"""
+        """LVMVDI parents must first be activated, inflated, and made writable"""
         try:
             self._activateChain()
             self.sr.lvmCache.setReadonly(self.parent.fileName, False)
@@ -1439,7 +1421,7 @@ class LVHDVDI(VDI):
             self.inflateParentForCoalesce()
             VDI._doCoalesce(self)
         finally:
-            self.parent._loadInfoSizeVHD()
+            self.parent._loadInfoSizePhys()
             self.parent.deflate()
             self.sr.lvmCache.setReadonly(self.parent.fileName, True)
 
@@ -1450,7 +1432,7 @@ class LVHDVDI(VDI):
             self.sr.lvmCache.setReadonly(self.fileName, False)
 
         try:
-            vhdutil.setParent(self.path, parent.path, parent.raw)
+            self.cowutil.setParent(self.path, parent.path, parent.vdi_type == VdiType.RAW)
         finally:
             if self.lvReadonly:
                 self.sr.lvmCache.setReadonly(self.fileName, True)
@@ -1459,11 +1441,11 @@ class LVHDVDI(VDI):
         self.parentUuid = parent.uuid
         parent.children.append(self)
         try:
-            self.setConfig(self.DB_VHD_PARENT, self.parentUuid)
-            Util.log("Updated the vhd-parent field for child %s with %s" % \
+            self.setConfig(self.DB_VDI_PARENT, self.parentUuid)
+            Util.log("Updated the VDI-parent field for child %s with %s" % \
                      (self.uuid, self.parentUuid))
         except:
-            Util.log("Failed to update the vhd-parent with %s for child %s" % \
+            Util.log("Failed to update the VDI-parent with %s for child %s" % \
                      (self.parentUuid, self.uuid))
 
     def _activate(self):
@@ -1486,7 +1468,7 @@ class LVHDVDI(VDI):
     def _increaseSizeVirt(self, size, atomic=True) -> None:
         "ensure the virtual size of 'self' is at least 'size'"
         self._activate()
-        if not self.raw:
+        if VdiType.isCowImage(self.vdi_type):
             VDI._increaseSizeVirt(self, size, atomic)
             return
 
@@ -1523,26 +1505,24 @@ class LVHDVDI(VDI):
     def _setSizeVirt(self, size) -> None:
         """WARNING: do not call this method directly unless all VDIs in the
         subtree are guaranteed to be unplugged (and remain so for the duration
-        of the operation): this operation is only safe for offline VHDs"""
+        of the operation): this operation is only safe for offline COW images."""
         self._activate()
-        jFile = lvhdutil.createVHDJournalLV(self.sr.lvmCache, self.uuid,
-                vhdutil.MAX_VHD_JOURNAL_SIZE)
+        jFile = self.lvmcowutil.createResizeJournal(self.sr.lvmCache, self.uuid)
         try:
-            lvhdutil.setSizeVirt(self.sr.journaler, self.sr.uuid, self.uuid,
-                    size, jFile)
+            self.lvmcowutil.setSizeVirt(self.sr.journaler, self.sr.uuid, self.uuid, self.vdi_type, size, jFile)
         finally:
-            lvhdutil.deleteVHDJournalLV(self.sr.lvmCache, self.uuid)
+            self.lvmcowutil.destroyResizeJournal(self.sr.lvmCache, self.uuid)
 
     @override
-    def _queryVHDBlocks(self) -> bytes:
+    def _queryCowBlocks(self) -> bytes:
         self._activate()
-        return VDI._queryVHDBlocks(self)
+        return VDI._queryCowBlocks(self)
 
     @override
     def _calcExtraSpaceForCoalescing(self) -> int:
-        if self.parent.raw:
+        if not VdiType.isCowImage(self.parent.vdi_type):
             return 0  # raw parents are never deflated in the first place
-        sizeCoalesced = lvhdutil.calcSizeVHDLV(self._getCoalescedSizeData())
+        sizeCoalesced = self.lvmcowutil.calcVolumeSize(self._getCoalescedSizeData())
         Util.log("Coalesced size = %s" % Util.num2str(sizeCoalesced))
         return sizeCoalesced - self.parent.sizeLV
 
@@ -1551,13 +1531,13 @@ class LVHDVDI(VDI):
         """How much extra space in the SR will be required to
         [live-]leaf-coalesce this VDI"""
         # we can deflate the leaf to minimize the space requirements
-        deflateDiff = self.sizeLV - lvhdutil.calcSizeLV(self.getSizeVHD())
+        deflateDiff = self.sizeLV - lvutil.calcSizeLV(self.getSizePhys())
         return self._calcExtraSpaceForCoalescing() - deflateDiff
 
     @override
     def _calcExtraSpaceForSnapshotCoalescing(self) -> int:
         return self._calcExtraSpaceForCoalescing() + \
-                lvhdutil.calcSizeLV(self.getSizeVHD())
+                lvutil.calcSizeLV(self.getSizePhys())
 
 
 class LinstorVDI(VDI):
@@ -1574,76 +1554,76 @@ class LinstorVDI(VDI):
 
         self.fileName = self.sr._linstor.get_volume_name(self.uuid)
         self.path = self.sr._linstor.build_device_path(self.fileName)
+        self.linstorcowutil = LinstorCowUtil(self.sr.xapi.session, self.sr._linstor, info.vdiType)
 
         if not info:
             try:
-                info = self.sr._vhdutil.get_vhd_info(self.uuid)
+                info = self.linstorcowutil.get_info(self.uuid)
             except util.SMException:
                 Util.log(
-                    ' [VDI {}: failed to read VHD metadata]'.format(self.uuid)
+                    ' [VDI {}: failed to read COW image metadata]'.format(self.uuid)
                 )
                 return
 
         self.parentUuid = info.parentUuid
         self.sizeVirt = info.sizeVirt
-        self._sizeVHD = -1
+        self._sizePhys = -1
         self._sizeAllocated = -1
         self.drbd_size = -1
         self._hidden = info.hidden
         self.scanError = False
-        self.vdi_type = vhdutil.VDI_TYPE_VHD
 
     @override
-    def getSizeVHD(self, fetch=False) -> int:
-        if self._sizeVHD < 0 or fetch:
-            self._sizeVHD = self.sr._vhdutil.get_size_phys(self.uuid)
-        return self._sizeVHD
+    def getSizePhys(self, fetch=False) -> int:
+        if self._sizePhys < 0 or fetch:
+            self._sizePhys = self.linstorcowutil.get_size_phys(self.uuid)
+        return self._sizePhys
 
     def getDrbdSize(self, fetch=False):
         if self.drbd_size < 0 or fetch:
-            self.drbd_size = self.sr._vhdutil.get_drbd_size(self.uuid)
+            self.drbd_size = self.linstorcowutil.get_drbd_size(self.uuid)
         return self.drbd_size
 
     @override
     def getAllocatedSize(self) -> int:
         if self._sizeAllocated == -1:
-            if not self.raw:
-                self._sizeAllocated = self.sr._vhdutil.get_allocated_size(self.uuid)
+            if VdiType.isCowImage(self.vdi_type):
+                self._sizeAllocated = self.linstorcowutil.get_allocated_size(self.uuid)
         return self._sizeAllocated
 
     def inflate(self, size):
-        if self.raw:
+        if not VdiType.isCowImage(self.vdi_type):
             return
         self.sr.lock()
         try:
             # Ensure we use the real DRBD size and not the cached one.
             # Why? Because this attribute can be changed if volume is resized by user.
             self.drbd_size = self.getDrbdSize(fetch=True)
-            self.sr._vhdutil.inflate(self.sr.journaler, self.uuid, self.path, size, self.drbd_size)
+            self.linstorcowutil.inflate(self.sr.journaler, self.uuid, self.path, size, self.drbd_size)
         finally:
             self.sr.unlock()
         self.drbd_size = -1
-        self._sizeVHD = -1
+        self._sizePhys = -1
         self._sizeAllocated = -1
 
     def deflate(self):
-        if self.raw:
+        if not VdiType.isCowImage(self.vdi_type):
             return
         self.sr.lock()
         try:
             # Ensure we use the real sizes and not the cached info.
             self.drbd_size = self.getDrbdSize(fetch=True)
-            self._sizeVHD = self.getSizeVHD(fetch=True)
-            self.sr._vhdutil.force_deflate(self.path, self._sizeVHD, self.drbd_size, zeroize=False)
+            self._sizePhys = self.getSizePhys(fetch=True)
+            self.linstorcowutil.force_deflate(self.path, self._sizePhys, self.drbd_size, zeroize=False)
         finally:
             self.sr.unlock()
         self.drbd_size = -1
-        self._sizeVHD = -1
+        self._sizePhys = -1
         self._sizeAllocated = -1
 
     def inflateFully(self):
-        if not self.raw:
-            self.inflate(LinstorVhdUtil.compute_volume_size(self.sizeVirt, self.vdi_type))
+        if VdiType.isCowImage(self.vdi_type):
+            self.inflate(self.linstorcowutil.compute_volume_size(self.sizeVirt))
 
     @override
     def rename(self, uuid) -> None:
@@ -1669,8 +1649,8 @@ class LinstorVDI(VDI):
 
     @override
     def validate(self, fast=False) -> None:
-        if not self.raw and not self.sr._vhdutil.check(self.uuid, fast=fast):
-            raise util.SMException('VHD {} corrupted'.format(self))
+        if VdiType.isCowImage(self.vdi_type) and self.linstorcowutil.check(self.uuid, fast=fast) != CowUtil.CheckResult.Success:
+            raise util.SMException('COW image {} corrupted'.format(self))
 
     @override
     def pause(self, failfast=False) -> None:
@@ -1683,17 +1663,17 @@ class LinstorVDI(VDI):
     def coalesce(self) -> int:
         # Note: We raise `SMException` here to skip the current coalesce in case of failure.
         # Using another exception we can't execute the next coalesce calls.
-        return self.sr._vhdutil.force_coalesce(self.path) * 512
+        return self.linstorcowutil.force_coalesce(self.path)
 
     @override
     def getParent(self) -> str:
-        return self.sr._vhdutil.get_parent(
+        return self.linstorcowutil.get_parent(
             self.sr._linstor.get_volume_uuid_from_device_path(self.path)
         )
 
     @override
     def repair(self, parent_uuid) -> None:
-        self.sr._vhdutil.force_repair(
+        self.linstorcowutil.force_repair(
             self.sr._linstor.get_device_path(parent_uuid)
         )
 
@@ -1725,12 +1705,12 @@ class LinstorVDI(VDI):
     @override
     def _setParent(self, parent) -> None:
         self.sr._linstor.get_device_path(self.uuid)
-        self.sr._vhdutil.force_parent(self.path, parent.path)
+        self.linstorcowutil.force_parent(self.path, parent.path)
         self.parent = parent
         self.parentUuid = parent.uuid
         parent.children.append(self)
         try:
-            self.setConfig(self.DB_VHD_PARENT, self.parentUuid)
+            self.setConfig(self.DB_VDI_PARENT, self.parentUuid)
             Util.log("Updated the vhd-parent field for child %s with %s" % \
                      (self.uuid, self.parentUuid))
         except:
@@ -1762,7 +1742,7 @@ class LinstorVDI(VDI):
     def _setHidden(self, hidden=True) -> None:
         HIDDEN_TAG = 'hidden'
 
-        if self.raw:
+        if not VdiType.isCowImage(self.vdi_type):
             self._hidden = None
             self.sr._linstor.update_volume_metadata(self.uuid, {
                 HIDDEN_TAG: hidden
@@ -1773,7 +1753,7 @@ class LinstorVDI(VDI):
 
     @override
     def _increaseSizeVirt(self, size, atomic=True):
-        if self.raw:
+        if self.vdi_type == VdiType.RAW:
             offset = self.drbd_size
             if self.sizeVirt < size:
                 oldSize = self.drbd_size
@@ -1803,12 +1783,12 @@ class LinstorVDI(VDI):
 
         if self.sizeVirt >= size:
             return
-        Util.log("  Expanding VHD virt size for VDI %s: %s -> %s" % \
+        Util.log("  Expanding COW image virt size for VDI %s: %s -> %s" % \
                 (self, Util.num2str(self.sizeVirt), Util.num2str(size)))
 
-        msize = self.sr._vhdutil.get_max_resize_size(self.uuid) * 1024 * 1024
+        msize = self.linstorcowutil.get_max_resize_size(self.uuid) * 1024 * 1024
         if (size <= msize):
-            self.sr._vhdutil.set_size_virt_fast(self.path, size)
+            self.linstorcowutil.set_size_virt_fast(self.path, size)
         else:
             if atomic:
                 vdiList = self._getAllSubtree()
@@ -1824,17 +1804,17 @@ class LinstorVDI(VDI):
             else:
                 self._setSizeVirt(size)
 
-        self.sizeVirt = self.sr._vhdutil.get_size_virt(self.uuid)
+        self.sizeVirt = self.linstorcowutil.get_size_virt(self.uuid)
 
     @override
     def _setSizeVirt(self, size) -> None:
         jfile = self.uuid + '-jvhd'
         self.sr._linstor.create_volume(
-            jfile, vhdutil.MAX_VHD_JOURNAL_SIZE, persistent=False, volume_name=jfile
+            jfile, self.cowutil.getResizeJournalSize(), persistent=False, volume_name=jfile
         )
         try:
-            self.inflate(LinstorVhdUtil.compute_volume_size(size, self.vdi_type))
-            self.sr._vhdutil.set_size_virt(size, jfile)
+            self.inflate(self.linstorcowutil.compute_volume_size(size))
+            self.linstorcowutil.set_size_virt(self.path, size, jfile)
         finally:
             try:
                 self.sr._linstor.destroy_volume(jfile)
@@ -1843,11 +1823,11 @@ class LinstorVDI(VDI):
                 pass
 
     @override
-    def _queryVHDBlocks(self) -> bytes:
-        return self.sr._vhdutil.get_block_bitmap(self.uuid)
+    def _queryCowBlocks(self) -> bytes:
+        return self.linstorcowutil.get_block_bitmap(self.uuid)
 
     def _inflateParentForCoalesce(self):
-        if self.parent.raw:
+        if not VdiType.isCowImage(self.parent.vdi_type):
             return
         inc = self._calcExtraSpaceForCoalescing()
         if inc > 0:
@@ -1855,27 +1835,25 @@ class LinstorVDI(VDI):
 
     @override
     def _calcExtraSpaceForCoalescing(self) -> int:
-        if self.parent.raw:
+        if not VdiType.isCowImage(self.parent.vdi_type):
             return 0
-        size_coalesced = LinstorVhdUtil.compute_volume_size(
-            self._getCoalescedSizeData(), self.vdi_type
-        )
+        size_coalesced = self.linstorcowutil.compute_volume_size(self._getCoalescedSizeData())
         Util.log("Coalesced size = %s" % Util.num2str(size_coalesced))
         return size_coalesced - self.parent.getDrbdSize()
 
     @override
     def _calcExtraSpaceForLeafCoalescing(self) -> int:
         assert self.getDrbdSize() > 0
-        assert self.getSizeVHD() > 0
-        deflate_diff = self.getDrbdSize() - LinstorVolumeManager.round_up_volume_size(self.getSizeVHD())
+        assert self.getSizePhys() > 0
+        deflate_diff = self.getDrbdSize() - LinstorVolumeManager.round_up_volume_size(self.getSizePhys())
         assert deflate_diff >= 0
         return self._calcExtraSpaceForCoalescing() - deflate_diff
 
     @override
     def _calcExtraSpaceForSnapshotCoalescing(self) -> int:
-        assert self.getSizeVHD() > 0
+        assert self.getSizePhys() > 0
         return self._calcExtraSpaceForCoalescing() + \
-            LinstorVolumeManager.round_up_volume_size(self.getSizeVHD())
+            LinstorVolumeManager.round_up_volume_size(self.getSizePhys())
 
 ################################################################################
 #
@@ -1902,12 +1880,12 @@ class SR(object):
                 if not self.currState.get(uuid):
                     changes += "Tree %s gone\n" % uuid
 
-            result = "SR %s (%d VDIs in %d VHD trees): " % \
+            result = "SR %s (%d VDIs in %d COW trees): " % \
                     (self.sr, len(self.sr.vdis), len(self.sr.vdiTrees))
 
             if len(changes) > 0:
                 if self.stateLogged:
-                    result += "showing only VHD trees that changed:"
+                    result += "showing only COW trees that changed:"
                 result += "\n%s" % changes
             else:
                 result += "no changes"
@@ -1953,7 +1931,7 @@ class SR(object):
         if type == SR.TYPE_FILE:
             return FileSR(uuid, xapi, createLock, force)
         elif type == SR.TYPE_LVHD:
-            return LVHDSR(uuid, xapi, createLock, force)
+            return LVMSR(uuid, xapi, createLock, force)
         elif type == SR.TYPE_LINSTOR:
             return LinstorSR(uuid, xapi, createLock, force)
         raise util.SMException("SR type %s not recognized" % type)
@@ -1970,7 +1948,7 @@ class SR(object):
         self._locked = 0
         self._srLock = None
         if createLock:
-            self._srLock = lock.Lock(vhdutil.LOCK_TYPE_SR, self.uuid)
+            self._srLock = lock.Lock(lock.LOCK_TYPE_SR, self.uuid)
         else:
             Util.log("Requested no SR locking")
         self.name = self.xapi.srRecord["name_label"]
@@ -2154,7 +2132,7 @@ class SR(object):
                                        "Leaf-coalesce disabled for this SR"))
 
     def findLeafCoalesceable(self):
-        """Find leaf-coalesceable VDIs in each VHD tree"""
+        """Find leaf-coalesceable VDIs in each COW tree"""
 
         candidates = []
         if self.leafCoalesceForbidden():
@@ -2360,7 +2338,7 @@ class SR(object):
         for vdi in self.vdis.values():
             if vdi.scanError or len(vdi.children) == 0:
                 continue
-            if not vdi.getConfig(vdi.DB_VHD_BLOCKS):
+            if not vdi.getConfig(vdi.DB_VDI_BLOCKS):
                 return True
         return False
 
@@ -2368,7 +2346,7 @@ class SR(object):
         for vdi in self.vdis.values():
             if vdi.scanError or len(vdi.children) == 0:
                 continue
-            if not vdi.getConfig(vdi.DB_VHD_BLOCKS):
+            if not vdi.getConfig(vdi.DB_VDI_BLOCKS):
                 vdi.updateBlockInfo()
 
     def cleanupCoalesceJournals(self):
@@ -2379,7 +2357,7 @@ class SR(object):
 
     def cleanupJournals(self, dryRun=False):
         """delete journal entries for non-existing VDIs"""
-        for t in [LVHDVDI.JRN_ZERO, VDI.JRN_RELINK, SR.JRN_CLONE]:
+        for t in [LVMVDI.JRN_ZERO, VDI.JRN_RELINK, SR.JRN_CLONE]:
             entries = self.journaler.getAll(t)
             for uuid, jval in entries.items():
                 if self.getVDI(uuid):
@@ -2408,7 +2386,7 @@ class SR(object):
         else:
             # JRN_COALESCE is used to check which VDI is being coalesced in
             # order to decide whether to abort the coalesce. We remove the
-            # journal as soon as the VHD coalesce step is done, because we
+            # journal as soon as the COW coalesce step is done, because we
             # don't expect the rest of the process to take long
             self.journaler.create(vdi.JRN_COALESCE, vdi.uuid, "1")
             vdi._doCoalesce()
@@ -2561,21 +2539,21 @@ class SR(object):
         that alter leaf-coalescibility of vdi"""
         tracker = self.CoalesceTracker(self)
         while not vdi.canLiveCoalesce(self.getStorageSpeed()):
-            prevSizeVHD = vdi.getSizeVHD()
+            prevSizePhys = vdi.getSizePhys()
             if not self._snapshotCoalesce(vdi):
                 return False
-            if tracker.abortCoalesce(prevSizeVHD, vdi.getSizeVHD()):
+            if tracker.abortCoalesce(prevSizePhys, vdi.getSizePhys()):
                 tracker.printReasoning()
                 raise util.SMException("VDI {uuid} could not be coalesced"
                                        .format(uuid=vdi.uuid))
         tracker.printSummary()
         return self._liveLeafCoalesce(vdi)
 
-    def calcStorageSpeed(self, startTime, endTime, vhdSize):
+    def calcStorageSpeed(self, startTime, endTime, coalescedSize):
         speed = None
         total_time = endTime - startTime
         if total_time > 0:
-            speed = float(vhdSize) / float(total_time)
+            speed = float(coalescedSize) / float(total_time)
         return speed
 
     def writeSpeedToFile(self, speed):
@@ -2603,8 +2581,8 @@ class SR(object):
             Util.log("Closing file: {myfile}".format(myfile=path))
             self.unlock()
 
-    def recordStorageSpeed(self, startTime, endTime, vhdSize):
-        speed = self.calcStorageSpeed(startTime, endTime, vhdSize)
+    def recordStorageSpeed(self, startTime, endTime, coalescedSize):
+        speed = self.calcStorageSpeed(startTime, endTime, coalescedSize)
         if speed is None:
             return
 
@@ -2667,7 +2645,7 @@ class SR(object):
             return False
         Util.log("Coalescing parent %s" % tempSnap)
         util.fistpoint.activate("LVHDRT_coaleaf_delay_2", self.uuid)
-        vhdSize = vdi.getSizeVHD()
+        sizePhys = vdi.getSizePhys()
         self._coalesce(tempSnap)
         if not vdi.isLeafCoalesceable():
             Util.log("The VDI tree appears to have been altered since")
@@ -2725,7 +2703,7 @@ class SR(object):
         if vdi.getConfig(vdi.DB_LEAFCLSC) == vdi.LEAFCLSC_FORCE:
             Util.log("Leaf-coalesce forced, will not use timeout")
             timeout = 0
-        vdi._coalesceVHD(timeout)
+        vdi._coalesceCowImage(timeout)
         util.fistpoint.activate("LVHDRT_coaleaf_after_coalesce", self.uuid)
         vdi.parent.validate(True)
         #vdi._verifyContents(timeout / 2)
@@ -2744,9 +2722,9 @@ class SR(object):
         # garbage
 
         # update the VDI record
-        if vdi.parent.raw:
-            vdi.parent.setConfig(VDI.DB_VDI_TYPE, vhdutil.VDI_TYPE_RAW)
-        vdi.parent.delConfig(VDI.DB_VHD_BLOCKS)
+        if vdi.parent.vdi_type == VdiType.RAW:
+            vdi.parent.setConfig(VDI.DB_VDI_TYPE, VdiType.RAW)
+        vdi.parent.delConfig(VDI.DB_VDI_BLOCKS)
         util.fistpoint.activate("LVHDRT_coaleaf_after_vdirec", self.uuid)
 
         self._updateNode(vdi)
@@ -2759,7 +2737,7 @@ class SR(object):
         vdi.parent = None
 
         if parent.parent is None:
-            parent.delConfig(VDI.DB_VHD_PARENT)
+            parent.delConfig(VDI.DB_VDI_PARENT)
 
         extraSpace = self._calcExtraSpaceNeeded(vdi, parent)
         freeSpace = self.getFreeSpace()
@@ -2778,8 +2756,8 @@ class SR(object):
         self._updateSlavesOnResize(parent)
 
     def _calcExtraSpaceNeeded(self, child, parent) -> int:
-        assert(not parent.raw)  # raw parents not supported
-        extra = child.getSizeVHD() - parent.getSizeVHD()
+        assert(VdiType.isCowImage(parent.vdi_type))
+        extra = child.getSizePhys() - parent.getSizePhys()
         if extra < 0:
             extra = 0
         return extra
@@ -2810,7 +2788,7 @@ class SR(object):
                 del self.vdis[uuid]
 
     def _handleInterruptedCoalesceLeaf(self) -> None:
-        """An interrupted leaf-coalesce operation may leave the VHD tree in an
+        """An interrupted leaf-coalesce operation may leave the COW tree in an
         inconsistent state. If the old-leaf VDI is still present, we revert the
         operation (in case the original error is persistent); otherwise we must
         finish the operation"""
@@ -2856,23 +2834,28 @@ class FileSR(SR):
     def scan(self, force=False) -> None:
         if not util.pathexists(self.path):
             raise util.SMException("directory %s not found!" % self.uuid)
-        vhds = self._scan(force)
-        for uuid, vhdInfo in vhds.items():
-            vdi = self.getVDI(uuid)
-            if not vdi:
-                self.logFilter.logNewVDI(uuid)
-                vdi = FileVDI(self, uuid, False)
-                self.vdis[uuid] = vdi
-            vdi.load(vhdInfo)
-        uuidsPresent = list(vhds.keys())
-        rawList = [x for x in os.listdir(self.path) if x.endswith(vhdutil.FILE_EXTN_RAW)]
+
+        uuidsPresent: List[str] = []
+
+        for vdi_type in VDI_COW_TYPES:
+            scan_result = self._scan(vdi_type, force)
+            for uuid, image_info in scan_result.items():
+                vdi = self.getVDI(uuid)
+                if not vdi:
+                    self.logFilter.logNewVDI(uuid)
+                    vdi = FileVDI(self, uuid, vdi_type)
+                    self.vdis[uuid] = vdi
+                vdi.load(image_info)
+            uuidsPresent.extend(scan_result.keys())
+
+        rawList = [x for x in os.listdir(self.path) if x.endswith(VdiTypeExtension.RAW)]
         for rawName in rawList:
             uuid = FileVDI.extractUuid(rawName)
             uuidsPresent.append(uuid)
             vdi = self.getVDI(uuid)
             if not vdi:
                 self.logFilter.logNewVDI(uuid)
-                vdi = FileVDI(self, uuid, True)
+                vdi = FileVDI(self, uuid, VdiType.RAW)
                 self.vdis[uuid] = vdi
         self._removeStaleVDIs(uuidsPresent)
         self._buildTree(force)
@@ -2968,20 +2951,20 @@ class FileSR(SR):
         return (len(name) == Util.UUID_LEN + len(self.CACHE_FILE_EXT)) and \
                 name.endswith(self.CACHE_FILE_EXT)
 
-    def _scan(self, force):
+    def _scan(self, vdi_type, force):
         for i in range(SR.SCAN_RETRY_ATTEMPTS):
             error = False
-            pattern = os.path.join(self.path, "*%s" % vhdutil.FILE_EXTN_VHD)
-            vhds = vhdutil.getAllVHDs(pattern, FileVDI.extractUuid)
-            for uuid, vhdInfo in vhds.items():
-                if vhdInfo.error:
+            pattern = os.path.join(self.path, "*%s" % VDI_TYPE_TO_EXTENSION[vdi_type])
+            scan_result = getCowUtil(vdi_type).getAllInfoFromVG(pattern, FileVDI.extractUuid)
+            for uuid, vdiInfo in scan_result.items():
+                if vdiInfo.error:
                     error = True
                     break
             if not error:
-                return vhds
+                return scan_result
             Util.log("Scan error on attempt %d" % i)
         if force:
-            return vhds
+            return scan_result
         raise util.SMException("Scan error")
 
     @override
@@ -3015,10 +2998,10 @@ class FileSR(SR):
         entries = self.journaler.getAll(VDI.JRN_LEAF)
         for uuid, parentUuid in entries.items():
             fileList = os.listdir(self.path)
-            childName = uuid + vhdutil.FILE_EXTN_VHD
-            tmpChildName = self.TMP_RENAME_PREFIX + uuid + vhdutil.FILE_EXTN_VHD
-            parentName1 = parentUuid + vhdutil.FILE_EXTN_VHD
-            parentName2 = parentUuid + vhdutil.FILE_EXTN_RAW
+            childName = uuid + VdiTypeExtension.VHD
+            tmpChildName = self.TMP_RENAME_PREFIX + uuid + VdiTypeExtension.VHD
+            parentName1 = parentUuid + VdiTypeExtension.VHD
+            parentName2 = parentUuid + VdiTypeExtension.RAW
             parentPresent = (parentName1 in fileList or parentName2 in fileList)
             if parentPresent or tmpChildName in fileList:
                 self._undoInterruptedCoalesceLeaf(uuid, parentUuid)
@@ -3050,8 +3033,8 @@ class FileSR(SR):
             Util.log("Renaming child back to %s" % childUuid)
             child.rename(childUuid)
             Util.log("Updating the VDI record")
-            child.setConfig(VDI.DB_VHD_PARENT, parentUuid)
-            child.setConfig(VDI.DB_VDI_TYPE, vhdutil.VDI_TYPE_VHD)
+            child.setConfig(VDI.DB_VDI_PARENT, parentUuid)
+            child.setConfig(VDI.DB_VDI_TYPE, child.vdi_type)
             util.fistpoint.activate("LVHDRT_coaleaf_undo_after_rename2", self.uuid)
 
         if child.isHidden():
@@ -3080,14 +3063,14 @@ class FileSR(SR):
         Util.log("*** finished leaf-coalesce successfully")
 
 
-class LVHDSR(SR):
+class LVMSR(SR):
     TYPE = SR.TYPE_LVHD
     SUBTYPES = ["lvhdoiscsi", "lvhdohba"]
 
     def __init__(self, uuid, xapi, createLock, force):
         SR.__init__(self, uuid, xapi, createLock, force)
-        self.vgName = "%s%s" % (lvhdutil.VG_PREFIX, self.uuid)
-        self.path = os.path.join(lvhdutil.VG_LOCATION, self.vgName)
+        self.vgName = "%s%s" % (VG_PREFIX, self.uuid)
+        self.path = os.path.join(VG_LOCATION, self.vgName)
 
         sr_ref = self.xapi.session.xenapi.SR.get_by_uuid(self.uuid)
         other_conf = self.xapi.session.xenapi.SR.get_other_config(sr_ref)
@@ -3123,9 +3106,9 @@ class LVHDSR(SR):
     @override
     def needUpdateBlockInfo(self) -> bool:
         for vdi in self.vdis.values():
-            if vdi.scanError or vdi.raw or len(vdi.children) == 0:
+            if vdi.scanError or not VdiType.isCowImage(vdi.vdi_type) or len(vdi.children) == 0:
                 continue
-            if not vdi.getConfig(vdi.DB_VHD_BLOCKS):
+            if not vdi.getConfig(vdi.DB_VDI_BLOCKS):
                 return True
         return False
 
@@ -3133,9 +3116,9 @@ class LVHDSR(SR):
     def updateBlockInfo(self) -> None:
         numUpdated = 0
         for vdi in self.vdis.values():
-            if vdi.scanError or vdi.raw or len(vdi.children) == 0:
+            if vdi.scanError or not VdiType.isCowImage(vdi.vdi_type) or len(vdi.children) == 0:
                 continue
-            if not vdi.getConfig(vdi.DB_VHD_BLOCKS):
+            if not vdi.getConfig(vdi.DB_VDI_BLOCKS):
                 vdi.updateBlockInfo()
                 numUpdated += 1
         if numUpdated:
@@ -3152,8 +3135,7 @@ class LVHDSR(SR):
             vdi = self.getVDI(uuid)
             if not vdi:
                 self.logFilter.logNewVDI(uuid)
-                vdi = LVHDVDI(self, uuid,
-                        vdiInfo.vdiType == vhdutil.VDI_TYPE_RAW)
+                vdi = LVMVDI(self, uuid, vdiInfo.vdiType)
                 self.vdis[uuid] = vdi
             vdi.load(vdiInfo)
         self._removeStaleVDIs(vdis.keys())
@@ -3165,7 +3147,7 @@ class LVHDSR(SR):
         for i in range(SR.SCAN_RETRY_ATTEMPTS):
             error = False
             self.lvmCache.refresh()
-            vdis = lvhdutil.getVDIInfo(self.lvmCache)
+            vdis = LvmCowUtil.getVDIInfo(self.lvmCache)
             for uuid, vdiInfo in vdis.items():
                 if vdiInfo.scanError:
                     error = True
@@ -3193,7 +3175,7 @@ class LVHDSR(SR):
         we'll need to resize the parent, which can take a while due to zeroing
         out of the extended portion of the LV. Do it before pausing the child
         to avoid a protracted downtime"""
-        if vdi.parent.raw and vdi.sizeVirt > vdi.parent.sizeVirt:
+        if not VdiType.isCowImage(vdi.parent.vdi_type) and vdi.sizeVirt > vdi.parent.sizeVirt:
             self.lvmCache.setReadonly(vdi.parent.fileName, False)
             vdi.parent._increaseSizeVirt(vdi.sizeVirt)
 
@@ -3214,7 +3196,7 @@ class LVHDSR(SR):
         # this node is really the parent node) - minus 1 if it is online (since
         # non-leaf nodes increment their normal counts when they are online and
         # we are now a leaf, storing that 1 in the binary refcount).
-        ns = lvhdutil.NS_PREFIX_LVM + self.uuid
+        ns = NS_PREFIX_LVM + self.uuid
         cCnt, cBcnt = RefCounter.check(vdi.uuid, ns)
         pCnt, pBcnt = RefCounter.check(vdi.parent.uuid, ns)
         pCnt = pCnt - cBcnt
@@ -3230,20 +3212,27 @@ class LVHDSR(SR):
 
     @override
     def _calcExtraSpaceNeeded(self, child, parent) -> int:
-        return lvhdutil.calcSizeVHDLV(parent.sizeVirt) - parent.sizeLV
+        return parent.lvmcowutil.calcVolumeSize(parent.sizeVirt) - parent.sizeLV
 
     @override
     def _handleInterruptedCoalesceLeaf(self) -> None:
         entries = self.journaler.getAll(VDI.JRN_LEAF)
         for uuid, parentUuid in entries.items():
-            childLV = lvhdutil.LV_PREFIX[vhdutil.VDI_TYPE_VHD] + uuid
-            tmpChildLV = lvhdutil.LV_PREFIX[vhdutil.VDI_TYPE_VHD] + \
-                    self.TMP_RENAME_PREFIX + uuid
-            parentLV1 = lvhdutil.LV_PREFIX[vhdutil.VDI_TYPE_VHD] + parentUuid
-            parentLV2 = lvhdutil.LV_PREFIX[vhdutil.VDI_TYPE_RAW] + parentUuid
-            parentPresent = (self.lvmCache.checkLV(parentLV1) or \
-                    self.lvmCache.checkLV(parentLV2))
-            if parentPresent or self.lvmCache.checkLV(tmpChildLV):
+            undo = False
+            for prefix in LV_PREFIX.values():
+                parentLV = prefix + parentUuid
+                undo = self.lvmCache.checkLV(parentLV)
+                if undo:
+                    break
+
+            if not undo:
+                for prefix in LV_PREFIX.values():
+                    tmpChildLV = prefix + uuid
+                    undo = self.lvmCache.checkLV(tmpChildLV)
+                    if undo:
+                        break
+
+            if undo:
                 self._undoInterruptedCoalesceLeaf(uuid, parentUuid)
             else:
                 self._finishInterruptedCoalesceLeaf(uuid, parentUuid)
@@ -3273,14 +3262,14 @@ class LVHDSR(SR):
             Util.log("Renaming child back to %s" % childUuid)
             child.rename(childUuid)
             Util.log("Updating the VDI record")
-            child.setConfig(VDI.DB_VHD_PARENT, parentUuid)
-            child.setConfig(VDI.DB_VDI_TYPE, vhdutil.VDI_TYPE_VHD)
+            child.setConfig(VDI.DB_VDI_PARENT, parentUuid)
+            child.setConfig(VDI.DB_VDI_TYPE, child.vdi_type)
             util.fistpoint.activate("LVHDRT_coaleaf_undo_after_rename2", self.uuid)
 
             # refcount (best effort - assume that it had succeeded if the
             # second rename succeeded; if not, this adjustment will be wrong,
             # leading to a non-deactivation of the LV)
-            ns = lvhdutil.NS_PREFIX_LVM + self.uuid
+            ns = NS_PREFIX_LVM + self.uuid
             cCnt, cBcnt = RefCounter.check(child.uuid, ns)
             pCnt, pBcnt = RefCounter.check(parent.uuid, ns)
             pCnt = pCnt + cBcnt
@@ -3327,7 +3316,7 @@ class LVHDSR(SR):
                 "lvName1": vdi.fileName,
                 "action2": "cleanupLockAndRefcount",
                 "uuid2": vdi.uuid,
-                "ns2": lvhdutil.NS_PREFIX_LVM + self.uuid}
+                "ns2": NS_PREFIX_LVM + self.uuid}
         onlineHosts = self.xapi.getOnlineHosts()
         abortFlag = IPCFlag(self.uuid)
         for pbdRecord in self.xapi.getAttachedPBDs():
@@ -3352,8 +3341,7 @@ class LVHDSR(SR):
                     child)
             return
 
-        tmpName = lvhdutil.LV_PREFIX[vhdutil.VDI_TYPE_VHD] + \
-                self.TMP_RENAME_PREFIX + child.uuid
+        tmpName = LV_PREFIX[child.vdi_type] + self.TMP_RENAME_PREFIX + child.uuid
         args = {"vgName": self.vgName,
                 "action1": "deactivateNoRefcount",
                 "lvName1": tmpName,
@@ -3385,7 +3373,7 @@ class LVHDSR(SR):
                 "lvName2": vdi.fileName,
                 "action3": "cleanupLockAndRefcount",
                 "uuid3": origParentUuid,
-                "ns3": lvhdutil.NS_PREFIX_LVM + self.uuid}
+                "ns3": NS_PREFIX_LVM + self.uuid}
         for slave in slaves:
             Util.log("Updating %s to %s on slave %s" % \
                     (oldNameLV, vdi.fileName,
@@ -3401,7 +3389,7 @@ class LVHDSR(SR):
         if not slaves:
             util.SMlog("Update-on-resize: %s not attached on any slave" % vdi)
             return
-        lvhdutil.lvRefreshOnSlaves(self.xapi.session, self.uuid, self.vgName,
+        LvmCowUtil.refreshVolumeOnSlaves(self.xapi.session, self.uuid, self.vgName,
                 vdi.fileName, vdi.uuid, slaves)
 
 
@@ -3416,6 +3404,16 @@ class LinstorSR(SR):
 
         SR.__init__(self, uuid, xapi, createLock, force)
         self.path = LinstorVolumeManager.DEV_ROOT_PATH
+
+        class LinstorProxy:
+            def __init__(self, sr: LinstorSR) -> None:
+                self.sr = sr
+
+            def __getattr__(self, attr: str) -> Any:
+                assert self.sr, "Cannot use `LinstorProxy` without valid `LinstorVolumeManager` instance"
+                return getattr(self.sr._linstor, attr)
+
+        self._linstor_proxy = LinstorProxy(self)
         self._reloadLinstor(journaler_only=True)
 
     @override
@@ -3435,7 +3433,7 @@ class LinstorSR(SR):
             vdi = self.getVDI(uuid)
             if not vdi:
                 self.logFilter.logNewVDI(uuid)
-                vdi = LinstorVDI(self, uuid, not vdiInfo)
+                vdi = LinstorVDI(self, uuid, vdiInfo.vdiType if vdiInfo else VdiType.RAW)
                 self.vdis[uuid] = vdi
             if vdiInfo:
                 vdi.load(vdiInfo)
@@ -3477,7 +3475,6 @@ class LinstorSR(SR):
             repair=True,
             logger=util.SMlog
         )
-        self._vhdutil = LinstorVhdUtil(session, self._linstor)
 
     def _scan(self, force):
         for i in range(SR.SCAN_RETRY_ATTEMPTS):
@@ -3505,22 +3502,23 @@ class LinstorSR(SR):
         volumes_metadata = self._linstor.get_volumes_with_metadata()
 
         all_vdi_info = {}
-        pending_vdi_uuids = []
+        pending_vdis = []
 
         def handle_fail(vdi_uuid, e):
             Util.log(f" [VDI {vdi_uuid}: failed to load VDI info]: {e}")
-            info = vhdutil.VHDInfo(vdi_uuid)
+            info = CowImageInfo(vdi_uuid)
             info.error = 1
             return info
 
         for vdi_uuid, volume_info in all_volume_info.items():
+            vdi_type = VdiType.RAW
             try:
                 volume_metadata = volumes_metadata[vdi_uuid]
                 if not volume_info.name and not list(volume_metadata.items()):
                     continue  # Ignore it, probably deleted.
 
                 if vdi_uuid.startswith('DELETED_'):
-                    # Assume it's really a RAW volume of a failed snap without VHD header/footer.
+                    # Assume it's really a RAW volume of a failed snap without COW header/footer.
                     # We must remove this VDI now without adding it in the VDI list.
                     # Otherwise `Relinking` calls and other actions can be launched on it.
                     # We don't want that...
@@ -3540,26 +3538,29 @@ class LinstorSR(SR):
                     continue
 
                 vdi_type = volume_metadata.get(VDI_TYPE_TAG)
-                if vdi_type == vhdutil.VDI_TYPE_VHD:
-                    pending_vdi_uuids.append(vdi_uuid)
+                if VdiType.isCowImage(vdi_type):
+                    pending_vdis.append((vdi_uuid, vdi_type))
                 else:
                     all_vdi_info[vdi_uuid] = None
             except Exception as e:
                 all_vdi_info[vdi_uuid] = handle_fail(vdi_uuid, e)
 
-        multi_vhdutil = MultiLinstorVhdUtil(self._linstor.uri, self._linstor.group_name)
+        multi_cowutil = MultiLinstorCowUtil(self._linstor.uri, self._linstor.group_name)
 
-        def load_info(vdi_uuid, vhdutil_instance):
+        def load_info(vdi, multi_cowutil):
+            vdi_uuid, vdi_type = vdi
             try:
-                return vhdutil_instance.get_vhd_info(vdi_uuid)
+                vdiInfo = multi_cowutil.get_local_cowutil(vdi_type).get_info(vdi_uuid)
             except Exception as e:
-                return handle_fail(vdi_uuid, e)
+                vdiInfo = handle_fail(vdi_uuid, e)
+            vdiInfo.vdiType = vdi_type
+            return vdiInfo
 
         try:
-            for vdiInfo in multi_vhdutil.run(load_info, pending_vdi_uuids):
+            for vdiInfo in multi_cowutil.run(load_info, pending_vdis):
                 all_vdi_info[vdiInfo.uuid] = vdiInfo
         finally:
-            del multi_vhdutil
+            del multi_cowutil
 
         return all_vdi_info
 
@@ -3578,7 +3579,9 @@ class LinstorSR(SR):
 
     @override
     def _calcExtraSpaceNeeded(self, child, parent) -> int:
-        return LinstorVhdUtil.compute_volume_size(parent.sizeVirt, parent.vdi_type) - parent.getDrbdSize()
+        return LinstorCowUtil(
+            self.xapi.session, self._linstor, parent.vdi_type
+        ).compute_volume_size(parent.sizeVirt) - parent.getDrbdSize()
 
     def _hasValidDevicePath(self, uuid):
         try:
@@ -3639,8 +3642,8 @@ class LinstorSR(SR):
             Util.log('Renaming child back to {}'.format(childUuid))
             child.rename(childUuid)
             Util.log('Updating the VDI record')
-            child.setConfig(VDI.DB_VHD_PARENT, parentUuid)
-            child.setConfig(VDI.DB_VDI_TYPE, vhdutil.VDI_TYPE_VHD)
+            child.setConfig(VDI.DB_VDI_PARENT, parentUuid)
+            child.setConfig(VDI.DB_VDI_TYPE, child.vdi_type)
 
         # TODO: Maybe deflate here.
 
@@ -3709,7 +3712,7 @@ def daemonize():
 
 
 def normalizeType(type):
-    if type in LVHDSR.SUBTYPES:
+    if type in LVMSR.SUBTYPES:
         type = SR.TYPE_LVHD
     if type in ["lvm", "lvmoiscsi", "lvmohba", "lvmofcoe"]:
         # temporary while LVHD is symlinked as LVM
@@ -3920,7 +3923,7 @@ class LockActive:
     """
     def __init__(self, srUuid):
         self._lock = lock.Lock(LOCK_TYPE_GC_ACTIVE, srUuid)
-        self._srLock = lock.Lock(vhdutil.LOCK_TYPE_SR, srUuid)
+        self._srLock = lock.Lock(lock.LOCK_TYPE_SR, srUuid)
 
     def acquireNoblock(self):
         self._srLock.acquire()
@@ -3935,7 +3938,7 @@ class LockActive:
 
 
 def usage():
-    output = """Garbage collect and/or coalesce VHDs in a VHD-based SR
+    output = """Garbage collect and/or coalesce COW images in a COW-based SR
 
 Parameters:
     -u --uuid UUID   SR UUID
@@ -3951,8 +3954,8 @@ Parameters:
 
 Options:
     -b --background  run in background (return immediately) (valid for -g only)
-    -f --force       continue in the presence of VHDs with errors (when doing
-                     GC, this might cause removal of any such VHDs) (only valid
+    -f --force       continue in the presence of COW images with errors (when doing
+                     GC, this might cause removal of any such images) (only valid
                      for -G) (DANGEROUS)
 
 Debug:
@@ -4117,7 +4120,7 @@ def gc_force(session, srUuid, force=False, dryRun=False, lockSR=False):
         Util.log("Nothing was running, clear to proceed")
 
     if force:
-        Util.log("FORCED: will continue even if there are VHD errors")
+        Util.log("FORCED: will continue even if there are COW image errors")
     sr.scanLocked(force)
     sr.cleanupCoalesceJournals()
 
@@ -4181,8 +4184,8 @@ def cache_cleanup(session, srUuid, maxAge):
 def debug(sr_uuid, cmd, vdi_uuid):
     Util.log("Debug command: %s" % cmd)
     sr = SR.getInstance(sr_uuid, None)
-    if not isinstance(sr, LVHDSR):
-        print("Error: not an LVHD SR")
+    if not isinstance(sr, LVMSR):
+        print("Error: not an LVM SR")
         return
     sr.scanLocked()
     vdi = sr.getVDI(vdi_uuid)
@@ -4195,7 +4198,7 @@ def debug(sr_uuid, cmd, vdi_uuid):
         vdi._activate()
         print("VDI file: %s" % vdi.path)
     if cmd == "deactivate":
-        ns = lvhdutil.NS_PREFIX_LVM + sr.uuid
+        ns = NS_PREFIX_LVM + sr.uuid
         sr.lvmCache.deactivate(ns, vdi.uuid, vdi.fileName, False)
     if cmd == "inflate":
         vdi.inflateFully()

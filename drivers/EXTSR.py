@@ -15,7 +15,7 @@
 # along with this program; if not, write to the Free Software Foundation, Inc.,
 # 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 #
-# EXTSR: Based on local-file storage repository, mounts ext3 partition
+# EXTSR: Based on local-file storage repository, mounts ext4 partition
 
 from sm_typing import override
 
@@ -28,10 +28,9 @@ import util
 import lvutil
 import scsiutil
 
+import lock
 import os
 import xs_errors
-import vhdutil
-from lock import Lock
 from constants import EXT_PREFIX
 
 CAPABILITIES = ["SR_PROBE", "SR_UPDATE", "SR_SUPPORTS_LOCAL_CACHING",
@@ -44,8 +43,8 @@ CAPABILITIES = ["SR_PROBE", "SR_UPDATE", "SR_SUPPORTS_LOCAL_CACHING",
 CONFIGURATION = [['device', 'local device path (required) (e.g. /dev/sda3)']]
 
 DRIVER_INFO = {
-    'name': 'Local EXT3 VHD',
-    'description': 'SR plugin which represents disks as VHD files stored on a local EXT3 filesystem, created inside an LVM volume',
+    'name': 'Local EXT4 VHD and QCOW2',
+    'description': 'SR plugin which represents disks as VHD and QCOW2 files stored on a local EXT4 filesystem, created inside an LVM volume',
     'vendor': 'Citrix Systems Inc',
     'copyright': '(C) 2008 Citrix Systems Inc',
     'driver_version': '1.0',
@@ -58,7 +57,7 @@ DRIVER_CONFIG = {"ATTACH_FROM_CONFIG_WITH_TAPDISK": True}
 
 
 class EXTSR(FileSR.FileSR):
-    """EXT3 Local file storage repository"""
+    """EXT4 Local file storage repository"""
 
     @override
     @staticmethod
@@ -68,7 +67,7 @@ class EXTSR(FileSR.FileSR):
     @override
     def load(self, sr_uuid) -> None:
         self.ops_exclusive = FileSR.OPS_EXCLUSIVE
-        self.lock = Lock(vhdutil.LOCK_TYPE_SR, self.uuid)
+        self.lock = lock.Lock(lock.LOCK_TYPE_SR, self.uuid)
         self.sr_vditype = SR.DEFAULT_TAP
 
         self.path = os.path.join(SR.MOUNT_BASE, sr_uuid)

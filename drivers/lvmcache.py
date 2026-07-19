@@ -16,10 +16,11 @@
 # LVM cache (for minimizing the number of lvs commands)
 #
 
+import lvutil
 import os
 import util
-import lvutil
-import lvhdutil
+
+from constants import NS_PREFIX_LVM
 from lock import Lock
 from refcounter import RefCounter
 
@@ -27,15 +28,17 @@ from refcounter import RefCounter
 class LVInfo:
     def __init__(self, name):
         self.name = name
+        self.vdiType = ''
         self.size = 0
         self.active = False
         self.open = 0
         self.readonly = False
+        self.hidden = False
         self.tags = []
 
     def toString(self):
-        return "%s, size=%d, active=%s, open=%s, ro=%s, tags=%s" % \
-                (self.name, self.size, self.active, self.open, self.readonly, \
+        return "%s, type=%s, size=%d, active=%s, open=%s, ro=%s, hidden=%s, tags=%s" % \
+                (self.name, self.vdiType, self.size, self.active, self.open, self.readonly, self.hidden, \
                 self.tags)
 
 
@@ -226,7 +229,7 @@ class LVMCache:
         path = self._getPath(lvName)
         if self.lvs[lvName].readonly != readonly:
             uuids = util.findall_uuid(path)
-            ns = lvhdutil.NS_PREFIX_LVM + uuids[0]
+            ns = NS_PREFIX_LVM + uuids[0]
             # Taking this lock is needed to avoid a race condition
             # with tap-ctl open (which is now taking the same lock)
             lock = Lock("lvchange-p", ns)

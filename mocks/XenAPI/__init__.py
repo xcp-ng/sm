@@ -5,3 +5,7 @@ class Failure(Exception):
 def xapi_local():
     # Mock stub
     pass
+
+class Session(object):
+    def __getattr__(self, name):
+        pass

@@ -10,11 +10,11 @@ import uuid
 from uuid import uuid4
 
 import cleanup
+import cowutil
 import fjournaler
 import lock
 
 import util
-import vhdutil
 
 import ipc
 
@@ -24,6 +24,7 @@ from util import SMException
 
 MEGA = 1024 * 1024
 
+from vditype import VdiType
 
 class FakeFile(object):
     pass
@@ -637,7 +638,7 @@ class TestSR(unittest.TestCase):
         sr = create_cleanup_sr(self.xapi_mock, uuid=str(sr_uuid))
         vdi_uuid = uuid4()
 
-        vdi = cleanup.VDI(sr, str(vdi_uuid), False)
+        vdi = cleanup.VDI(sr, str(vdi_uuid), VdiType.VHD)
 
         vdi.delete()
         mock_lock.Lock.cleanupAll.assert_called_with(str(vdi_uuid))
@@ -653,7 +654,7 @@ class TestSR(unittest.TestCase):
         sr_uuid = uuid4()
         sr = create_cleanup_sr(self.xapi_mock, uuid=str(sr_uuid))
         vdi_uuid = uuid4()
-        vdi = cleanup.VDI(sr, str(vdi_uuid), False)
+        vdi = cleanup.VDI(sr, str(vdi_uuid), VdiType.VHD)
 
         res = sr._coalesceLeaf(vdi)
         self.assertEqual(res, "This is a test")
@@ -674,27 +675,27 @@ class TestSR(unittest.TestCase):
         sr_uuid = uuid4()
         sr = create_cleanup_sr(self.xapi_mock, uuid=str(sr_uuid))
         vdi_uuid = uuid4()
-        vdi = cleanup.VDI(sr, str(vdi_uuid), False)
+        vdi = cleanup.VDI(sr, str(vdi_uuid), VdiType.VHD)
 
         res = sr._coalesceLeaf(vdi)
         self.assertFalse(res)
 
     @mock.patch('cleanup.VDI.canLiveCoalesce', autospec=True,
                 return_value=False)
-    @mock.patch('cleanup.VDI.getSizeVHD', autospec=True)
+    @mock.patch('cleanup.VDI.getSizePhys', autospec=True)
     @mock.patch('cleanup.SR._snapshotCoalesce', autospec=True,
                 return_value=True)
     @mock.patch('cleanup.Util.log')
     def test_coalesceLeaf_size_bigger(self, mock_log,
-                                      mock_snapshotCoalesce, mock_vhdSize,
+                                      mock_snapshotCoalesce, mock_sizePhys,
                                       mock_vdiLiveCoalesce):
 
         sr_uuid = uuid4()
         sr = create_cleanup_sr(self.xapi_mock, uuid=str(sr_uuid))
         vdi_uuid = uuid4()
-        vdi = cleanup.VDI(sr, str(vdi_uuid), False)
+        vdi = cleanup.VDI(sr, str(vdi_uuid), VdiType.VHD)
 
-        mock_vhdSize.side_effect = iter([1024, 4096, 4096, 8000, 8500, 9000, 9500, 10000, 10500, 16000])
+        mock_sizePhys.side_effect = iter([1024, 4096, 4096, 8000, 8500, 9000, 9500, 10000, 10500, 16000])
 
         sr._snapshotCoalesce = mock.MagicMock(autospec=True)
         sr._snapshotCoalesce.return_value = True
@@ -707,7 +708,7 @@ class TestSR(unittest.TestCase):
                       str(exc.exception))
 
     @mock.patch('cleanup.VDI.canLiveCoalesce', autospec=True)
-    @mock.patch('cleanup.VDI.getSizeVHD', autospec=True)
+    @mock.patch('cleanup.VDI.getSizePhys', autospec=True)
     @mock.patch('cleanup.SR._snapshotCoalesce', autospec=True,
                 return_value=True)
     @mock.patch('cleanup.SR._liveLeafCoalesce', autospec=True,
@@ -717,23 +718,23 @@ class TestSR(unittest.TestCase):
                                                      mock_log,
                                                      mock_liveLeafCoalesce,
                                                      mock_snapshotCoalesce,
-                                                     mock_vhdSize,
+                                                     mock_sizePhys,
                                                      mock_vdiLiveCoalesce):
         mock_vdiLiveCoalesce.side_effect = iter([False, False, False, True])
         mock_snapshotCoalesce.side_effect = iter([True, True, True])
-        mock_vhdSize.side_effect = iter([1024, 1023, 1023, 1022, 1022, 1021])
+        mock_sizePhys.side_effect = iter([1024, 1023, 1023, 1022, 1022, 1021])
 
         sr_uuid = uuid4()
         sr = create_cleanup_sr(self.xapi_mock, uuid=str(sr_uuid))
         vdi_uuid = uuid4()
-        vdi = cleanup.VDI(sr, str(vdi_uuid), False)
+        vdi = cleanup.VDI(sr, str(vdi_uuid), VdiType.VHD)
 
         res = sr._coalesceLeaf(vdi)
 
         self.assertEqual(res, "This is a Test")
         self.assertEqual(4, mock_vdiLiveCoalesce.call_count)
         self.assertEqual(3, mock_snapshotCoalesce.call_count)
-        self.assertEqual(6, mock_vhdSize.call_count)
+        self.assertEqual(6, mock_sizePhys.call_count)
 
     @mock.patch('cleanup.Util.log')
     def test_findLeafCoalesceable_forbidden1(self, mock_log):
@@ -807,13 +808,13 @@ class TestSR(unittest.TestCase):
             mock_getConfig.side_effect = goodConfig
         else:
             mock_getConfig.side_effect = iter(["good", False, "blah", "blah"])
-        good = cleanup.VDI(sr, str(vdi_uuid), False)
+        good = cleanup.VDI(sr, str(vdi_uuid), VdiType.VHD)
         sr.vdis = {"good": good}
         return sr, good
 
     def addBadVDITOSR(self, sr, config, coalesceable=True):
         vdi_uuid = uuid4()
-        bad = cleanup.VDI(sr, str(vdi_uuid), False)
+        bad = cleanup.VDI(sr, str(vdi_uuid), VdiType.VHD)
         bad.getConfig = mock.MagicMock(side_effect=iter(config))
         bad.isLeafCoalesceable = mock.MagicMock(return_value=coalesceable)
         sr.vdis.update({"bad": bad})
@@ -924,7 +925,7 @@ class TestSR(unittest.TestCase):
 
     def makeVDIReturningSize(self, sr, size, canLiveCoalesce, liveSize):
         vdi_uuid = uuid4()
-        vdi = cleanup.VDI(sr, str(vdi_uuid), False)
+        vdi = cleanup.VDI(sr, str(vdi_uuid), VdiType.VHD)
         vdi._calcExtraSpaceForSnapshotCoalescing = \
             mock.MagicMock(return_value=size)
         vdi.canLiveCoalesce = mock.MagicMock(return_value=canLiveCoalesce)
@@ -1214,7 +1215,7 @@ class TestSR(unittest.TestCase):
         sr_uuid = uuid4()
         sr = create_cleanup_sr(self.xapi_mock, uuid=str(sr_uuid))
         vdi_uuid = uuid4()
-        vdi = cleanup.VDI(sr, str(vdi_uuid), False)
+        vdi = cleanup.VDI(sr, str(vdi_uuid), VdiType.VHD)
         # Fast enough to for size 10/10 = 1 second and not forcing
         self.canLiveCoalesce(vdi, 10, "blah", 10, True)
 
@@ -1483,13 +1484,13 @@ class TestSR(unittest.TestCase):
         vdis = {}
 
         parent_uuid = str(uuid4())
-        parent = cleanup.FileVDI(sr, parent_uuid, False)
+        parent = cleanup.FileVDI(sr, parent_uuid, VdiType.VHD)
         parent.path = '%s.vhd' % (parent_uuid)
         sr.vdis[parent_uuid] = parent
         vdis['parent'] = parent
 
         vdi_uuid = str(uuid4())
-        vdi = cleanup.FileVDI(sr, vdi_uuid, False)
+        vdi = cleanup.FileVDI(sr, vdi_uuid, VdiType.VHD)
         vdi.path = '%s.vhd' % (vdi_uuid)
         vdi.parent = parent
         # Set an initial value to make Mock happy.
@@ -1500,7 +1501,7 @@ class TestSR(unittest.TestCase):
         vdis['vdi'] = vdi
 
         child_vdi_uuid = str(uuid4())
-        child_vdi = cleanup.FileVDI(sr, child_vdi_uuid, False)
+        child_vdi = cleanup.FileVDI(sr, child_vdi_uuid, VdiType.VHD)
         child_vdi.path = '%s.vhd' % (child_vdi_uuid)
         vdi.children.append(child_vdi)
         sr.vdis[child_vdi_uuid] = child_vdi
@@ -1510,7 +1511,7 @@ class TestSR(unittest.TestCase):
 
     @mock.patch('cleanup.os.unlink', autospec=True)
     @mock.patch('cleanup.util', autospec=True)
-    @mock.patch('cleanup.vhdutil', autospec=True)
+    @mock.patch('vhdutil.VhdUtil')
     @mock.patch('cleanup.journaler.Journaler', autospec=True)
     @mock.patch('cleanup.Util.runAbortable')
     def test_coalesce_success(
@@ -1522,6 +1523,7 @@ class TestSR(unittest.TestCase):
         self.xapi_mock.getConfigVDI.return_value = {}
 
         mock_abortable.side_effect = self.runAbortable
+        mock_vhdutil.return_value.check.return_value = cowutil.CowUtil.CheckResult.Success
 
         sr_uuid = uuid4()
         sr = create_cleanup_sr(self.xapi_mock, uuid=str(sr_uuid))
@@ -1559,7 +1561,7 @@ class TestSR(unittest.TestCase):
 
     @mock.patch('cleanup.os.unlink', autospec=True)
     @mock.patch('cleanup.util', autospec=True)
-    @mock.patch('cleanup.vhdutil', autospec=True)
+    @mock.patch('vhdutil.VhdUtil')
     @mock.patch('cleanup.journaler.Journaler', autospec=True)
     @mock.patch('cleanup.Util.runAbortable')
     def test_coalesce_error(
@@ -1569,6 +1571,7 @@ class TestSR(unittest.TestCase):
         Handle errors in coalesce
         """
         mock_util.SMException = util.SMException
+        mock_vhdutil.return_value.check.return_value = cowutil.CowUtil.CheckResult.Success
 
         self.xapi_mock.getConfigVDI.return_value = {}
 
@@ -1588,18 +1591,16 @@ class TestSR(unittest.TestCase):
         vdis = self.add_vdis_for_coalesce(sr)
         mock_journaler.get.return_value = None
 
-        mock_vhdutil.FILE_EXTN_VHD = vhdutil.FILE_EXTN_VHD
-        mock_vhdutil.FILE_EXTN_RAW = vhdutil.FILE_EXTN_RAW
-        mock_vhdutil.getParent.return_value = vdis['parent'].path
+        mock_vhdutil.return_value.getParent.return_value = vdis['parent'].path
 
         sr.coalesce(vdis['vdi'], False)
 
         self.assertIn(vdis['vdi'], sr._failedCoalesceTargets)
-        mock_vhdutil.repair.assert_called_with(vdis['parent'].path)
+        mock_vhdutil.return_value.repair.assert_called_with(vdis['parent'].path)
 
     @mock.patch('cleanup.os.unlink', autospec=True)
     @mock.patch('cleanup.util', autospec=True)
-    @mock.patch('cleanup.vhdutil', autospec=True)
+    @mock.patch('vhdutil.VhdUtil')
     @mock.patch('cleanup.journaler.Journaler', autospec=True)
     @mock.patch('cleanup.Util.runAbortable')
     def test_coalesce_error_raw_parent(
@@ -1609,6 +1610,7 @@ class TestSR(unittest.TestCase):
         Handle errors in coalesce with raw parent
         """
         mock_util.SMException = util.SMException
+        mock_vhdutil.return_value.check.return_value = cowutil.CowUtil.CheckResult.Success
 
         self.xapi_mock.getConfigVDI.return_value = {}
 
@@ -1626,17 +1628,15 @@ class TestSR(unittest.TestCase):
         mock_ipc_flag.test.return_value = None
 
         vdis = self.add_vdis_for_coalesce(sr)
-        vdis['parent'].raw = True
+        vdis['parent'].vdi_type = VdiType.RAW
         mock_journaler.get.return_value = None
 
-        mock_vhdutil.FILE_EXTN_VHD = vhdutil.FILE_EXTN_VHD
-        mock_vhdutil.FILE_EXTN_RAW = vhdutil.FILE_EXTN_RAW
-        mock_vhdutil.getParent.return_value = vdis['parent'].path
+        mock_vhdutil.return_value.getParent.return_value = vdis['parent'].path
 
         sr.coalesce(vdis['vdi'], False)
 
         self.assertIn(vdis['vdi'], sr._failedCoalesceTargets)
-        self.assertEqual(0, mock_vhdutil.repair.call_count)
+        self.assertEqual(0, mock_vhdutil.return_value.repair.call_count)
 
     def test_tag_children_for_relink_activation(self):
         """
@@ -1890,14 +1890,16 @@ class TestSR(unittest.TestCase):
         parent_uuid = str(uuid.uuid4())
         mock_parent = mock.MagicMock()
         mock_parent.uuid = parent_uuid
+        mock_parent.vdi_type = VdiType.VHD
         mock_parent.parent = None
         mock_parent.raw = False
-        mock_parent.getSizeVHD.return_value = 10 * MEGA
+        mock_parent.getSizePhys.return_value = 10 * MEGA
 
         vdi_uuid = str(uuid.uuid4())
         mock_vdi = mock.MagicMock()
         mock_vdi.uuid = vdi_uuid
-        mock_vdi.getSizeVHD.return_value = 10 * MEGA
+        mock_vdi.vdi_type = VdiType.VHD
+        mock_vdi.getSizePhys.return_value = 10 * MEGA
         mock_vdi.parent = mock_parent
 
         sr._doCoalesceLeaf(mock_vdi)
@@ -1910,14 +1912,16 @@ class TestSR(unittest.TestCase):
         parent_uuid = str(uuid.uuid4())
         mock_parent = mock.MagicMock()
         mock_parent.uuid = parent_uuid
+        mock_parent.vdi_type = VdiType.VHD
         mock_parent.parent = mock.MagicMock()
         mock_parent.raw = False
-        mock_parent.getSizeVHD.return_value = 10 * MEGA
+        mock_parent.getSizePhys.return_value = 10 * MEGA
 
         vdi_uuid = str(uuid.uuid4())
         mock_vdi = mock.MagicMock()
         mock_vdi.uuid = vdi_uuid
-        mock_vdi.getSizeVHD.return_value = 10 * MEGA
+        mock_vdi.vdi_type = VdiType.VHD
+        mock_vdi.getSizePhys.return_value = 10 * MEGA
         mock_vdi.parent = mock_parent
 
         sr._doCoalesceLeaf(mock_vdi)
@@ -1985,7 +1989,7 @@ class TestLockGCActive(unittest.TestCase):
 
     def test_can_acquire_when_already_holding_sr_lock(self):
         # Given
-        srLock = lock.Lock(vhdutil.LOCK_TYPE_SR, self.sr_uuid)
+        srLock = lock.Lock(lock.LOCK_TYPE_SR, self.sr_uuid)
         srLock.held = True
         gcLock = cleanup.LockActive(self.sr_uuid)
 

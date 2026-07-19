@@ -28,8 +28,7 @@ import errno
 import os
 import xmlrpc.client
 import xs_errors
-import vhdutil
-from lock import Lock
+import lock
 import cleanup
 import cifutils
 
@@ -45,8 +44,8 @@ CONFIGURATION = [['server', 'Full path to share root on SMB server (required)'],
                   ['password', 'The password to be used during SMB authentication']]
 
 DRIVER_INFO = {
-    'name': 'SMB VHD',
-    'description': 'SR plugin which stores disks as VHD files on a remote SMB filesystem',
+    'name': 'SMB VHD and QCOW2',
+    'description': 'SR plugin which stores disks as VHD and QCOW2 files on a remote SMB filesystem',
     'vendor': 'Citrix Systems Inc',
     'copyright': '(C) 2015 Citrix Systems Inc',
     'driver_version': '1.0',
@@ -82,7 +81,7 @@ class SMBSR(FileSR.SharedFileSR):
     @override
     def load(self, sr_uuid) -> None:
         self.ops_exclusive = FileSR.OPS_EXCLUSIVE
-        self.lock = Lock(vhdutil.LOCK_TYPE_SR, self.uuid)
+        self.lock = lock.Lock(lock.LOCK_TYPE_SR, self.uuid)
         self.sr_vditype = SR.DEFAULT_TAP
         self.driver_config = DRIVER_CONFIG
         if 'server' not in self.dconf:

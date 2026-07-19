@@ -41,14 +41,16 @@ import json
 import xs_errors
 import XenAPI # pylint: disable=import-error
 import scsiutil
+from constants import NS_PREFIX_LVM
 from syslog import openlog, syslog
 from stat import *  # S_ISBLK(), ...
+from vditype import VdiType
 
 import resetvdis
-import vhdutil
-import lvhdutil
 
 import VDI as sm
+
+from cowutil import getCowUtil
 
 # For RRDD Plugin Registration
 from xmlrpc.client import ServerProxy, Transport
@@ -664,7 +666,7 @@ class Blktap(ClassDevice):
 
 class Tapdisk(object):
 
-    TYPES = ['aio', 'vhd']
+    TYPES = ['aio', 'vhd', 'qcow2']
 
     def __init__(self, pid, minor, _type, path, state):
         self.pid = pid
@@ -1089,6 +1091,7 @@ class VDI(object):
         return {
             'raw': 'aio',
             'vhd': 'vhd',
+            'qcow2': 'qcow2',
             'iso': 'aio',  # for ISO SR
             'aio': 'aio',  # for LVHD
             'file': 'aio',
@@ -1116,10 +1119,11 @@ class VDI(object):
 
     VDI_PLUG_TYPE = {'phy': 'phy',  # for NETAPP
                       'raw': 'phy',
-                      'aio': 'tap',  # for LVHD raw nodes
+                      'aio': 'tap',  # for LVM raw nodes
                       'iso': 'tap',  # for ISOSR
                       'file': 'tap',
-                      'vhd': 'tap'}
+                      'vhd': 'tap',
+                      'qcow2': 'tap'}
 
     def tap_wanted(self):
         # 1. Let the target vdi_type decide
@@ -1176,8 +1180,6 @@ class VDI(object):
 
         def get_vdi_type(self):
             _type = self.vdi.vdi_type
-            if not _type:
-                _type = self.vdi.sr.sr_vditype
             if not _type:
                 raise VDI.UnexpectedVDIType(_type, self.vdi)
             return _type
@@ -1677,13 +1679,13 @@ class VDI(object):
             # This is a fix for CA-155766
             if hasattr(self.target.vdi.sr, 'DRIVER_TYPE') and \
                self.target.vdi.sr.DRIVER_TYPE == 'lvhd' and \
-               vdi_type == vhdutil.VDI_TYPE_VHD:
-                lock = Lock("lvchange-p", lvhdutil.NS_PREFIX_LVM + sr_uuid)
+               VdiType.isCowImage(vdi_type):
+                lock = Lock("lvchange-p", NS_PREFIX_LVM + sr_uuid)
                 lock.acquire()
 
             # When we attach a static VDI for HA, we cannot communicate with
             # xapi, because has not started yet. These VDIs are raw.
-            if vdi_type != vhdutil.VDI_TYPE_RAW:
+            if VdiType.isCowImage(vdi_type):
                 session = self.target.vdi.session
                 vdi_ref = session.xenapi.VDI.get_by_uuid(vdi_uuid)
                 # pylint: disable=used-before-assignment
@@ -1698,7 +1700,7 @@ class VDI(object):
 
             if hasattr(self.target.vdi.sr, 'DRIVER_TYPE') and \
                self.target.vdi.sr.DRIVER_TYPE == 'lvhd' and \
-               self.target.get_vdi_type() == vhdutil.VDI_TYPE_VHD:
+               VdiType.isCowImage(self.target.get_vdi_type()):
                 lock.release()
         except:
             util.SMlog("Exception in activate/attach")
@@ -1947,6 +1949,10 @@ class VDI(object):
         SR.registerSR(EXTSR.EXTSR)
         local_sr = SR.SR.from_uuid(session, local_sr_uuid)
 
+        vdi_type = self.target.get_vdi_type()
+        tap_type = VDI._tap_type(vdi_type)
+        cowutil = getCowUtil(vdi_type)
+
         lock = Lock(self.LOCK_CACHE_SETUP, shared_target.uuid)
         lock.acquire()
 
@@ -1957,14 +1963,14 @@ class VDI(object):
                        read_cache_path)
         else:
             try:
-                vhdutil.snapshot(read_cache_path, shared_target.path, False)
+                cowutil.snapshot(read_cache_path, shared_target.path, False)
             except util.CommandException as e:
                 util.SMlog("Error creating parent cache: %s" % e)
                 self.alert_no_cache(session, vdi_uuid, local_sr_uuid, e.code)
                 return None
 
         # local write node
-        leaf_size = vhdutil.getSizeVirt(self.target.vdi.path)
+        leaf_size = cowutil.getSizeVirt(self.target.vdi.path)
         local_leaf_path = "%s/%s.vhdcache" % \
                 (local_sr.path, self.target.vdi.uuid)
         if util.pathexists(local_leaf_path):
@@ -1972,18 +1978,18 @@ class VDI(object):
                        local_leaf_path)
             os.unlink(local_leaf_path)
         try:
-            vhdutil.snapshot(local_leaf_path, read_cache_path, False,
-                    msize=leaf_size // 1024 // 1024, checkEmpty=False)
+            cowutil.snapshot(local_leaf_path, read_cache_path, False,
+                    msize=leaf_size, checkEmpty=False)
         except util.CommandException as e:
             util.SMlog("Error creating leaf cache: %s" % e)
             self.alert_no_cache(session, vdi_uuid, local_sr_uuid, e.code)
             return None
 
-        local_leaf_size = vhdutil.getSizeVirt(local_leaf_path)
+        local_leaf_size = cowutil.getSizeVirt(local_leaf_path)
         if leaf_size > local_leaf_size:
             util.SMlog("Leaf size %d > local leaf cache size %d, resizing" %
                        (leaf_size, local_leaf_size))
-            vhdutil.setSizeVirtFast(local_leaf_path, leaf_size)
+            cowutil.setSizeVirtFast(local_leaf_path, leaf_size)
 
         prt_tapdisk = Tapdisk.find_by_path(read_cache_path)
         if not prt_tapdisk:
@@ -1996,15 +2002,12 @@ class VDI(object):
                 blktap.set_pool_name("lcache-parent-pool-%s" % blktap.minor)
                 # no need to change pool_size since each parent tapdisk is in
                 # its own pool
-                prt_tapdisk = \
-                    Tapdisk.launch_on_tap(blktap, read_cache_path,
-                            'vhd', parent_options)
+                prt_tapdisk = Tapdisk.launch_on_tap(blktap, read_cache_path, tap_type, parent_options)
             except:
                 blktap.free()
                 raise
 
-        secondary = "%s:%s" % (self.target.get_vdi_type(),
-                               (self.PhyLink.from_uuid(sr_uuid, vdi_uuid).readlink()))
+        secondary = "%s:%s" % (vdi_type, self.PhyLink.from_uuid(sr_uuid, vdi_uuid).readlink())
 
         util.SMlog("Parent tapdisk: %s" % prt_tapdisk)
         leaf_tapdisk = Tapdisk.find_by_path(local_leaf_path)
@@ -2019,9 +2022,7 @@ class VDI(object):
             # Disable memory read caching
             child_options.pop("o_direct", None)
             try:
-                leaf_tapdisk = \
-                    Tapdisk.launch_on_tap(blktap, local_leaf_path,
-                            'vhd', child_options)
+                leaf_tapdisk = Tapdisk.launch_on_tap(blktap, local_leaf_path, tap_type, child_options)
             except:
                 blktap.free()
                 raise

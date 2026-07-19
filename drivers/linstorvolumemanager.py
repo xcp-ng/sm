@@ -999,9 +999,10 @@ class LinstorVolumeManager(object):
         # - "../xcp-volume-<UUID>/0"
         if device_path.startswith(DRBD_BY_RES_PATH):
             prefix_len = len(DRBD_BY_RES_PATH)
-        else:
-            assert device_path.startswith('../')
+        elif device_path.startswith('../'):
             prefix_len = 3
+        else:
+            raise LinstorVolumeManagerError('Unexpected device path: `{}`'.format(device_path))
 
         res_name_end = device_path.find('/', prefix_len)
         assert res_name_end != -1

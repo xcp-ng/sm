@@ -36,10 +36,9 @@ import FileSR
 # end of careful
 import VDI
 import cleanup
+import lock
 import util
-import vhdutil
 import xs_errors
-from lock import Lock
 
 CAPABILITIES = ["SR_PROBE", "SR_UPDATE",
                 "VDI_CREATE", "VDI_DELETE", "VDI_ATTACH", "VDI_DETACH",
@@ -55,8 +54,8 @@ CONFIGURATION = [
 ]
 
 DRIVER_INFO = {
-    'name': 'MooseFS VHD',
-    'description': 'SR plugin which stores disks as VHD files on a MooseFS storage',
+    'name': 'MooseFS VHD and QCOW2',
+    'description': 'SR plugin which stores disks as VHD and QCOW2 files on a MooseFS storage',
     'vendor': 'Tappest sp. z o.o.',
     'copyright': '(C) 2021 Tappest sp. z o.o.',
     'driver_version': '1.0',
@@ -97,7 +96,7 @@ class MooseFSSR(FileSR.FileSR):
             )
 
         self.ops_exclusive = FileSR.OPS_EXCLUSIVE
-        self.lock = Lock(vhdutil.LOCK_TYPE_SR, self.uuid)
+        self.lock = lock.Lock(lock.LOCK_TYPE_SR, self.uuid)
         self.sr_vditype = SR.DEFAULT_TAP
         self.driver_config = DRIVER_CONFIG
         if 'masterhost' not in self.dconf:
