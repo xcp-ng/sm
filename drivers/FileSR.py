@@ -500,7 +500,7 @@ class FileVDI(VDI.VDI):
             self.path = os.path.join(self.sr.path, "%s%s" %
                 (vdi_uuid, VDI_TYPE_TO_EXTENSION[self.vdi_type]))
         else:
-            found = self._find_path_with_retries(vdi_uuid)
+            found = self._resolve_vdi_context_from_path(vdi_uuid)
             if not found:
                 if self.sr.srcmd.cmd == "vdi_delete":
                     # Could be delete for CBT log file
@@ -647,7 +647,7 @@ class FileVDI(VDI.VDI):
     @override
     def attach(self, sr_uuid, vdi_uuid) -> str:
         if self.path is None:
-            self._find_path_with_retries(vdi_uuid)
+            self._resolve_vdi_context_from_path(vdi_uuid)
         if not self._checkpath(self.path):
             raise xs_errors.XenError('VDIUnavailable', \
                   opterr='VDI %s unavailable %s' % (vdi_uuid, self.path))
