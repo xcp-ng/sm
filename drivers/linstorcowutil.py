@@ -425,6 +425,7 @@ class LinstorCowUtil(object):
     # --------------------------------------------------------------------------
 
     def compute_volume_size(self, virtual_size: int) -> int:
+        volume_size = virtual_size
         if VdiType.isCowImage(self._vdi_type):
             # All LINSTOR VDIs have the metadata area preallocated for
             # the maximum possible virtual size (for fast online VDI.resize).
@@ -432,11 +433,11 @@ class LinstorCowUtil(object):
                 max(virtual_size, self._cowutil.getDefaultPreallocationSizeVirt())
             )
             bitmap_overhead = self._cowutil.calcOverheadBitmap(virtual_size)
-            virtual_size += meta_overhead + bitmap_overhead
+            volume_size += meta_overhead + bitmap_overhead
         else:
             raise Exception('Invalid image type: {}'.format(self._vdi_type))
 
-        return LinstorVolumeManager.round_up_volume_size(virtual_size)
+        return LinstorVolumeManager.round_up_volume_size(volume_size)
 
     def _extract_uuid(self, device_path):
         # TODO: Remove new line in the vhdutil module. Not here.
