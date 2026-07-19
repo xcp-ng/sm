@@ -139,7 +139,7 @@ class VhdUtil(CowUtil):
                 vhdInfo.parentUuid = extractUuidFunction(fields[nextIndex])
             nextIndex += 1
         vhdInfo.hidden = bool(int(fields[nextIndex].replace("hidden: ", "")))
-        vhdInfo.sizeAllocated = self._convertAllocatedSizeToBytes(int(fields[nextIndex+1]))
+        vhdInfo.sizeAllocated = self._convertBlockSizeToBytes(int(fields[nextIndex+1]))
         vhdInfo.path = path
         return vhdInfo
 
@@ -296,7 +296,7 @@ class VhdUtil(CowUtil):
     @override
     def getAllocatedSize(self, path: str) -> int:
         ret = self._ioretry([VHD_UTIL, "query", OPT_LOG_ERR, "-a", "-n", path])
-        return self._convertAllocatedSizeToBytes(int(ret))
+        return self._convertBlockSizeToBytes(int(ret))
 
     @override
     def getResizeJournalSize(self) -> int:
@@ -440,7 +440,7 @@ class VhdUtil(CowUtil):
         self._ioretry([VHD_UTIL, "key", "-s", "-n", path, "-H", key_hash])
 
     @staticmethod
-    def _convertAllocatedSizeToBytes(size: int):
+    def _convertBlockSizeToBytes(size: int):
         # Assume we have standard 2MB allocation blocks
         return size * 2 * 1024 * 1024
 
