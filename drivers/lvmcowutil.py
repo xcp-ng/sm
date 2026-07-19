@@ -93,7 +93,7 @@ class LvmCowUtil(object):
         size = self.cowutil.getResizeJournalSize()
         if size <= 0:
             return ''
-        lvName = "%s_%s" % (self.JOURNAL_RESIZE_TAG, jName)
+        lvName = self._getResizeJournalVolumeName(jName)
         lvmCache.create(lvName, size, self.JOURNAL_RESIZE_TAG)
         return os.path.join(lvmCache.vgPath, lvName)
 
@@ -102,8 +102,7 @@ class LvmCowUtil(object):
         Destroy a VDI resize journal.
         """
         if jName:
-            lvName = "%s_%s" % (self.JOURNAL_RESIZE_TAG, jName)
-            lvmCache.remove(lvName)
+            lvmCache.remove(self._getResizeJournalVolumeName(jName))
 
     @classmethod
     def getAllResizeJournals(cls, lvmCache: LVMCache) -> List[Tuple[str, str]]:
@@ -346,6 +345,10 @@ class LvmCowUtil(object):
         cls, session: XenAPI.Session, srUuid: str, vgName: str, lvName: str, vdiUuid: str
     ) -> None:
         cls.refreshVolumeOnSlaves(session, srUuid, vgName, lvName, vdiUuid, util.get_all_slaves(session))
+
+    @classmethod
+    def _getResizeJournalVolumeName(cls, jName: str) -> str:
+        return f"{cls.JOURNAL_RESIZE_TAG}_{jName}"
 
     @staticmethod
     def _tryAcquire(lock):
