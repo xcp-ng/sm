@@ -14,7 +14,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-from sm_typing import Any, Optional, override
+from sm_typing import Any, Optional, override, Literal
 
 from constants import CBTLOG_TAG
 
@@ -819,17 +819,19 @@ class LinstorSR(SR.SR):
 
     @override
     def check_sr(self, sr_uuid) -> None:
-        # Only applied on the Linstor Controller, for various reasons.
+        # Note: check_sr is called on all hosts by the health check mechanism
+        # not by regular xapi calls such as scans.
+        # Applied only on the Linstor Controller, for reasons -> listed below.
         if not LinstorVolumeManager.is_controller():
             return
         # Start database invalidation.
-        # Needs access to backup files, available only on the Controller.
+        # -> Needs access to backup files, available only on the Controller.
         LinstorVolumeManager.database_invalidation()
         # check_sr is launched on *all* hosts, but it turns out that
         # we do not want all of them to blindly generate concurrencing backups.
         # Hence we must choose one, either one is good, but there must be only one.
         # Apply throttling: only backup if last one is >1h old.
-        # Needs access to backup files, available only on the Controller.
+        # -> Needs access to backup files, available only on the Controller.
         if LinstorVolumeManager.database_backup_age() > 3600:
             self.database_backup("auto")
 
@@ -1586,7 +1588,7 @@ class LinstorSR(SR.SR):
         util.SMlog('Kicking GC')
         cleanup.start_gc_service(self.uuid)
 
-    def database_backup(self, name=""):
+    def database_backup(self, name: Literal["auto", "create", "delete", "snapshot"]):
         """
         Generate a new database backup file.
         This operation should not prevent the underlying action to be successful.
@@ -1595,7 +1597,7 @@ class LinstorSR(SR.SR):
         if not self._linstor:
             self._reconnect()
         try:
-            self._linstor.database_backup(name)
+            self._linstor.database_backup(name)  # type: ignore
         except Exception as e:
             util.SMlog(
                 f"[database_backup] Error during creation: {e}",
