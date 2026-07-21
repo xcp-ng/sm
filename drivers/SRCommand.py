@@ -271,14 +271,10 @@ class SRCommand:
             return target.clone(self.params['sr_uuid'], self.vdi_uuid)
 
         elif self.cmd == 'vdi_revert':
-            dest_uuid = self.params['args'][0]
-            if dest_uuid.startswith("OpaqueRef:"):
-                # TODO(XCPNG-3486): remove once xapi sends an uuid instead of an OpaqueRef
-                dest_uuid = sr.session.xenapi.VDI.get_record(dest_uuid)["uuid"]
             return target.revert(
                 self.params['sr_uuid'],
                 self.vdi_uuid,
-                dest_uuid,
+                sr.session.xenapi.VDI.get_record(self.params['args'][0])["uuid"],
             )
 
         elif self.cmd == 'vdi_resize':
