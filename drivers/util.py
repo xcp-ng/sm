@@ -39,6 +39,7 @@ import stat
 import xs_errors
 import XenAPI # pylint: disable=import-error
 import xmlrpc.client
+import http.client
 import base64
 import syslog
 import resource
@@ -781,6 +782,29 @@ def get_localAPI_session():
     except:
         raise xs_errors.XenError('APISession')
     return session
+
+
+def call_XAPI_until_httpOK(function):
+    """
+    Decorator to catch classic XAPI connexion problems and retry forever
+    The method called should be only for XAPI calls
+    eg: blktap2.py#VDI:_remove_tag()
+    """
+    def wrapper(*args, **kwargs):
+        errmsg = f"{function.__name__}(args={args}, kwargs={kwargs})"
+        while True:
+            try:
+                return function(*args, **kwargs)
+            except xmlrpc.client.ProtocolError as e:
+                # If there's a connection error, keep trying forever.
+                if e.errcode == http.HTTPStatus.INTERNAL_SERVER_ERROR.value:
+                    continue
+                SMlog(f"failed XAPI call [{e}]: {errmsg}")
+                raise
+            except Exception as e:
+                SMlog(f"failed XAPI call [{e}]: {errmsg}")
+                raise
+    return wrapper
 
 
 def get_this_host():

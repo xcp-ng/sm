@@ -1609,6 +1609,7 @@ class VDI(object):
             return False
         return True
 
+    @util.call_XAPI_until_httpOK
     def _remove_tag(self, vdi_uuid):
         vdi_ref = self._session.xenapi.VDI.get_by_uuid(vdi_uuid)
         host_ref = self._session.xenapi.host.get_by_uuid(util.get_this_host())
@@ -1871,22 +1872,9 @@ class VDI(object):
             util.SMlog("Exception in activate/attach")
             if self.tap_wanted():
                 util.fistpoint.activate_custom_fn(
-                        "blktap_activate_error_handling",
-                        lambda: time.sleep(30))
-                while True:
-                    try:
-                        self._remove_tag(vdi_uuid)
-                        break
-                    except xmlrpc.client.ProtocolError as e:
-                        # If there's a connection error, keep trying forever.
-                        if e.errcode == http.HTTPStatus.INTERNAL_SERVER_ERROR.value:
-                            continue
-                        else:
-                            util.SMlog('failed to remove tag: %s' % e)
-                            break
-                    except Exception as e:
-                        util.SMlog('failed to remove tag: %s' % e)
-                        break
+                    "blktap_activate_error_handling",
+                    lambda: time.sleep(30))
+                self._remove_tag(vdi_uuid)
             raise
         finally:
             vdi_ref = self._session.xenapi.VDI.get_by_uuid(vdi_uuid)
@@ -1952,7 +1940,6 @@ class VDI(object):
             self._detach(sr_uuid, vdi_uuid)
         if self.tap_wanted():
             self._remove_tag(vdi_uuid)
-
         return True
 
     def _resetPhylink(self, sr_uuid, vdi_uuid, path):
