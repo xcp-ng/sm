@@ -30,7 +30,6 @@ import copy
 from lock import Lock
 import util
 import xmlrpc.client
-import http.client
 import errno
 import signal
 import subprocess
@@ -1609,7 +1608,7 @@ class VDI(object):
             return False
         return True
 
-    @util.call_XAPI_until_httpOK
+    @util.xapi_safe_call
     def _remove_tag(self, vdi_uuid):
         vdi_ref = self._session.xenapi.VDI.get_by_uuid(vdi_uuid)
         host_ref = self._session.xenapi.host.get_by_uuid(util.get_this_host())
@@ -1621,8 +1620,9 @@ class VDI(object):
         else:
             util.SMlog("_remove_tag: host key %s not found, ignore" % host_key)
 
+    @util.xapi_safe_call
     def _get_pool_config(self, pool_name):
-        pool_info = dict()
+        pool_info = {}
         vdi_ref = self.target.vdi.sr.srcmd.params.get('vdi_ref')
         if not vdi_ref:
             # attach_from_config context: HA disks don't need to be in any
@@ -1940,6 +1940,7 @@ class VDI(object):
             self._detach(sr_uuid, vdi_uuid)
         if self.tap_wanted():
             self._remove_tag(vdi_uuid)
+
         return True
 
     def _resetPhylink(self, sr_uuid, vdi_uuid, path):
