@@ -16,7 +16,7 @@
 
 from sm_typing import Any, Optional, override, Literal
 
-from constants import CBTLOG_TAG
+from constants import CBTLOG_TAG, LINSTOR_AUTO_BACKUP_DELAY
 
 try:
     from linstorcowutil import LinstorCowUtil, MultiLinstorCowUtil
@@ -824,7 +824,7 @@ class LinstorSR(SR.SR):
         # Applied only on the Linstor Controller, for reasons -> listed below.
         if not LinstorVolumeManager.is_controller():
             return
-        # Start database invalidation.
+        # Validate and clean previous backups if necessary.
         # -> Needs access to backup files, available only on the Controller.
         LinstorVolumeManager.database_invalidation()
         # check_sr is launched on *all* hosts, but it turns out that
@@ -832,7 +832,7 @@ class LinstorSR(SR.SR):
         # Hence we must choose one, either one is good, but there must be only one.
         # Apply throttling: only backup if last one is >1h old.
         # -> Needs access to backup files, available only on the Controller.
-        if LinstorVolumeManager.database_backup_age() > 3600:
+        if LinstorVolumeManager.get_database_backup_age() > LINSTOR_AUTO_BACKUP_DELAY:
             self.database_backup("auto")
 
     @override

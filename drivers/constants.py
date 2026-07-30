@@ -11,3 +11,5 @@ VG_PREFIX: Final = "VG_XenStorage-"
 # Ref counting for VDI's: we need a ref count for LV activation/deactivation
 # on the master.
 NS_PREFIX_LVM: Final = "lvm-"
+
+LINSTOR_AUTO_BACKUP_DELAY = 3600
