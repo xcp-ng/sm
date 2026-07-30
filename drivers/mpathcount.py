@@ -280,7 +280,7 @@ def main(session):
 
 if __name__ == '__main__':
     try:
-        with util.APISession("SM-mpathcount") as api_session:
+        with util.ApiSession("SM-mpathcount") as api_session:
             main(api_session)
     except xs_errors.XenError as e:
         util.SMlog(f"MPATH: Failure `{e}`")

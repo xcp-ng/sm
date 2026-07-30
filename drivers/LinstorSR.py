@@ -2585,7 +2585,7 @@ class LinstorVDI(VDI.VDI):
                 # Use a timeout call because XAPI may be unusable on startup
                 # or if the host has been ejected. So in this case the call can
                 # block indefinitely.
-                api_session = util.timeout(5, util.APISession, "SM-ha-linstor-http-server")
+                api_session = util.timeout(5, util.ApiSession, "SM-ha-linstor-http-server")
                 session = api_session.session
                 host_ip = util.get_this_host_address(session)
             except:
@@ -2672,7 +2672,7 @@ class LinstorVDI(VDI.VDI):
                 device_size = 256 * 1024 * 1024
 
             try:
-                api_session = util.timeout(5, util.APISession, "SM-ha-linstor-nbd-server")
+                api_session = util.timeout(5, util.ApiSession, "SM-ha-linstor-nbd-server")
                 session = api_session.session
                 ips = util.get_host_addresses(session)
             except Exception as e:

@@ -33,7 +33,7 @@ def main():
     """
     For all locally plugged SRs check that they are healthy
     """
-    with util.APISession("SM-sr-health-check") as session:
+    with util.ApiSession("SM-sr-health-check") as session:
         localhost = util.get_localhost_ref(session)
         if not check_xapi_is_enabled(session, localhost):
             # Xapi not enabled, skip and let the next timer trigger this

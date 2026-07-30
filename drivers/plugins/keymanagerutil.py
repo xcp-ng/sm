@@ -39,7 +39,7 @@ def load_key(key_hash, vdi_uuid):
 
 
 def _check_key(key_hash, vdi_uuid):
-    with util.APISession(PROGRAM_NAME) as session:
+    with util.ApiSession(PROGRAM_NAME) as session:
         vdi = session.xenapi.VDI.get_by_uuid(vdi_uuid)
         sm_config = session.xenapi.VDI.get_sm_config(vdi)
         if 'key_hash' in sm_config:

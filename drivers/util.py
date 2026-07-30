@@ -472,7 +472,7 @@ def sr_get_capability(sr_uuid, session=None):
     api_session = None
     try:
         if session is None:
-            api_session = APISession("SM-sr-get-capability")
+            api_session = ApiSession("SM-sr-get-capability")
             session = api_session.session
         sr_ref = session.xenapi.SR.get_by_uuid(sr_uuid)
         sm_type = session.xenapi.SR.get_record(sr_ref)['type']
@@ -774,7 +774,7 @@ def getrootdevID():
     return rootdevID
 
 
-class APISession(contextlib.AbstractContextManager):
+class ApiSession(contextlib.AbstractContextManager):
     session=None
 
     def __init__(self, originator="SM"):
@@ -790,17 +790,17 @@ class APISession(contextlib.AbstractContextManager):
         try:
             session.xenapi.login_with_password('root', '', '', self.originator)
         except Exception as exc:
-            raise xs_errors.XenError(f"APISession [{self.originator}] Unable to open local XAPI session") from exc
-        SMlog("APISession [{}] login".format(self.originator), priority=LOG_DEBUG)
+            raise xs_errors.XenError(f"ApiSession [{self.originator}] Unable to open local XAPI session") from exc
+        SMlog("ApiSession [{}] login".format(self.originator), priority=LOG_DEBUG)
         return session
 
     def _logout(self, log):
         """Closes an API session"""
         if self.session is None:
-            SMlog("APISession [{}] session is None {}".format(self.originator, log), priority=LOG_DEBUG)
+            SMlog("ApiSession [{}] session is None {}".format(self.originator, log), priority=LOG_DEBUG)
             return
         self.session.xenapi.session.logout()
-        SMlog("APISession [{}] {}".format(self.originator, log), priority=LOG_DEBUG)
+        SMlog("ApiSession [{}] {}".format(self.originator, log), priority=LOG_DEBUG)
         self.session = None
 
     def logout(self, log="logout"):
@@ -1493,7 +1493,7 @@ class FistPoint:
         return os.path.exists("/tmp/fist_%s" % name)
 
     def mark_sr(self, name, sruuid, started):
-        with APISession("SM-sr-fist-point") as session:
+        with ApiSession("SM-sr-fist-point") as session:
             sr = session.xenapi.SR.get_by_uuid(sruuid)
             if started:
                 session.xenapi.SR.add_to_other_config(sr, name, "active")

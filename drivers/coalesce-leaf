@@ -229,7 +229,7 @@ def main():
         print(USAGE_STRING % sys.argv[0])
         sys.exit(-1)
 
-    with util.APISession("SM-coalesce-leaf") as session:
+    with util.ApiSession("SM-coalesce-leaf") as session:
         ret, messages = vm_leaf_coalesce(session, uuid)
     if messages:
         print("\n".join(messages))

@@ -180,5 +180,5 @@ if __name__ == '__main__':
     if len(sys.argv) not in [3, 4, 5]:
         usage()
 
-    with util.APISession("SM-resetvdis") as session:
+    with util.ApiSession("SM-resetvdis") as session:
         main(session)

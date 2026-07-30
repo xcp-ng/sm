@@ -18,7 +18,7 @@ class TestSrHealthCheck(unittest.TestCase):
         self.mock_util = util_patcher.start()
         self.mock_session = mock.MagicMock()
         self.mock_api_session = mock.MagicMock()
-        self.mock_util.APISession.return_value = self.mock_api_session
+        self.mock_util.ApiSession.return_value = self.mock_api_session
         self.mock_api_session.__enter__.return_value = self.mock_session
         sr_patcher = mock.patch('sr_health_check.SR.SR', autospec=True)
         self.mock_sr = sr_patcher.start()
