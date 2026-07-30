@@ -303,7 +303,7 @@ class XAPI:
         self.session = session
         self._api_session = None
         if self.session is None:
-            self._api_session = util.APISession("SM-cleanup-XAPI")
+            self._api_session = util.APISession("SM-GC")
             self.session = self._api_session.session
         self._srRef = self.session.xenapi.SR.get_by_uuid(srUuid)
         self.srRecord = self.session.xenapi.SR.get_record(self._srRef)
@@ -2121,7 +2121,7 @@ class SR(object):
         return msg is None
 
     def check_no_space_candidates(self):
-        with util.APISession("GC-check_no_space") as xapi_session:
+        with util.APISession("SM-GC-check_no_space") as xapi_session:
             msg_id = self.xapi.srRecord["sm_config"].get(VDI.DB_GC_NO_SPACE)
             if self.no_space_candidates:
                 if msg_id is None or self.msg_cleared(xapi_session, msg_id):
@@ -3928,7 +3928,7 @@ class LinstorSR(SR):
                 if node_name == hostname:
                     continue
 
-                with util.timeout(5), util.APISession("GC-coalescing") as session:
+                with util.timeout(5), util.APISession("SM-GC-coalescing") as session:
                     sr_uuid = util.get_sr_uuid_from_vdi_uuid(session, uuid) if is_vdi_uuid else uuid
                     util.SMlog(f"LINSTOR volume is coalescing on `{sr_uuid}`. We're going to interrupt the GC...")
                     return util.strtobool(session.xenapi.host.call_plugin(

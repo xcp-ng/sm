@@ -881,18 +881,18 @@ class Tapdisk(object):
 
         openers = get_all_volume_openers(volume_name, "0")
 
-        api_session = util.timeout(5, util.APISession, "blktap-abort_linstor_gc")
-        session = api_session.session
+        api_session = util.timeout(5, util.APISession, "SM-blktap2-abort_linstor_gc")
         try:
-            srs = util.get_linstor_srs_uuid(session)
+            srs = util.get_linstor_srs_uuid(api_session.session)
             pbd_ref = util.find_pbd_ref_from_dconf_value(
-                session, srs, "group-name", group_name, LinstorVolumeManager.build_group_name
+                api_session.session, srs, "group-name", group_name,
+                LinstorVolumeManager.build_group_name,
             )
             if pbd_ref:
-                pbd_rec = session.xenapi.PBD.get_record(pbd_ref)
+                pbd_rec = api_session.session.xenapi.PBD.get_record(pbd_ref)
 
                 sr_ref = pbd_rec["SR"]
-                sr_uuid = session.xenapi.SR.get_uuid(sr_ref)
+                sr_uuid = api_session.session.xenapi.SR.get_uuid(sr_ref)
 
                 import cleanup # pylint: disable=C0415
                 if cleanup.LinstorSR.abort_gc_from_openers_sr(sr_uuid, openers):

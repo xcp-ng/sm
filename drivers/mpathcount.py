@@ -282,6 +282,7 @@ if __name__ == '__main__':
     try:
         with util.APISession("SM-mpathcount") as api_session:
             main(api_session)
-    except xs_errors.XenError:
+    except xs_errors.XenError as e:
+        util.SMlog(f"MPATH: Failure `{e}`")
         sys.exit(-1)
     sys.exit(0)

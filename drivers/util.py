@@ -470,19 +470,21 @@ def ioretry_stat(path, maxretry=IORETRY_MAX):
 def sr_get_capability(sr_uuid, session=None):
     result = []
     api_session = None
-    if session is None:
-        api_session = APISession("SM-sr-get-capability")
-        session = api_session.session
-    sr_ref = session.xenapi.SR.get_by_uuid(sr_uuid)
-    sm_type = session.xenapi.SR.get_record(sr_ref)['type']
-    sm_rec = session.xenapi.SM.get_all_records_where(
-        "field \"type\" = \"%s\"" % sm_type)
+    try:
+        if session is None:
+            api_session = APISession("SM-sr-get-capability")
+            session = api_session.session
+        sr_ref = session.xenapi.SR.get_by_uuid(sr_uuid)
+        sm_type = session.xenapi.SR.get_record(sr_ref)['type']
+        sm_rec = session.xenapi.SM.get_all_records_where(
+            "field \"type\" = \"%s\"" % sm_type)
 
-    # SM expects at least one entry of any SR type
-    if len(sm_rec) > 0:
-        result = list(sm_rec.values())[0]['capabilities']
-    if api_session:
-        session.logout()
+        # SM expects at least one entry of any SR type
+        if len(sm_rec) > 0:
+            result = list(sm_rec.values())[0]['capabilities']
+    finally:
+        if api_session:
+            session.logout()
     return result
 
 def sr_get_driver_info(driver_info):
