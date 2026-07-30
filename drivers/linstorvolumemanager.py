@@ -417,7 +417,7 @@ class LinstorVolumeManager(object):
         return self._uri
 
     @property
-    def native_client(self) -> linstor.Linstor:
+    def native_client(self) -> "linstor.Linstor":
         return self._linstor
 
     @property
