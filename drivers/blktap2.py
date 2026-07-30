@@ -1555,6 +1555,13 @@ class VDI(object):
             util.logException("BLKTAP2:call_pluginhandler %s" % e)
             return False
 
+    @util.xapi_safe_call
+    def _call_xapi_plugin(self, *args):
+        """
+        wrapper to retry xenapi.host.call_plugin on XAPI HTTP failure.
+        """
+        return self._session.xenapi.host.call_plugin(*args)
+
     def _add_tag(self, vdi_uuid, writable):
         util.SMlog("Adding tag to: %s" % vdi_uuid)
         attach_mode = "RO"
@@ -1797,8 +1804,8 @@ class VDI(object):
         host_ref = self._get_sr_master_host_ref()
         for vdi in vdi_to_cancel:
             args = {"sr_uuid": sr_uuid, "vdi_uuid": vdi}
-            util.SMlog("Calling cancel_coalesce_master with args: {}".format(args))
-            self._session.xenapi.host.call_plugin(\
+            util.SMlog(f"Calling cancel_coalesce_master with args: {args}")
+            self._call_xapi_plugin(
                 host_ref, PLUGIN_ON_SLAVE, "cancel_coalesce_master", args)
 
         return True
