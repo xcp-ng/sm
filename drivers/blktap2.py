@@ -1715,9 +1715,7 @@ class VDI(object):
         options = {"rdonly": not writable}
         options.update(caching_params)
 
-        sr_ref = self.target.vdi.sr.srcmd.params.get('sr_ref')
-        sr_other_config = self._session.xenapi.SR.get_other_config(sr_ref)
-        for i in range(self.ATTACH_DETACH_RETRY_SECS):
+        for _ in range(self.ATTACH_DETACH_RETRY_SECS):
             try:
                 if self._activate_locked(sr_uuid, vdi_uuid, options):
                     return
