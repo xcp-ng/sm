@@ -1600,6 +1600,7 @@ class VDI(object):
         util.SMlog("Activate lock succeeded")
         return True
 
+    @util.xapi_safe_call
     def _check_tag(self, vdi_uuid):
         vdi_ref = self._session.xenapi.VDI.get_by_uuid(vdi_uuid)
         sm_config = self._session.xenapi.VDI.get_sm_config(vdi_ref)
