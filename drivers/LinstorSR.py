@@ -826,7 +826,7 @@ class LinstorSR(SR.SR):
             return
         # Validate and clean previous backups if necessary.
         # -> Needs access to backup files, available only on the Controller.
-        LinstorVolumeManager.database_invalidation()
+        LinstorVolumeManager.database_backup_validate_and_prune()
         # check_sr is launched on *all* hosts, but it turns out that
         # we do not want all of them to blindly generate concurrencing backups.
         # Hence we must choose one, either one is good, but there must be only one.
@@ -1597,7 +1597,8 @@ class LinstorSR(SR.SR):
         if not self._linstor:
             self._reconnect()
         try:
-            self._linstor.database_backup(name)  # type: ignore
+            assert self._linstor
+            self._linstor.database_backup(name)
         except Exception as e:
             util.SMlog(
                 f"[database_backup] Error during creation: {e}",

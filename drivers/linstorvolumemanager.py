@@ -1814,7 +1814,7 @@ class LinstorVolumeManager(object):
         util.SMlog(f"[database_backup] Created: {filename}", priority=util.LOG_INFO)
 
     @classmethod
-    def database_invalidation(cls):
+    def database_backup_validate_and_prune(cls):
         """
         Removes old backup based on two criterias:
         - Validity of the zipfile done by self._check_database_backup.
