@@ -30,7 +30,6 @@ import copy
 from lock import Lock
 import util
 import xmlrpc.client
-import http.client
 import errno
 import signal
 import subprocess
@@ -1594,6 +1593,13 @@ class VDI(object):
             util.logException("BLKTAP2:call_pluginhandler %s" % e)
             return False
 
+    @util.xapi_safe_call
+    def _call_xapi_plugin(self, *args):
+        """
+        wrapper to retry xenapi.host.call_plugin on XAPI HTTP failure.
+        """
+        return self._session.xenapi.host.call_plugin(*args)
+
     def _add_tag(self, vdi_uuid, writable):
         util.SMlog("Adding tag to: %s" % vdi_uuid)
         attach_mode = "RO"
@@ -1639,6 +1645,7 @@ class VDI(object):
         util.SMlog("Activate lock succeeded")
         return True
 
+    @util.xapi_safe_call
     def _check_tag(self, vdi_uuid):
         vdi_ref = self._session.xenapi.VDI.get_by_uuid(vdi_uuid)
         sm_config = self._session.xenapi.VDI.get_sm_config(vdi_ref)
@@ -1647,6 +1654,7 @@ class VDI(object):
             return False
         return True
 
+    @util.xapi_safe_call
     def _remove_tag(self, vdi_uuid):
         vdi_ref = self._session.xenapi.VDI.get_by_uuid(vdi_uuid)
         host_ref = self._session.xenapi.host.get_by_uuid(util.get_this_host())
@@ -1658,8 +1666,9 @@ class VDI(object):
         else:
             util.SMlog("_remove_tag: host key %s not found, ignore" % host_key)
 
+    @util.xapi_safe_call
     def _get_pool_config(self, pool_name):
-        pool_info = dict()
+        pool_info = {}
         vdi_ref = self.target.vdi.sr.srcmd.params.get('vdi_ref')
         if not vdi_ref:
             # attach_from_config context: HA disks don't need to be in any
@@ -1744,9 +1753,7 @@ class VDI(object):
         options = {"rdonly": not writable}
         options.update(caching_params)
 
-        sr_ref = self.target.vdi.sr.srcmd.params.get('sr_ref')
-        sr_other_config = self._session.xenapi.SR.get_other_config(sr_ref)
-        for i in range(self.ATTACH_DETACH_RETRY_SECS):
+        for _ in range(self.ATTACH_DETACH_RETRY_SECS):
             try:
                 if self._activate_locked(sr_uuid, vdi_uuid, options):
                     return
@@ -1833,8 +1840,8 @@ class VDI(object):
         host_ref = self._get_sr_master_host_ref()
         for vdi in vdi_to_cancel:
             args = {"sr_uuid": sr_uuid, "vdi_uuid": vdi}
-            util.SMlog("Calling cancel_coalesce_master with args: {}".format(args))
-            self._session.xenapi.host.call_plugin(\
+            util.SMlog(f"Calling cancel_coalesce_master with args: {args}")
+            self._call_xapi_plugin(
                 host_ref, PLUGIN_ON_SLAVE, "cancel_coalesce_master", args)
 
         return True
@@ -1909,22 +1916,9 @@ class VDI(object):
             util.SMlog("Exception in activate/attach")
             if self.tap_wanted():
                 util.fistpoint.activate_custom_fn(
-                        "blktap_activate_error_handling",
-                        lambda: time.sleep(30))
-                while True:
-                    try:
-                        self._remove_tag(vdi_uuid)
-                        break
-                    except xmlrpc.client.ProtocolError as e:
-                        # If there's a connection error, keep trying forever.
-                        if e.errcode == http.HTTPStatus.INTERNAL_SERVER_ERROR.value:
-                            continue
-                        else:
-                            util.SMlog('failed to remove tag: %s' % e)
-                            break
-                    except Exception as e:
-                        util.SMlog('failed to remove tag: %s' % e)
-                        break
+                    "blktap_activate_error_handling",
+                    lambda: time.sleep(30))
+                self._remove_tag(vdi_uuid)
             raise
         finally:
             vdi_ref = self._session.xenapi.VDI.get_by_uuid(vdi_uuid)
