@@ -38,6 +38,7 @@ class RAWVDI(VDI.VDI):
         self.uuid = vdi_uuid
         self.location = vdi_uuid
         self.managed = False
+        self.vdi_type = "phy"
         try:
             vdi_ref = self.sr.session.xenapi.VDI.get_by_uuid(vdi_uuid)
             self.managed = self.sr.session.xenapi.VDI.get_managed(vdi_ref)
