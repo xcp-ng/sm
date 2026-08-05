@@ -1,6 +1,10 @@
 import typing
 from typing import *
 
+# Manually importing `IO` for python 3.6 because it is not in `typing.__all__`
+# and so, not imported by the statement above.
+from typing import IO
+
 if not hasattr(typing, 'override'):
     def override(method): # type: ignore
         try:
