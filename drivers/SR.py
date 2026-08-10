@@ -36,7 +36,8 @@ from cowutil import (
     getVdiTypeFromImageFormat,
     ImageFormat,
     parseImageFormats,
-    STR_TO_IMAGE_FORMAT
+    STR_TO_IMAGE_FORMAT,
+    IMAGE_FORMAT_TO_STR,
 )
 
 from vditype import VdiType
@@ -565,7 +566,7 @@ class SR(object):
     def _resolve_vdi_type_from_image_format(self, image_format: ImageFormat) -> str:
         if image_format in self.supported_image_formats:
             return getVdiTypeFromImageFormat(image_format)
-        raise xs_errors.XenError('VDIType', opterr=f'Unsupported image format `{image_format}`')
+        raise xs_errors.XenError('VDIType', opterr=f'Unsupported image format `{IMAGE_FORMAT_TO_STR[image_format]}`')
 
     def _get_snap_vdi_type(self, vdi_type: str, size: int) -> str:
         if VdiType.isCowImage(vdi_type):
