@@ -22,12 +22,15 @@ sys.path[0] = '/opt/xensource/sm/'
 
 import base64
 import cleanup
+import flock
 import ipc
 import os
+import time
 import socket
 import XenAPI
 import XenAPIPlugin
 
+from datetime import datetime
 from json import JSONEncoder
 from functools import partial
 
@@ -66,6 +69,20 @@ DRBD_REACTOR_DEPS = [
     '/run/systemd/system/linstor-controller.service.d/reactor.conf',
     '/run/systemd/system/var-lib-linstor.service.d/reactor.conf'
 ]
+
+SYSTEMCTL_PROPERTIES = {
+    "ActiveState": "state",
+    "NextElapseUSecMonotonic": "triggers_in",
+    "LastTriggerUSecMonotonic": "triggered_at"
+}
+
+TIME_MULTIPLIERS = {
+    'h': 3600,
+    'min': 60,
+    's': 1,
+    'ms': 0.001,
+    'us': 1e-6
+}
 
 
 def update_linstor_port(port, open_ports):
@@ -1265,6 +1282,74 @@ def set_node_preferred_interface(session, args):
     return str(True)
 
 
+def _systemd_string_to_datetime(time_str):
+    matches = re.findall(r'([\d.]+)\s*(h|min|s|ms|us)', time_str)
+    if not matches:
+        return "N/A"
+
+    seconds_from_boot = sum(float(val) * TIME_MULTIPLIERS[unit] for val, unit in matches)
+    boot_time_epoch = time.time() - time.clock_gettime(time.CLOCK_MONOTONIC)
+    actual_ts = boot_time_epoch + seconds_from_boot
+    return datetime.fromtimestamp(actual_ts).strftime('%Y-%m-%d %H:%M:%S')
+
+
+def get_resync_timers(_session, _args):
+    cmd = ["/usr/bin/systemctl", "list-timers", "drbd-resync*", "--all", "--no-legend"]
+    (rc, stdout, stderr) = util.doexec(cmd)
+    if rc != 0:
+        util.SMlog(f"Failed to get a list of timers: `{stderr}`")
+        raise XenAPIPlugin.Failure('-1', [stderr, str(rc)])
+
+    timers = [t for t in stdout.strip().split() if ".timer" in t and "drbd-resync" in t]
+    timers_details = {}
+    for timer in timers:
+        timer_unesc = timer.replace("\\x2d", "-")
+        cmd = ["systemctl", "show", timer, f"--property={','.join(SYSTEMCTL_PROPERTIES)}"]
+        (rc, stdout, stderr) = util.doexec(cmd)
+        if rc != 0:
+            util.SMlog(f"Failed to get status of timer `{timer_unesc}`: `{stderr}`")
+            continue
+
+        timers_details[timer_unesc] = {
+            SYSTEMCTL_PROPERTIES[k]: _systemd_string_to_datetime(v) if "Monotonic" in k else v
+            for line in stdout.splitlines() if '=' in line
+            for k, v in [line.split('=', 1)]
+        }
+    return json.dumps(timers_details)
+
+
+def set_resync_timers(_session, args):
+    successful = {}
+    for prefix, action in args.items():
+        prefix_esc = prefix.replace("-", "\\x2d")
+        cmd = ["/usr/bin/systemctl", "--quiet"]
+        if action in ["enable", "disable"]:
+            cmd += ["--now"]
+        cmd += [action, f"drbd-resync@{prefix_esc}.timer"]
+        (rc, _stdout, stderr) = util.doexec(cmd)
+        if rc != 0:
+            util.SMlog(f"Failed to {action} timer drbd-resync@{prefix}.timer: `{stderr.strip()}`")
+            continue
+        successful[prefix] = action
+    return json.dumps(successful)
+
+
+def get_resync_results(_session, args):
+    results = {}
+    for prefix in args:
+        try:
+            with open(f"/run/drbd-resync/{prefix}.json", 'r') as file:
+                lock = flock.ReadLock(file.fileno())
+                lock.lock()
+                try:
+                    results[prefix] = file.read().strip()
+                finally:
+                    lock.unlock()
+        except Exception as e:
+            util.SMlog(f"Failed to read results for drbd-resync@{prefix}: `{e}`")
+    return json.dumps(results)
+
+
 if __name__ == '__main__':
     XenAPIPlugin.dispatch({
         'prepareSr': prepare_sr,
@@ -1326,5 +1411,9 @@ if __name__ == '__main__':
         'modifyNodeInterface': modify_node_interface,
         'listNodeInterfaces': list_node_interfaces,
         'getNodePreferredInterface': get_node_preferred_interface,
-        'setNodePreferredInterface': set_node_preferred_interface
+        'setNodePreferredInterface': set_node_preferred_interface,
+
+        'getResyncTimers': get_resync_timers,
+        'setResyncTimers': set_resync_timers,
+        'getResyncResults': get_resync_results
     })
