@@ -881,7 +881,7 @@ class Tapdisk(object):
 
         openers = get_all_volume_openers(volume_name, "0")
 
-        api_session = util.timeout(5, util.ApiSession, "SM-blktap2-abort_linstor_gc")
+        api_session = util.timeout(5, util.ApiSession, "SM-blktap2-abort-linstor-gc")
         try:
             srs = util.get_linstor_srs_uuid(api_session.session)
             pbd_ref = util.find_pbd_ref_from_dconf_value(

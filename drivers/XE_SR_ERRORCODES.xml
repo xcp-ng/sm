@@ -521,7 +521,7 @@
 
        <!-- Agent database query errors 150+ -->
         <code>
-                <name>ApiSession</name>
+                <name>APISession</name>
                 <description>Failed to initialize XMLRPC connection</description>
                 <value>150</value>
         </code>

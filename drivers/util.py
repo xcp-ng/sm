@@ -775,7 +775,7 @@ def getrootdevID():
 
 
 class ApiSession(contextlib.AbstractContextManager):
-    session=None
+    session = None
 
     def __init__(self, originator="SM"):
         self.originator = originator
@@ -790,7 +790,10 @@ class ApiSession(contextlib.AbstractContextManager):
         try:
             session.xenapi.login_with_password('root', '', '', self.originator)
         except Exception as exc:
-            raise xs_errors.XenError(f"ApiSession [{self.originator}] Unable to open local XAPI session") from exc
+            raise xs_errors.XenError(
+                "APISession",
+                opterr=f"[{self.originator}] Unable to open local XAPI session"
+            ) from exc
         SMlog("ApiSession [{}] login".format(self.originator), priority=LOG_DEBUG)
         return session
 

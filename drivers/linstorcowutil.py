@@ -678,7 +678,7 @@ class MultiLinstorCowUtil:
         return instance
 
     def _init_executor_thread(self):
-        api_session = util.ApiSession("SM-linstorvhdutil")
+        api_session = util.ApiSession("SM-linstor-multi-cow-util")
         try:
             linstor = LinstorVolumeManager(
                 self._uri,
