@@ -221,7 +221,7 @@ class LinstorCowUtil:
                             if e.errno == errno.ENODATA:
                                 time.sleep(2)
                                 continue
-                            if e.errno == errno.EROFS or e.errno == errno.EMEDIUMTYPE:
+                            if e.errno in (errno.EROFS, errno.EMEDIUMTYPE):
                                 openers = self._linstor.get_volume_openers(vdi_uuid)
                                 util.SMlog(f'Volume not attachable because used. Openers: {openers}')
                                 if cb_openers:
@@ -540,7 +540,7 @@ class LinstorCowUtil:
                 try:
                     return local_method(device_path, *args, **kwargs)
                 except util.CommandException as e:
-                    if e.code == errno.EROFS or e.code == errno.EMEDIUMTYPE:
+                    if e.code in (errno.EROFS, errno.EMEDIUMTYPE):
                         raise ErofsLinstorCallException(e)  # Break retry calls.
                     if e.code == errno.ENODATA:
                         raise NoDataLinstorCallException(e)
