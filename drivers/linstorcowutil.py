@@ -68,8 +68,13 @@ class ErofsLinstorCallException(LinstorCallException):
     pass
 
 
+class NoDataLinstorCallException(LinstorCallException):
+    pass
+
+
 class NoPathLinstorCallException(LinstorCallException):
     pass
+
 
 def log_successful_call(target_host, device_path, vdi_uuid, remote_method, response):
     util.SMlog('Successful access on {} for device {} ({}): `{}` => {}'.format(
@@ -539,6 +544,8 @@ class LinstorCowUtil:
                 except util.CommandException as e:
                     if e.code == errno.EROFS or e.code == errno.EMEDIUMTYPE:
                         raise ErofsLinstorCallException(e)  # Break retry calls.
+                    if e.code == errno.ENODATA:
+                        raise NoDataLinstorCallException(e)
                     if e.code == errno.ENOENT:
                         raise NoPathLinstorCallException(e)
                     raise e
