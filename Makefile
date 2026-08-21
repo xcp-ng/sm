@@ -31,7 +31,7 @@ SM_LIBS += cleanup
 SM_LIBS += lvutil
 SM_LIBS += lvmcache
 SM_LIBS += util
-SM_LIBS += verifyVHDsOnSR
+SM_LIBS += verifyVDIsOnSR
 SM_LIBS += scsiutil
 SM_LIBS += scsi_host_rescan
 SM_LIBS += cowutil
@@ -40,6 +40,7 @@ SM_LIBS += linstorcowutil
 SM_LIBS += linstorjournaler
 SM_LIBS += linstorvolumemanager
 SM_LIBS += lvmcowutil
+SM_LIBS += qcow2util
 SM_LIBS += cifutils
 SM_LIBS += xs_errors
 SM_LIBS += nfs
@@ -107,6 +108,7 @@ SM_PY_FILES = $(foreach LIB, $(SM_LIBS), drivers/$(LIB).py) $(foreach DRIVER, $(
 build:
 	make -C dcopy
 	make -C linstor
+	make -C qcow2
 
 .PHONY: precommit
 precommit: build
@@ -234,6 +236,7 @@ install: build
 	mkdir -p $(SM_STAGING)/etc/xapi.d/xapi-pre-shutdown/
 	install -m 755 scripts/stop_all_gc $(SM_STAGING)/etc/xapi.d/xapi-pre-shutdown/
 	$(MAKE) -C dcopy install DESTDIR=$(SM_STAGING)
+	$(MAKE) -C qcow2 install DESTDIR=$(SM_STAGING)
 	$(MAKE) -C linstor install DESTDIR=$(SM_STAGING)
 	$(MAKE) -C sm_typing install DESTDIR=$(SM_STAGING)
 	ln -sf $(SM_DEST)blktap2.py $(SM_STAGING)$(BIN_DEST)/blktap2

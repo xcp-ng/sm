@@ -2363,7 +2363,7 @@ class LinstorVDI(VDI.VDI):
 
     @override
     def _do_snapshot(self, sr_uuid, vdi_uuid, snapType,
-                     cloneOp=False, secondary=None, cbtlog=None) -> str:
+                     cloneOp=False, secondary=None, cbtlog=None, is_mirror_destination=False) -> str:
         # If cbt enabled, save file consistency state.
         if cbtlog is not None:
             if blktap2.VDI.tap_status(self.session, vdi_uuid):
