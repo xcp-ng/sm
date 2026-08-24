@@ -1534,6 +1534,10 @@ class LVMVDI(VDI.VDI):
                 util.logException("attach")
                 raise xs_errors.XenError('LVMProvisionAttach')
 
+        if self.cowutil.isCoalesceableOnRemote():
+            # We make the chain RW before it's used so it can be coalesced online
+            self._make_chain_rw()
+
         try:
             return self._attach()
         finally:
@@ -2258,6 +2262,33 @@ class LVMVDI(VDI.VDI):
             sr_utilisation = stats['physical_utilisation']
             self.session.xenapi.SR.set_physical_utilisation(self.sr.sr_ref,
                     str(sr_utilisation))
+
+    def _make_chain_rw(self):
+        """
+        In the case of QCOW2, we need the chain to be RW for the coalesce to be done by tapdisk.
+        Setting the chain to be RW early avoids having to stop the tapdisk so LVM can acknowledge the chain RW on the slave.
+        And while making the change to RW from the slave works without the refresh, it can cause LVM metadata corruption.
+        """
+        # TODO(XCPNG-3689): We could check if any VDI on the chain is RO before doing the call to master to change this
+        if self.sr.isMaster:
+            lvmcache = self.sr.lvmCache
+            for uuid, lvName in self.cowutil.getParentChain(self.lvname, LvmCowUtil.extractUuid, self.sr.vgname).items():
+                lvmcache.setReadonly(lvName, False)
+        else:
+            master = util.get_master_ref(self.session)
+            response = self.session.xenapi.host.call_plugin(
+                master,
+                self.sr.PLUGIN_ON_SLAVE,
+                "make_chain_rw",
+                {
+                    "vgName": self.sr.vgname,
+                    "lvName": self.lvname,
+                    "vdiType": self.vdi_type
+                }
+            )
+            util.SMlog(f"call-plugin returned: {response}")
+            if not response:
+                raise Exception(f"plugin {self.sr.PLUGIN_ON_SLAVE} failed")
 
     @override
     def update(self, sr_uuid, vdi_uuid) -> None:
