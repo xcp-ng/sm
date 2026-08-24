@@ -162,22 +162,6 @@ def refresh_lun_size_by_SCSIid(session, args):
         util.SMlog("on-slave.refresh_lun_size_by_SCSIid with %s failed" % args)
         return "False"
 
-def _make_chain_RW(cowutil, leaf_path, write: bool):
-    def set_RW(path):
-        try:
-            util.pread2(["lvchange", "-p", "rw", path])
-        except:
-            pass
-
-    # if path.startswith("/dev/"):
-    #     set_RW(leaf_path) # Not needed since it's a leaf
-
-    parent = cowutil.getParentNoCheck(leaf_path)
-    while parent:
-        if parent.startswith("/dev/"):
-            set_RW(parent)
-        parent = cowutil.getParentNoCheck(parent)
-
 def commit_tapdisk(session, args):
     path: str = args["path"]
     vdi_type = args["vdi_type"]
@@ -186,12 +170,9 @@ def commit_tapdisk(session, args):
     from cowutil import getCowUtil
     cowutil = getCowUtil(vdi_type)
     try:
-        if path.startswith("/dev/"):
-            # We need to make children RW or tapdisk will crash trying to do it
-            _make_chain_RW(cowutil, leaf_path, True)
         return str(cowutil.coalesceOnline(path))
     except:
-        util.logException("Couldn't coalesce online")
+        util.logException(f"Couldn't coalesce online: `{path}`")
         raise
 
 def commit_cancel(session, args):
@@ -249,6 +230,29 @@ def is_openers(session, args):
     openers_pid= util.get_openers_pid(path)
     return str(bool(openers_pid))
 
+def make_chain_rw(session, args):
+    from cowutil import getCowUtil
+    from lvmcowutil import LvmCowUtil
+    from lvutil import MASTER_LVM_CONF
+
+    if util.is_master(session):
+        os.environ['LVM_SYSTEM_DIR'] = MASTER_LVM_CONF
+
+    vgName = args["vgName"]
+    lvName = args["lvName"]
+    vdi_type = args["vdiType"]
+
+    cowutil = getCowUtil(vdi_type)
+    lvmcache = LVMCache(vgName)
+
+    for uuid, lvName in cowutil.getParentChain(lvName, LvmCowUtil.extractUuid, vgName).items():
+        try:
+            lvmcache.setReadonly(lvName, False)
+        except util.CommandException as e:
+            util.SMlog(f"on-slave:make_chain_rw: {e}")
+
+    return "True"
+
 if __name__ == "__main__":
     import XenAPIPlugin
     XenAPIPlugin.dispatch({
@@ -259,4 +263,5 @@ if __name__ == "__main__":
         "commit_tapdisk": commit_tapdisk,
         "commit_cancel": commit_cancel,
         "cancel_coalesce_master": cancel_coalesce_master,
+        "make_chain_rw": make_chain_rw,
         })
