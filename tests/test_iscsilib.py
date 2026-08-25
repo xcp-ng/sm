@@ -1,7 +1,7 @@
 import iscsilib
 import unittest.mock as mock
 import unittest
-
+import lock
 
 TEST_IQN = 'iqn.2003-01.com.bla:00.ecd28.mo121'
 
@@ -34,17 +34,30 @@ class Test_iscsilib(unittest.TestCase):
     @mock.patch('iscsilib.stop_daemon', mock.Mock())
     @mock.patch('iscsilib.exn_on_failure', mock.Mock())
     @mock.patch('util.doexec', mock.Mock())
+    @mock.patch('lock.flock.WriteLock')
+    @mock.patch('lock.Lock._mkdirs', mock.Mock())
     @mock.patch('os.path.exists')
     @mock.patch('shutil.rmtree')
-    def test_restart_daemon(self, rmtree, exists):
+    def test_restart_daemon(self, rmtree, exists, mock_write_lock):
         exists.return_value = True
+        saved_instances = lock.Lock.INSTANCES.copy()
+        saved_base_instances = lock.Lock.BASE_INSTANCES.copy()
 
-        iscsilib.restart_daemon()
+        def restore_lock_state():
+            lock.Lock.INSTANCES.clear()
+            lock.Lock.INSTANCES.update(saved_instances)
+            lock.Lock.BASE_INSTANCES.clear()
+            lock.Lock.BASE_INSTANCES.update(saved_base_instances)
 
+        self.addCleanup(restore_lock_state)
+        lock.Lock.INSTANCES.clear()
+        lock.Lock.BASE_INSTANCES.clear()
+        with mock.patch('builtins.open', mock.mock_open(), create=True) as mock_open:
+            mock_open.return_value.fileno.return_value = 0
+            iscsilib.restart_daemon()
         rmtree.assert_has_calls([mock.call('/var/lib/iscsi/nodes'),
                                  mock.call('/var/lib/iscsi/send_targets')])
-
-
+        
     @mock.patch('util.doexec', mock.Mock())
     @mock.patch('iscsilib.exn_on_failure')
     @mock.patch('iscsilib.tempfile', autospec=True)
