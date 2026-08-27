@@ -960,7 +960,13 @@ class LinstorVolumeManager(object):
         """
 
         volume_name = self.get_volume_name(volume_uuid)
-        return self._get_volumes_info()[volume_name]
+        try:
+            return self._get_volumes_info()[volume_name]
+        except KeyError:
+            raise LinstorVolumeManagerError(
+                f"Could not find info about volume `{volume_uuid}`, the resource definition has likely been deleted",
+                LinstorVolumeManagerError.ERR_VOLUME_NOT_EXISTS
+            )
 
     def get_device_path(self, volume_uuid):
         """
