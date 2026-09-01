@@ -1936,7 +1936,7 @@ class LinstorVolumeManager(object):
                     result
                 )
                 if errors:
-                    if len(errors) == 1 and errors[0].is_error(
+                    if errors[0].is_error(
                         linstor.consts.FAIL_STOR_POOL_CONFIGURATION_ERROR
                     ) and reg_volume_group_not_found.match(errors[0].message):
                         logger(
