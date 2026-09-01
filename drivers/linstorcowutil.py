@@ -475,7 +475,7 @@ class LinstorCowUtil:
             )
             bitmap_overhead = self._cowutil.calcOverheadBitmap(virtual_size)
             volume_size += meta_overhead + bitmap_overhead
-        else:
+        elif self._vdi_type != VdiType.RAW:
             raise Exception('Invalid image type: {}'.format(self._vdi_type))
 
         return LinstorVolumeManager.round_up_volume_size(volume_size)
