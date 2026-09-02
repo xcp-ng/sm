@@ -1481,6 +1481,18 @@ class LinstorSR(SR.SR):
                 # properly the base VDI below this line, so we must change the
                 # UUID of this bad VDI before.
                 self._linstor.mark_volume_for_deletion(vdi_uuid, force=True)
+        else:
+            not_exists_state = self._linstor.get_volume_not_exists_state(vdi_uuid)
+
+            if not_exists_state and not_exists_state != LinstorVolumeManager.STATE_EXISTS:
+                # At this point, some of the new volume properties were created,
+                # but volume creation was interrupted before the volume itself
+                # could be physically created.
+                # We mark this new volume for deletion so that the base VDI UUID
+                # can be restored back to its original value.
+                util.SMlog(f"VDI {vdi_uuid} was partially created, marking it for deletion")
+
+                self._linstor.mark_volume_for_deletion(vdi_uuid, force=True)
 
         # Rename!
         self._linstor.update_volume_uuid(base_uuid, vdi_uuid)
