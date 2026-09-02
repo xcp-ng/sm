@@ -244,7 +244,8 @@ class LinstorVolumeManagerError(Exception):
     ERR_VOLUME_NOT_EXISTS = 2,
     ERR_VOLUME_DESTROY = 3,
     ERR_GROUP_NOT_EXISTS = 4,
-    ERR_VOLUME_IN_USE = 5
+    ERR_VOLUME_IN_USE = 5,
+    ERR_VOLUME_PROPERTIES_NOT_EMPTY = 6
 
     def __init__(self, message, code=ERR_GENERIC):
         super(LinstorVolumeManagerError, self).__init__(message)
@@ -1072,7 +1073,8 @@ class LinstorVolumeManager(object):
             raise LinstorVolumeManagerError(
                 'Cannot update volume uuid {} to {}: '
                 .format(volume_uuid, new_volume_uuid) +
-                'this last one is not empty'
+                'this last one is not empty',
+                LinstorVolumeManagerError.ERR_VOLUME_PROPERTIES_NOT_EMPTY
             )
 
         try:
@@ -1156,9 +1158,23 @@ class LinstorVolumeManager(object):
         if volume_uuid.startswith(DELETED_PREFIX):
             return
 
-        self.update_volume_uuid(
-            volume_uuid, DELETED_PREFIX + volume_uuid, force=force
-        )
+        deleted_prefix_counter = 0
+        while True:
+            new_volume_uuid = '{}{}_{}'.format(
+                DELETED_PREFIX, deleted_prefix_counter, volume_uuid
+            )
+
+            try:
+                self.update_volume_uuid(
+                    volume_uuid, new_volume_uuid, force=force
+                )
+
+                break
+            except LinstorVolumeManagerError as e:
+                if e.code != LinstorVolumeManagerError.ERR_VOLUME_PROPERTIES_NOT_EMPTY:
+                    raise
+
+                deleted_prefix_counter += 1
 
     def update_volume_name(self, volume_uuid, volume_name):
         """
