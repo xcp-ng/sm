@@ -1067,9 +1067,10 @@ class LinstorVolumeManager(object):
                 .format(volume_uuid)
             )
 
-        # 1. Copy in temp variables metadata and volume_name.
+        # 1. Copy in temp variables metadata, volume_name and not_exists.
         metadata = volume_properties.get(self.PROP_METADATA)
         volume_name = volume_properties.get(self.PROP_VOLUME_NAME)
+        not_exists = volume_properties.get(self.PROP_NOT_EXISTS)
 
         # 2. Switch to new volume namespace.
         volume_properties.namespace = self._build_volume_namespace(
@@ -1100,7 +1101,7 @@ class LinstorVolumeManager(object):
             volume_properties[self.PROP_VOLUME_NAME] = volume_name
 
             # 5. Ok!
-            volume_properties[self.PROP_NOT_EXISTS] = self.STATE_EXISTS
+            volume_properties[self.PROP_NOT_EXISTS] = not_exists
         except Exception as err:
             try:
                 # Clear the new volume properties in case of failure.
@@ -1145,7 +1146,8 @@ class LinstorVolumeManager(object):
             # we are processing a deleted resource.
             assert force
 
-        self._volumes.add(new_volume_uuid)
+        if not_exists == self.STATE_EXISTS:
+            self._volumes.add(new_volume_uuid)
 
         self._logger(
             'UUID update succeeded of {} to {}! (properties={})'
