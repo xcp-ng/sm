@@ -14,7 +14,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-from sm_typing import Any, Callable, Dict, Final, List, Optional, Tuple, cast, override
+from sm_typing import Any, Callable, Dict, Final, Optional, Tuple, cast, override
 from typing import BinaryIO
 
 import errno
@@ -56,84 +56,12 @@ class QCowUtil(CowUtil):
 
     QCOW2_MAGIC = 0x514649FB  # b"QFI\xfb": Magic number for QCOW2 files
     QCOW2_HEADER_SIZE = 104  # In fact the last information we need is at offset 40-47
-    QCOW2_L2_SIZE = QCOW2_DEFAULT_CLUSTER_SIZE
     QCOW2_BACKING_FILE_OFFSET = 8
 
-    ALLOCATED_ENTRY_BIT = (
-        0x8000_0000_0000_0000  # Bit 63 is the allocated bit for standard cluster
-    )
-    CLUSTER_TYPE_BIT = 0x4000_0000_0000_0000  # 0 for standard, 1 for compressed cluster
-    L2_OFFSET_MASK = 0x00FF_FFFF_FFFF_FF00  # Bits 9-55 are offset of L2 table.
-    CLUSTER_DESCRIPTION_MASK = 0x3FFF_FFFF_FFFF_FFFF  # Bit 0-61 is cluster description
-    STANDARD_CLUSTER_OFFSET_MASK = (
-        0x00FF_FFFF_FFFF_FF00  # Bits 9-55 are offset of standard cluster
-    )
-
-    def __init__(self):
-        self.qcow_read = False
-
-    def _read_qcow2(self, path: str, read_clusters: bool = False):
-        phys_disk_size = self.getSizePhys(path)
+    def _read_qcow2(self, path: str):
         with open(path, "rb") as qcow2_file:
             self.filename = path  # Keep the filename if clean is called
             self.header = self._read_qcow2_header(qcow2_file)
-            if read_clusters:
-                self.l1 = self._get_l1_entries(qcow2_file)
-                # The l1_to_l2 allows to get L2 entries for a given L1. If L1 entry
-                # is not allocated we store an empty list.
-                self.l1_to_l2: Dict[int, List[int]] = {}
-
-                for l1_entry in self.l1:
-                    l2_offset = l1_entry & self.L2_OFFSET_MASK
-                    if l2_offset == 0:
-                        self.l1_to_l2[l1_entry] = []
-                    elif l2_offset > phys_disk_size: #TODO: This sometime happen for a correct VDI (while coalescing online?)
-                        raise xs_errors.XenError("VDISize", "L2 Offset is bigger than physical disk {}".format(path))
-                    else:
-                        self.l1_to_l2[l1_entry] = self._get_l2_entries(
-                            qcow2_file, l2_offset
-                        )
-        self.qcow_read = True
-
-    def _get_l1_entries(self, file: BinaryIO) -> List[int]:
-        """Returns the list of all L1 entries.
-
-        Args:
-            file: The qcow2 file object.
-
-        Returns:
-            list: List of all L1 entries
-        """
-        l1_table_offset = self.header["l1_table_offset"]
-        file.seek(l1_table_offset)
-
-        l1_table_size = self.header["l1_size"] * 8  # Each L1 entry is 8 bytes
-        l1_table = file.read(l1_table_size)
-
-        return [
-            struct.unpack(">Q", l1_table[i : i + 8])[0]
-            for i in range(0, len(l1_table), 8)
-        ]
-
-    @staticmethod
-    def _get_l2_entries(file: BinaryIO, l2_offset: int) -> List[int]:
-        """Returns the list of all L2 entries at a given L2 offset.
-
-        Args:
-            file: The qcow2 file.
-            l2_offset: the L2 offset where to look for entries
-
-        Returns:
-            list: List of all L2 entries
-        """
-        # The size of L2 is 65536 bytes and each entry is 8 bytes.
-        file.seek(l2_offset)
-        l2_table = file.read(QCowUtil.QCOW2_L2_SIZE)
-
-        return [
-            struct.unpack(">Q", l2_table[i : i + 8])[0]
-            for i in range(0, len(l2_table), 8)
-        ]
 
     @staticmethod
     def _read_qcow2_backingfile(file: BinaryIO, backing_file_offset: int , backing_file_size: int) -> str:
@@ -210,78 +138,6 @@ class QCowUtil(CowUtil):
         }
 
     @staticmethod
-    def _is_l1_allocated(entry: int) -> bool:
-        """Checks if the given L1 entry is allocated.
-
-        If the offset is 0 then the L2 table and all clusters described
-        by this L2 table are unallocated.
-
-        Args:
-            entry: L1 entry
-
-        Returns:
-            bool: True if the L1 entry is allocated (ie has a valid offset).
-                  False otherwise.
-        """
-        return (entry & QCowUtil.L2_OFFSET_MASK) != 0
-
-    @staticmethod
-    def _is_l2_allocated(entry: int) -> bool:
-        """Checks if a given entry is allocated.
-
-        Currently we only support standard clusters. And for standard clusters
-        the bit 63 is set to 1 for allocated ones or offset is not 0.
-
-        Args:
-            entry: L2 entry
-
-        Returns:
-            bool: Returns True if the L2 entry is allocated, False otherwise
-
-        Raises:
-            raise an exception if the cluster is not a standard one.
-        """
-        assert entry & QCowUtil.CLUSTER_TYPE_BIT == 0
-        return (entry & QCowUtil.ALLOCATED_ENTRY_BIT != 0) or (
-            entry & QCowUtil.STANDARD_CLUSTER_OFFSET_MASK != 0
-        )
-
-    @staticmethod
-    def _get_allocated_clusters(l2_entries: List[int]) -> List[int]:
-        """Get all allocated clusters in a given list of L2 entries.
-
-        Args:
-            l2_entries: A list of L2 entries.
-
-        Returns:
-            A list of all allocated entries
-        """
-        return [entry for entry in l2_entries if QCowUtil._is_l2_allocated(entry)]
-
-    @staticmethod
-    def _get_cluster_to_byte(clusters: int, cluster_bits: int) -> int:
-        # (1 << cluster_bits) give cluster size in byte
-        return clusters * (1 << cluster_bits)
-
-    def _get_number_of_allocated_clusters(self) -> int:
-        """Get the number of allocated clusters.
-
-        Args:
-            self: A QcowInfo object.
-
-        Returns:
-            An integer that is the list of allocated clusters.
-        """
-        assert(self.qcow_read)
-
-        allocated_clusters = 0
-
-        for l2_entries in self.l1_to_l2.values():
-            allocated_clusters += len(self._get_allocated_clusters(l2_entries))
-
-        return allocated_clusters
-
-    @staticmethod
     def _move_backing_file(
         f: BinaryIO, old_offset: int, new_offset: int, data_size: int
     ) -> None:
@@ -323,8 +179,6 @@ class QCowUtil(CowUtil):
             If data offset is 0 something weird happens.
             The qcow2 file in self.filename can be modified.
         """
-        assert self.qcow_read
-
         header_length = 72  # This is the default value for version 2 images
 
         custom_header_type = 0x76617465  # vate: it is easy to recognize with hexdump -C
@@ -391,39 +245,6 @@ class QCowUtil(CowUtil):
                 qcow2_file.seek(ext_len, 1)
 
             return custom_data_offset
-
-    def _set_l1_zero(self):
-        zero = int(0).to_bytes(1, "little")
-        nb_of_entries_per_cluster  = QCOW2_DEFAULT_CLUSTER_SIZE/8
-        return list(zero * int(nb_of_entries_per_cluster/8))
-
-    def _set_l2_zero(self, b, i):
-        return b & ~(1 << i)
-
-    def _set_l2_one(self, b, i):
-        return b | (1 << i)
-
-    def _create_bitmap(self) -> bytes:
-        idx: int = 0
-        bitmap = list()
-        b = 0
-        for l1_entry in self.l1:
-            if not self._is_l1_allocated(l1_entry):
-                bitmap.extend(self._set_l1_zero())
-                continue
-
-            l2_table = self.l1_to_l2[l1_entry] #L2 is cluster_size/8 entries of cluster_size page
-            for l2_entry in l2_table:
-                if self._is_l2_allocated(l2_entry):
-                    b = self._set_l2_one(b, idx)
-                else:
-                    b = self._set_l2_zero(b, idx)
-                idx += 1
-                if idx == 8:
-                    bitmap.append(b)
-                    b = 0
-                    idx = 0
-        return struct.pack("B"*len(bitmap), *bitmap)
 
     # ----
     # Implementation of CowUtil
@@ -687,7 +508,7 @@ class QCowUtil(CowUtil):
         Returns:
             nothing.
         """
-        self._read_qcow2(path, read_clusters=True)
+        self._read_qcow2(path)
         # We need to reset L1 entries and then just truncate the file right
         # after L1 entries
         with open(self.filename, "r+b") as file:
