@@ -37,6 +37,9 @@ import uuid
 # Persistent prefix to add to RAW persistent volumes.
 PERSISTENT_PREFIX = 'xcp-persistent-'
 
+# Prefix added to the UUID of a LINSTOR volume that will be deleted by the GC.
+DELETED_PREFIX = 'DELETED_'
+
 # Contains the data of the "/var/lib/linstor" directory.
 DATABASE_VOLUME_NAME = PERSISTENT_PREFIX + 'database'
 DATABASE_SIZE = 1 << 30  # 1GB.
@@ -1141,6 +1144,20 @@ class LinstorVolumeManager(object):
                 volume_uuid, new_volume_uuid,
                 self._get_filtered_properties(volume_properties)
             )
+        )
+
+    def mark_volume_for_deletion(self, volume_uuid, force=False):
+        """
+        Add a prefix to the volume UUID to mark it for deletion by the GC.
+        :param str volume_uuid: The volume to mark.
+        :param bool force: Whether to force-update the volume UUID. See the
+        documentation of `update_volume_uuid` for more details.
+        """
+        if volume_uuid.startswith(DELETED_PREFIX):
+            return
+
+        self.update_volume_uuid(
+            volume_uuid, DELETED_PREFIX + volume_uuid, force=force
         )
 
     def update_volume_name(self, volume_uuid, volume_name):
@@ -2599,10 +2616,7 @@ class LinstorVolumeManager(object):
                 # This prefix is mandatory if it exists a snap transaction to
                 # rollback because the original VDI UUID can try to be renamed
                 # with the UUID we are trying to delete...
-                if not volume_uuid.startswith('DELETED_'):
-                    self.update_volume_uuid(
-                        volume_uuid, 'DELETED_' + volume_uuid, force=True
-                    )
+                self.mark_volume_for_deletion(volume_uuid, force=True)
 
         for dest_uuid, src_uuid in updating_uuid_volumes.items():
             dest_namespace = self._build_volume_namespace(dest_uuid)

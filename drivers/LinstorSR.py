@@ -27,6 +27,7 @@ try:
     from linstorvolumemanager import LinstorVolumeManagerError
     from linstorvolumemanager import DATABASE_VOLUME_NAME
     from linstorvolumemanager import PERSISTENT_PREFIX
+    from linstorvolumemanager import DELETED_PREFIX
 
     LINSTOR_AVAILABLE = True
 except ImportError:
@@ -1114,7 +1115,7 @@ class LinstorSR(SR.SR):
                 if not introduce:
                     continue
 
-                if vdi_uuid.startswith('DELETED_'):
+                if vdi_uuid.startswith(DELETED_PREFIX):
                     continue
 
                 volume_metadata = volumes_metadata.get(vdi_uuid)
@@ -1479,9 +1480,7 @@ class LinstorSR(SR.SR):
                 # volume info remains... The problem is we can't rename
                 # properly the base VDI below this line, so we must change the
                 # UUID of this bad VDI before.
-                self._linstor.update_volume_uuid(
-                    vdi_uuid, 'DELETED_' + vdi_uuid, force=True
-                )
+                self._linstor.mark_volume_for_deletion(vdi_uuid, force=True)
 
         # Rename!
         self._linstor.update_volume_uuid(base_uuid, vdi_uuid)
