@@ -19,6 +19,7 @@ from sm_typing import (
     Any,
     Dict,
     List,
+    Optional,
     cast,
     override,
 )
@@ -1347,6 +1348,19 @@ class LinstorVolumeManager(object):
         for key, value in metadata.items():
             current_metadata[key] = value
         volume_properties[self.PROP_METADATA] = json.dumps(current_metadata)
+
+    def get_volume_not_exists_state(self, volume_uuid: str) -> Optional[str]:
+        """
+        Get the "not-exists" state of a volume.
+        :param volume_uuid: The target volume.
+        :return: The "not-exists" state.
+        """
+
+        # We do not ensure that the volume exists since it might not
+        # physically exist (for example, the volume creation failed), but it
+        # might still have had its "not-exists" property set.
+        volume_properties = self._get_volume_properties(volume_uuid)
+        return volume_properties.get(self.PROP_NOT_EXISTS)
 
     def shallow_clone_volume(self, volume_uuid, clone_uuid, persistent=True):
         """
