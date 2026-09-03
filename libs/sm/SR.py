@@ -596,12 +596,13 @@ class ScanRecord:
             vdi._db_introduce()
 
     def synchronise_gone(self):
-        """Delete XenAPI record for old disks"""
+        """Mark XenAPI records missing for old disks"""
         for location in self.gone:
             vdi = self.get_xenapi_vdi(location)
-            util.SMlog("Forgetting VDI with location=%s uuid=%s" % (util.to_plain_string(vdi['location']), vdi['uuid']))
+            util.SMlog("Marking VDI as missing: location=%s uuid=%s" %
+                       (util.to_plain_string(vdi['location']), vdi['uuid']))
             try:
-                self.sr.forget_vdi(vdi['uuid'])
+                self.sr.session.xenapi.VDI.set_missing(self.sr.session.xenapi.VDI.get_by_uuid(vdi['uuid']), True)
             except XenAPI.Failure as e:
                 if util.isInvalidVDI(e):
                     util.SMlog("VDI %s not found, ignoring exception" %
@@ -617,9 +618,31 @@ class ScanRecord:
             util.SMlog("Updating VDI with location=%s uuid=%s" % (vdi.location, vdi.uuid))
             vdi._db_update()
 
+    def _clear_missing_vdi(self):
+        """Clear missing flag for VDIs present on disk again"""
+        for location in self.all_xenapi_locations():
+            try:
+                self.get_sm_vdi(location)
+            except KeyError:
+                continue
+            vdi = self.get_xenapi_vdi(location)
+            if not vdi.get('missing'):
+                continue
+            util.SMlog("Clearing missing flag: location=%s uuid=%s" %
+                       (util.to_plain_string(location), vdi['uuid']))
+            try:
+                self.sr.session.xenapi.VDI.set_missing(self.sr.session.xenapi.VDI.get_by_uuid(vdi['uuid']), False)
+            except XenAPI.Failure as e:
+                if util.isInvalidVDI(e):
+                    util.SMlog("VDI %s not found, ignoring exception" %
+                               vdi['uuid'])
+                else:
+                    raise
+
     def synchronise(self):
         """Perform the default SM -> xenapi synchronisation; ought to be good enough
         for most plugins."""
         self.synchronise_new()
         self.synchronise_gone()
         self.synchronise_existing()
+        self._clear_missing_vdi()

@@ -86,3 +86,55 @@ class TestSR(unittest.TestCase):
                       mock_log.call_args[0][0])
         mock_session.xenapi.message.create.assert_called_once_with(
             "POST_ATTACH_SCAN_FAILED", 2, 'SR', 'dummy uuid', mock.ANY)
+
+    def test_synchronise_gone_marks_missing(self):
+        sr = mock.MagicMock()
+        session = sr.session
+        vdi_ref = 'OpaqueRef:vdi'
+        session.xenapi.VDI.get_by_uuid.return_value = vdi_ref
+
+        record = mock.Mock()
+        record.sr = sr
+        record.gone = {'gone-location'}
+        record.get_xenapi_vdi.return_value = {
+            'location': 'gone-location',
+            'uuid': 'vdi-uuid',
+        }
+
+        SR.ScanRecord.synchronise_gone(record)
+
+        session.xenapi.VDI.set_missing.assert_called_once_with(vdi_ref, True)
+        sr.forget_vdi.assert_not_called()
+
+    def test_clear_missing_vdi_when_present(self):
+        sr = mock.MagicMock()
+        session = sr.session
+        vdi_ref = 'OpaqueRef:vdi'
+        session.xenapi.VDI.get_by_uuid.return_value = vdi_ref
+
+        record = mock.Mock()
+        record.sr = sr
+        record.all_xenapi_locations.return_value = {'present-location'}
+        record.get_sm_vdi.return_value = mock.Mock()
+        record.get_xenapi_vdi.return_value = {
+            'location': 'present-location',
+            'uuid': 'vdi-uuid',
+            'missing': True,
+        }
+
+        SR.ScanRecord._clear_missing_vdi(record)
+
+        session.xenapi.VDI.set_missing.assert_called_once_with(vdi_ref, False)
+
+    def test_clear_missing_vdi_skips_gone(self):
+        sr = mock.MagicMock()
+        session = sr.session
+
+        record = mock.Mock()
+        record.sr = sr
+        record.all_xenapi_locations.return_value = {'gone-location'}
+        record.get_sm_vdi.side_effect = KeyError('gone-location')
+
+        SR.ScanRecord._clear_missing_vdi(record)
+
+        session.xenapi.VDI.set_missing.assert_not_called()
