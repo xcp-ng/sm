@@ -606,6 +606,10 @@ class VDI(object):
         self.sr.xapi.removeFromConfigVDI(self, key)
         Util.log("Removed %s from %s" % (key, self))
 
+    def ensurePaused(self):
+        if not self.getConfig(self.DB_VDI_PAUSED) == "true":
+            self.pause(failfast=True)
+
     def ensureUnpaused(self):
         if self.getConfig(self.DB_VDI_PAUSED) == "true":
             Util.log("Unpausing VDI %s" % self)
@@ -3509,6 +3513,7 @@ class LVMSR(SR):
             parent._setHidden(True)
         if not parent.lvReadonly:
             self.lvmCache.setReadonly(parent.fileName, True)
+        child.ensurePaused()
         self._updateSlavesOnUndoLeafCoalesce(parent, child)
         util.fistpoint.activate("LVHDRT_coaleaf_undo_end", self.uuid)
         Util.log("*** leaf-coalesce undo successful")
