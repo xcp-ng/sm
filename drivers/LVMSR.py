@@ -1864,8 +1864,12 @@ class LVMVDI(VDI.VDI):
             util.fistpoint.activate("LVHDRT_clone_vdi_after_parent_hidden", self.sr.uuid)
 
             # set the base copy to ReadOnly
-            self.sr.lvmCache.setReadonly(self.lvname, True)
-            util.fistpoint.activate("LVHDRT_clone_vdi_after_parent_ro", self.sr.uuid)
+            if not self.cowutil.isCoalesceableOnRemote():
+                # For QCOW2, the whole chain need to be
+                # writable for tapdisk to do the coalesce.
+                # In this case, we don't mark the base copy RO.
+                self.sr.lvmCache.setReadonly(self.lvname, True)
+                util.fistpoint.activate("LVHDRT_clone_vdi_after_parent_ro", self.sr.uuid)
 
             if hostRefs:
                 self.sr._updateSlavesOnClone(hostRefs, origOldLV,
