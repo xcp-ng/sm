@@ -818,6 +818,11 @@ class LinstorSR(SR.SR):
         return self._is_master
 
     @override
+    def check_sr(self, sr_uuid) -> None:
+        self.database_backup("auto", delay=3600)
+
+
+    @override
     @_locked_load
     def vdi(self, uuid) -> VDI.VDI:
         return LinstorVDI(self, uuid)
@@ -1570,6 +1575,11 @@ class LinstorSR(SR.SR):
         util.SMlog('Kicking GC')
         cleanup.start_gc_service(self.uuid)
 
+    def database_backup(self, name="", *, delay=0):
+        if not self._linstor:
+            self._reconnect()
+        self._linstor.database_backup(name, delay=delay)
+
 # ==============================================================================
 # LinstorSr VDI
 # ==============================================================================
@@ -1753,6 +1763,8 @@ class LinstorVDI(VDI.VDI):
         self.ref = self._db_introduce()
         self.sr._update_stats(self.size)
 
+        self.sr.database_backup("create")
+
         return VDI.VDI.get_params(self)
 
     @override
@@ -1800,7 +1812,8 @@ class LinstorVDI(VDI.VDI):
         # TODO: Check size after delete.
         self.sr._update_stats(-self.size)
         self.sr._kick_gc()
-        return super(LinstorVDI, self).delete(sr_uuid, vdi_uuid, data_only)
+        super(LinstorVDI, self).delete(sr_uuid, vdi_uuid, data_only)
+        self.sr.database_backup("delete")
 
     @override
     def attach(self, sr_uuid, vdi_uuid) -> str:
@@ -2382,6 +2395,7 @@ class LinstorVDI(VDI.VDI):
         finally:
             self.disable_leaf_on_secondary(vdi_uuid, secondary=secondary)
             blktap2.VDI.tap_unpause(self.session, sr_uuid, vdi_uuid, secondary)
+            self.sr.database_backup("snapshot")
 
     def _snapshot(self, snap_type, cbtlog=None, cbt_consistency=None):
         util.SMlog(
