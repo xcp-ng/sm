@@ -438,10 +438,15 @@ class TapCtl(object):
             try:
                 cls._pread(args)
             except TapCtl.CommandFailure as e:
+                error_code = e.get_error_code()
+                if error_code == errno.ENODATA:
+                    raise RetryLoop.TransientFailure(e)
+                if error_code not in (errno.EROFS, errno.EMEDIUMTYPE):
+                    raise
                 match = TAP_CTL_ERROR_PATTERN.search(e.info.get("errmsg", ""))
                 if match and match.group("reason"):
                     drbd_path = match.group("reason")
-                if e.get_error_code() in (errno.EROFS, errno.EMEDIUMTYPE) and Tapdisk.abort_linstor_gc(drbd_path):
+                if Tapdisk.abort_linstor_gc(drbd_path):
                     raise RetryLoop.TransientFailure(e)
                 raise
 
@@ -933,7 +938,7 @@ class Tapdisk(object):
                             if err in (errno.EROFS, errno.EMEDIUMTYPE) and cls.abort_linstor_gc(drbd_path):
                                 continue
 
-                            if err in (errno.EIO, errno.EAGAIN, errno.EROFS, errno.EMEDIUMTYPE) and retry_open < 1:
+                            if err in (errno.EIO, errno.EAGAIN, errno.EROFS, errno.EMEDIUMTYPE, errno.ENODATA) and retry_open < 1:
                                 retry_open += 1
                                 time.sleep(1)
                                 continue
