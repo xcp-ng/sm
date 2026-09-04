@@ -12,4 +12,5 @@ VG_PREFIX: Final = "VG_XenStorage-"
 # on the master.
 NS_PREFIX_LVM: Final = "lvm-"
 
+# Delay in seconds between two LINSTOR DB backups when launched by the check_sr helper.
 LINSTOR_AUTO_BACKUP_DELAY = 3600

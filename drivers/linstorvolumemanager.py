@@ -3049,7 +3049,7 @@ class LinstorVolumeManager(object):
                 except Exception:
                     pass
 
-            if mount == cls._is_mounted(DATABASE_PATH):
+            if mount == cls.is_controller():
                 force_exec(lambda: cls._move_files(
                     DATABASE_PATH, backup_path
                 ))
@@ -3057,7 +3057,7 @@ class LinstorVolumeManager(object):
                     volume_path, DATABASE_PATH, not mount
                 ))
 
-            if mount != cls._is_mounted(DATABASE_PATH):
+            if mount != cls.is_controller():
                 force_exec(lambda: cls._move_files(
                     backup_path, DATABASE_PATH
                 ))
