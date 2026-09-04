@@ -85,7 +85,10 @@ class TestSR(unittest.TestCase):
         self.xapi_mock.isPluggedHere.return_value = True
         self.xapi_mock.isMaster.return_value = True
         self.mock_xapi_session = mock.MagicMock(name="MockSession")
-        self.xapi_mock.getSession.return_value = self.mock_xapi_session
+
+        util_api_session_patcher = mock.patch('cleanup.util.ApiSession._login')
+        self.mock_util_api_session_patcher = util_api_session_patcher.start()
+        self.mock_util_api_session_patcher.return_value = self.mock_xapi_session
 
         self.addCleanup(mock.patch.stopall)
 

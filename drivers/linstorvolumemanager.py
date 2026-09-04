@@ -101,28 +101,27 @@ def get_all_volume_openers(resource_name, volume) -> LinstorVolumeOpeners:
     volume = str(volume)
     openers = {}
 
-    session = util.get_localAPI_session()
+    with util.ApiSession("SM-get-linstor-volume-openers") as session:
+        hosts = session.xenapi.host.get_all_records()
+        for host_ref, host_record in hosts.items():
+            node_name = host_record['hostname']
+            try:
+                if not session.xenapi.host_metrics.get_record(
+                    host_record['metrics']
+                )['live']:
+                    # Ensure we call plugin on online hosts only.
+                    continue
 
-    hosts = session.xenapi.host.get_all_records()
-    for host_ref, host_record in hosts.items():
-        node_name = host_record['hostname']
-        try:
-            if not session.xenapi.host_metrics.get_record(
-                host_record['metrics']
-            )['live']:
-                # Ensure we call plugin on online hosts only.
-                continue
-
-            openers[node_name] = json.loads(
-                session.xenapi.host.call_plugin(host_ref, PLUGIN, PLUGIN_CMD, {
-                    'resourceName': resource_name,
-                    'volume': volume
-                })
-            )
-        except Exception as e:
-            util.SMlog('Failed to get openers of `{}` on `{}`: {}'.format(
-                resource_name, node_name, e
-            ))
+                openers[node_name] = json.loads(
+                    session.xenapi.host.call_plugin(host_ref, PLUGIN, PLUGIN_CMD, {
+                        'resourceName': resource_name,
+                        'volume': volume
+                    })
+                )
+            except Exception as e:
+                util.SMlog('Failed to get openers of `{}` on `{}`: {}'.format(
+                    resource_name, node_name, e
+                ))
 
     return openers
 
@@ -191,7 +190,7 @@ def get_controller_node_name():
         if res:
             return res.groups()[0]
 
-    session = util.timeout(5, util.get_localAPI_session)
+    session = util.timeout(5, util.ApiSession, "SM-get-linstor-controller-node-name").session
 
     for host_ref, host_record in session.xenapi.host.get_all_records().items():
         node_name = host_record['hostname']
@@ -214,7 +213,7 @@ def get_controller_node_name():
 def demote_drbd_resource(node_name, resource_name):
     PLUGIN_CMD = 'demoteDrbdResource'
 
-    session = util.timeout(5, util.get_localAPI_session)
+    session = util.timeout(5, util.ApiSession, "SM-demote-drbd-resource").session
 
     for host_ref, host_record in session.xenapi.host.get_all_records().items():
         if host_record['hostname'] != node_name:
@@ -1417,7 +1416,7 @@ class LinstorVolumeManager(object):
             # It needs to be done locally by each host so we go through the linstor-manager plugin.
             # If we don't do this sometimes, the destroy will fail when trying to destroy the resource groups with:
             # "linstor-manager:destroy error: Failed to destroy SP `xcp-sr-linstor_group_thin_device` on node `r620-s2`: The specified storage pool 'xcp-sr-linstor_group_thin_device' on node 'r620-s2' can not be deleted as volumes / snapshot-volumes are still using it."
-            session = util.timeout(5, util.get_localAPI_session)
+            session = util.timeout(5, util.ApiSession, "SM-linstor-destroy").session
             for host_ref in session.xenapi.host.get_all():
                 try:
                     response = session.xenapi.host.call_plugin(

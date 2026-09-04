@@ -881,17 +881,18 @@ class Tapdisk(object):
 
         openers = get_all_volume_openers(volume_name, "0")
 
-        session = util.timeout(5, util.get_localAPI_session)
+        api_session = util.timeout(5, util.ApiSession, "SM-blktap2-abort-linstor-gc")
         try:
-            srs = util.get_linstor_srs_uuid(session)
+            srs = util.get_linstor_srs_uuid(api_session.session)
             pbd_ref = util.find_pbd_ref_from_dconf_value(
-                session, srs, "group-name", group_name, LinstorVolumeManager.build_group_name
+                api_session.session, srs, "group-name", group_name,
+                LinstorVolumeManager.build_group_name,
             )
             if pbd_ref:
-                pbd_rec = session.xenapi.PBD.get_record(pbd_ref)
+                pbd_rec = api_session.session.xenapi.PBD.get_record(pbd_ref)
 
                 sr_ref = pbd_rec["SR"]
-                sr_uuid = session.xenapi.SR.get_uuid(sr_ref)
+                sr_uuid = api_session.session.xenapi.SR.get_uuid(sr_ref)
 
                 import cleanup # pylint: disable=C0415
                 if cleanup.LinstorSR.abort_gc_from_openers_sr(sr_uuid, openers):
@@ -901,7 +902,7 @@ class Tapdisk(object):
 
             util.SMlog(f"Unable to run tapdisk, openers of DRBD resource `{drbd_path}`: {openers}")
         finally:
-            session.xenapi.session.logout()
+            api_session.logout()
 
         return False
 
@@ -1152,14 +1153,9 @@ class VDI(object):
 
     @classmethod
     def from_cli(cls, uuid):
-        session = XenAPI.xapi_local()
-        session.xenapi.login_with_password('root', '', '', 'SM')
-
-        target = sm.VDI.from_uuid(session, uuid)
-        driver_info = target.sr.srcmd.driver_info
-
-        session.xenapi.session.logout()
-
+        with util.ApiSession("SM-blktap2") as session:
+            target = sm.VDI.from_uuid(session, uuid)
+            driver_info = target.sr.srcmd.driver_info
         return cls(uuid, target, driver_info)
 
     @staticmethod
