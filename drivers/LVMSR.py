@@ -17,8 +17,10 @@
 #
 # LVMSR: VHD and QCOW2 on LVM storage repository
 #
+import contextlib
+from contextlib import contextmanager
 
-from sm_typing import Dict, List, override
+from sm_typing import Dict, List, override, Optional, Tuple, Union, Collection, Any
 
 import SR
 from SR import deviceCheck
@@ -37,10 +39,11 @@ import xs_errors
 import cleanup
 import blktap2
 from journaler import Journaler
+from jutils import BaseLogEntry
 from refcounter import RefCounter
 from ipc import IPCFlag
 from constants import NS_PREFIX_LVM, VG_LOCATION, VG_PREFIX, CBT_BLOCK_SIZE
-from cowutil import CowUtil, getCowUtil, getImageStringFromVdiType, getVdiTypeFromImageFormat
+from cowutil import CowUtil, getCowUtil, getImageStringFromVdiType
 from lvmcowutil import LV_PREFIX, LvmCowUtil
 from lvmanager import LVActivator
 from vditype import VdiType
@@ -51,7 +54,6 @@ from srmetadata import ALLOCATION_TAG, NAME_LABEL_TAG, NAME_DESCRIPTION_TAG, \
     READ_ONLY_TAG, MANAGED_TAG, SNAPSHOT_TIME_TAG, METADATA_OF_POOL_TAG, \
     LVMMetadataHandler, METADATA_OBJECT_TYPE_VDI, \
     METADATA_OBJECT_TYPE_SR, METADATA_UPDATE_OBJECT_TYPE_TAG
-from metadata import retrieveXMLfromFile, _parseXML
 from xmlrpc.client import DateTime
 import glob
 from constants import CBTLOG_TAG
@@ -63,7 +65,7 @@ CAPABILITIES = ["SR_PROBE", "SR_UPDATE", "SR_TRIM",
         "VDI_CREATE", "VDI_DELETE", "VDI_ATTACH", "VDI_DETACH", "VDI_MIRROR",
         "VDI_CLONE", "VDI_SNAPSHOT", "VDI_RESIZE", "ATOMIC_PAUSE",
         "VDI_RESET_ON_BOOT/2", "VDI_UPDATE", "VDI_CONFIG_CBT",
-        "VDI_ACTIVATE", "VDI_DEACTIVATE"]
+        "VDI_ACTIVATE", "VDI_DEACTIVATE", "VDI_REVERT"]
 
 CONFIGURATION = [['device', 'local device path (required) (e.g. /dev/sda3)']]
 
@@ -82,10 +84,122 @@ DRIVER_INFO = {
 OPS_EXCLUSIVE = [
         "sr_create", "sr_delete", "sr_attach", "sr_detach", "sr_scan",
         "sr_update", "vdi_create", "vdi_delete", "vdi_resize", "vdi_snapshot",
-        "vdi_clone"]
+        "vdi_clone", "vdi_revert"]
 
 # Log if snapshot pauses VM for more than this many seconds
 LONG_SNAPTIME = 60
+
+class RevertLogDestinationVDI:
+    def __init__(
+        self,
+        uuid: str,
+        lvname: str,
+        backup_lvname: str,
+        *,
+        is_cbt_enabled: bool,
+    ):
+        self.uuid = uuid
+        self.lvname = lvname
+        self.backup_lvname = backup_lvname
+        self.is_cbt_enabled = is_cbt_enabled
+
+    def to_dict(self) -> Dict[str, Union[str, bool]]:
+        return {
+            "uuid": self.uuid,
+            "lvname": self.lvname,
+            "backup_lvname": self.backup_lvname,
+            "is_cbt_enabled": self.is_cbt_enabled,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Union[str, bool]]) -> "RevertLogDestinationVDI":
+        return cls(
+            uuid=str(data["uuid"]),
+            lvname=str(data["lvname"]),
+            backup_lvname=str(data["backup_lvname"]),
+            is_cbt_enabled=bool(data["is_cbt_enabled"]),
+        )
+
+
+class RevertLogSourceVDI:
+    def __init__(
+        self,
+        uuid: str,
+        lvname: str,
+        *,
+        is_cbt_enabled: bool,
+    ):
+        self.uuid = uuid
+        self.lvname = lvname
+        self.is_cbt_enabled = is_cbt_enabled
+
+    def to_dict(self) -> Dict[str, Union[str, bool]]:
+        return {
+            "uuid": self.uuid,
+            "lvname": self.lvname,
+            "is_cbt_enabled": self.is_cbt_enabled,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Union[str, bool]]) -> "RevertLogSourceVDI":
+        return cls(
+            uuid=str(data["uuid"]),
+            lvname=str(data["lvname"]),
+            is_cbt_enabled=bool(data["is_cbt_enabled"]),
+        )
+
+
+class RevertLogInsertedVDI:
+    def __init__(self, uuid: str, lvname: str):
+        self.uuid = uuid
+        self.lvname = lvname
+
+    def to_dict(self) -> Dict[str, Collection[str]]:
+        return {
+            "uuid": self.uuid,
+            "lvname": self.lvname,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, str]) -> "RevertLogInsertedVDI":
+        return cls(
+            uuid=data["uuid"],
+            lvname=data["lvname"],
+        )
+
+
+class RevertLogEntry(BaseLogEntry):
+    """Journal entry used to rollback failed revert operations"""
+
+    CURRENT_VERSION = "1.0"
+    JRN_KEY = Journaler.JRN_REVERT
+
+    def __init__(
+        self,
+        dest: RevertLogDestinationVDI,
+        src: RevertLogSourceVDI,
+        inserted: RevertLogInsertedVDI,
+    ):
+        self.dest = dest
+        self.src = src
+        self.inserted = inserted
+
+    @override
+    def to_dict(self) -> Dict[str, Collection[str]]:
+        return {
+            "dest": self.dest.to_dict(),
+            "src": self.src.to_dict(),
+            "inserted": self.inserted.to_dict(),
+        }
+
+    @override
+    @classmethod
+    def from_dict(cls, data: Dict[str, Union[Dict[str, str], str]]) -> "RevertLogEntry":
+        return cls(
+            dest=RevertLogDestinationVDI.from_dict(data["dest"]),  # type: ignore # Version checked
+            src=RevertLogSourceVDI.from_dict(data["src"]),  # type: ignore # Version checked
+            inserted=RevertLogInsertedVDI.from_dict(data["inserted"]) #type: ignore # Version checked
+        )
 
 class LVMSR(SR.SR):
     DRIVER_TYPE = 'lvhd'
@@ -130,6 +244,12 @@ class LVMSR(SR.SR):
             TEST_MODE_VHD_FAIL_RESIZE_END:
                 "VHD_UTIL_TEST_FAIL_RESIZE_END"
     }
+
+    # Journals that should prevent VMs from booting while pending
+    _CRITICAL_JOURNALS = [
+        RevertLogEntry.JRN_KEY,
+    ]
+
     testMode = ""
 
     legacyMode = True
@@ -209,8 +329,22 @@ class LVMSR(SR.SR):
             self.legacyMode = False
 
         if lvutil._checkVG(self.vgname):
-            if self.isMaster and not self.cmd in ["vdi_attach", "vdi_detach",
-                    "vdi_activate", "vdi_deactivate"]:
+            # Disable SR on slaves when mounting VDIs if
+            # a critical journal is pending
+            # and force journal undo if on master
+            if self._has_critical_journals():
+                if not self.isMaster:
+                    raise xs_errors.XenError(
+                        "SRUnavailable", opterr="Critical journals are pending. A scan is required."
+                    )
+                self._undoAllJournals()
+
+            if self.isMaster and not self.cmd in [
+                "vdi_attach",
+                "vdi_detach",
+                "vdi_activate",
+                "vdi_deactivate",
+            ]:
                 self._undoAllJournals()
             if not self.cmd in ["sr_attach", "sr_probe"]:
                 self._checkMetadataVolume()
@@ -234,10 +368,8 @@ class LVMSR(SR.SR):
                         break
 
         # check if metadata volume exists
-        try:
+        with contextlib.suppress(Exception):
             self.mdexists = self.lvmCache.checkLV(self.MDVOLUME_NAME)
-        except:
-            pass
 
     @override
     def cleanup(self) -> None:
@@ -359,7 +491,7 @@ class LVMSR(SR.SR):
                         .updateMetadata(update_map)
         except Exception as e:
             raise xs_errors.XenError('MetadataError', \
-                opterr='Error synching SR Metadata and XAPI: %s' % str(e))
+                opterr='Error syncing SR Metadata and XAPI: %s' % str(e))
 
     def _checkMetadataVolume(self):
         util.SMlog("Entering _checkMetadataVolume")
@@ -384,7 +516,7 @@ class LVMSR(SR.SR):
             self.legacyMode = False
 
     def _synchSmConfigWithMetaData(self):
-        util.SMlog("Synching sm-config with metadata volume")
+        util.SMlog("Syncing sm-config with metadata volume")
 
         try:
             # get SR info from metadata
@@ -908,6 +1040,12 @@ class LVMSR(SR.SR):
                 util.SMlog("Scan found hidden leaf (%s), ignoring" % uuid)
                 del self.vdis[uuid]
 
+    def _has_critical_journals(self) -> bool:
+        for key in self._CRITICAL_JOURNALS:
+            if any(self.journaler.getAll(key)):
+                return True
+        return False
+
     def _ensureSpaceAvailable(self, amount_needed):
         space_available = lvutil._getVGstats(self.vgname)['freespace']
         if (space_available < amount_needed):
@@ -1174,11 +1312,97 @@ class LVMSR(SR.SR):
         try:
             self._undoAllInflateJournals()
             self._undoAllCowJournals()
+            self._undo_revert_journals()
             self._handleInterruptedCloneOps()
             self._handleInterruptedCoalesceLeaf()
         finally:
             self.lock.release()
             self.cleanup()
+
+    def _undo_revert_journals(self):
+        for journal_id, content in self.journaler.getAll(RevertLogEntry.JRN_KEY).items():
+            entry = RevertLogEntry.from_journal(journal_id, content)
+            util.SMlog(f"Reverting {entry.dest.uuid}")
+
+            self._rollback_revert_vdi(entry)
+
+            self.journaler.remove(RevertLogEntry.JRN_KEY, journal_id)
+
+    def _rollback_revert_vdi(self, entry: RevertLogEntry):
+        util.SMlog(
+            f"Reverting vdi {entry.dest.uuid} from backup {entry.dest.backup_lvname}"
+        )
+        if not self.lvmCache.checkLV(entry.dest.backup_lvname):
+            util.SMlog(f"Could not find backup {entry.dest.backup_lvname}, skipping.")
+            return
+
+        util.SMlog(f"Restoring src vdi {entry.src.uuid}")
+        if not self.lvmCache.checkLV(entry.src.lvname):
+            util.SMlog(f"Restoring src vdi {entry.src.uuid} from {entry.inserted.uuid}")
+            self.lvmCache.rename(entry.inserted.lvname, entry.src.lvname)
+
+        if self.lvmCache.getLVInfo(entry.src.lvname)[entry.src.lvname].readonly:
+            self.lvmCache.setReadonly(entry.src.lvname, False)
+
+        util.SMlog(f"Restoring {entry.src.uuid}")
+        src: "LVMVDI" = self.vdi(entry.src.uuid)  # type: ignore[assignment]
+        src_ref = src.session.xenapi.VDI.get_by_uuid(src.uuid)
+        src.sm_config = src.session.xenapi.VDI.get_sm_config(src_ref)
+        src._loadThis()
+        with src.activated(False):
+            src.cowutil.setHidden(str(src.path), False)
+            src.update_from_disk()
+            src._db_update()
+        src.disable_leaf_on_secondary(src.uuid)
+
+        # CBT cannot be added by accident on src, we can skip checking if it exists
+        util.SMlog(f"CBT rollback: restoring cbtlog for src {entry.src.uuid}")
+        if entry.src.is_cbt_enabled:
+            src._reset_cbt_log()
+            src.session.xenapi.VDI.set_cbt_enabled(src_ref, True)
+
+        self.vdis[src.uuid] = src
+
+        # Remove any existing vdi to allow renaming the backup with this name
+        if self.lvmCache.checkLV(entry.dest.lvname):
+            self.lvmCache.remove(entry.dest.lvname)
+
+        # Ensure that inserted node is hidden so that it doesn't leak
+        if self.lvmCache.checkLV(entry.inserted.lvname):
+            inserted: "LVMVDI" = self.vdi(entry.inserted.uuid) # type: ignore[assignment]
+            with inserted.activated(False):
+                inserted.cowutil.setHidden(str(inserted.path), True)
+                inserted.update_from_disk()
+                inserted_ref = inserted._db_update_or_introduce()
+
+            inserted.session.xenapi.VDI.set_managed(inserted_ref, False)
+            inserted.disable_leaf_on_secondary(inserted.uuid)
+
+        # Once we move the backup to it's old name, the journal can't be run again
+        # If something fails from now, we might lose some info, most of them
+        # will be back from a simple scan
+        # Worst case scenario, CBT is disabled or incoherent (which will be solved by tapdisk)
+        self.lvmCache.rename(entry.dest.backup_lvname, entry.dest.lvname)
+
+        dest: "LVMVDI" = self.vdi(entry.dest.uuid)  # type: ignore[assignment]
+        dest_ref = dest.session.xenapi.VDI.get_by_uuid(dest.uuid)
+        dest.sm_config = dest.session.xenapi.VDI.get_sm_config(dest_ref)
+
+        with dest.activated(False):
+            dest.update_from_disk()
+            dest._db_update()
+
+        self.vdis[dest.uuid] = dest
+
+        # CBT might have been added when not needed or removed when needed
+        util.SMlog(f"CBT rollback: restoring cbtlog for dest {entry.dest.uuid}")
+        if entry.dest.is_cbt_enabled:
+            dest._reset_cbt_log()
+            dest.session.xenapi.VDI.set_cbt_enabled(dest_ref, True)
+        else:
+            dest._delete_cbt_log()
+            dest.session.xenapi.VDI.set_cbt_enabled(dest_ref, False)
+
 
     def _undoAllInflateJournals(self):
         entries = self.journaler.getAll(LvmCowUtil.JOURNAL_INFLATE)
@@ -1354,7 +1578,6 @@ class LVMVDI(VDI.VDI):
             else:
                 self.sm_config_override['vhd-parent'] = None
             return
-
         # scan() didn't run: determine the type of the VDI manually
         if self._determineType():
             return
@@ -1701,6 +1924,186 @@ class LVMVDI(VDI.VDI):
         self.attached = False
 
     @override
+    def _do_revert(
+        self,
+        dest: "LVMVDI",  # type: ignore # self and dest are the same type
+        src_cbtlog: Optional[str],
+        dest_cbtlog: Optional[str],
+    ):
+        # Sanity checks
+        if not self.sr.isMaster:
+            raise xs_errors.XenError('LVMMaster')
+        if self.sr.legacyMode:
+            raise xs_errors.XenError('Unimplemented', opterr='In legacy mode')
+
+        if not VdiType.isCowImage(self.vdi_type):
+            raise xs_errors.XenError('Unimplemented', opterr='RAW formats not supported')
+
+        # Ensure that every involved VDIs aren't RAW
+        for vdi in [self, dest]:
+            vdi._loadThis()
+            if not util.pathexists(vdi.path):
+                raise xs_errors.XenError(
+                    "VDIUnavailable", opterr=f"VDI unavailable: {self.path}"
+                )
+
+        # We need to activate the whole vdi chain to check if everything exists
+        with self.tap_pause(), dest.tap_pause(), self._activated_chain(
+            False
+        ), dest._activated_chain(False):
+            self._revert(dest, src_cbtlog, dest_cbtlog)
+
+    def _revert(
+        self,
+        dest: "LVMVDI",
+        src_cbtlog: Optional[str],
+        dest_cbtlog: Optional[str],
+    ):
+        """This assumes that self, dest and their parents VDIs has been loaded and activated"""
+        self._ensure_not_max_depth()
+
+        # Compute required size
+        ## Size for new destination vdi, it will be full size if thick
+        thick_destination_size, thin_destination_size = self._provisionning_sizes(
+            self.session.xenapi.VDI.get_by_uuid(self.uuid)
+        )
+        destination_size = thick_destination_size if self.sr.provision == "thick" else thin_destination_size
+
+        ## Size for the inserted base copy
+        inserted_size = util.roundup(
+            lvutil.LVM_SIZE_INCREMENT, self.cowutil.getSizePhys(self.path)
+        )
+
+        ## the space required must include a revert journal LV
+        ## It will also include a newly created destination disk and an inserted base copy
+        ## source image used for the revert
+        size_req = self.sr.journaler.LV_SIZE + destination_size + inserted_size
+
+        inserted_uuid = util.gen_uuid()
+        inserted_lvname = LV_PREFIX[self.vdi_type] + inserted_uuid
+
+        self.sr._ensureSpaceAvailable(size_req)
+
+        # We create a valid backup VDI so that it properly protect
+        # it's parent chain in case of a coalesce
+        dest_backup_name = LV_PREFIX[self.vdi_type] + util.gen_uuid()
+
+        # Create journal
+
+        journal_id, value = RevertLogEntry(
+            dest=RevertLogDestinationVDI(
+                dest.uuid,
+                dest.lvname,
+                dest_backup_name,
+                is_cbt_enabled=bool(dest_cbtlog),
+            ),
+            src=RevertLogSourceVDI(
+                self.uuid,
+                self.lvname,
+                is_cbt_enabled=bool(src_cbtlog),
+            ),
+            inserted=RevertLogInsertedVDI(inserted_uuid, inserted_lvname),
+        ).to_journal()
+        self.sr.journaler.create(RevertLogEntry.JRN_KEY, journal_id, value)
+
+        # Backup 
+        ## First move the old vdi to a backup location to allow rolling back
+        ## This has to be done first because it's used as a signal to the rollback
+        ## algorithm to know if there is cleanup work to do
+        ## We deactivate it so that in case of an error we don't crash during
+        ## The chain deactivation on the finalize
+        dest.sr.lvActivator.deactivate(dest.uuid, False)
+        dest.sr.lvmCache.rename(dest.lvname, dest_backup_name)
+
+        # Create the base copy by renaming the src snapshot
+        ## Since src is a snapshot, we don't need to deflate it
+        ## We deactivate it so that in case of an error we don't crash during
+        ## The chain deactivation on the finalize
+        self.sr.lvActivator.deactivate(self.uuid, False)
+        self.sr.lvmCache.rename(self.lvname, inserted_lvname)
+
+        util.fistpoint.activate("LVM_revert_create_insert", self.sr.uuid)
+
+        inserted = LVMVDI(self.sr, inserted_uuid)
+        inserted.label = "base copy"
+        inserted.read_only = False
+        inserted.location = inserted_uuid
+        inserted.sm_config = {}
+        inserted.sm_config["image-format"] = getImageStringFromVdiType(self.vdi_type)
+        if "key_hash" in self.sm_config:
+            inserted.sm_config["key_hash"] = self.sm_config["key_hash"]
+        inserted.cbt_enabled = False # Base copies don't have cbt
+
+        ## Protect the new parent from being coalesced by the GC
+        inserted.sr.lvActivator.activate(inserted.uuid, inserted.lvname, False)
+        inserted.cowutil.setHidden(inserted.path, False)
+        inserted_ref = inserted._db_introduce()
+
+        util.fistpoint.activate("LVM_revert_create_src", self.sr.uuid)
+
+        inserted.disable_leaf_on_secondary(inserted.uuid, True)
+
+        # Recreate src
+        ## Since src is a snapshot, we use the minimal size on it
+        _ = inserted._createSnap(
+            self.uuid, self.vdi_type, inserted_size, False, False
+        )
+
+        # Update src
+        self.sr.lvActivator.activate(self.uuid, self.lvname, False)
+        self.update_from_disk()
+        self._db_update()
+
+        # Create snapshot
+        _ = inserted._createSnap(
+            dest.uuid, inserted.vdi_type, destination_size, False, False
+        )
+
+        util.fistpoint.activate("LVM_revert_create_dest", self.sr.uuid)
+
+        dest.update_from_disk()
+        dest._db_update()
+
+        ## The new parent can now be set hidden and don't need to be protected by the GC
+        inserted.update_from_disk()
+        inserted.read_only = True
+        inserted._db_update()
+        inserted.cowutil.setHidden(inserted.path, True)
+        inserted.sr.lvmCache.setReadonly(inserted.lvname, True)
+        self.session.xenapi.VDI.set_managed(inserted_ref, False)
+
+        if src_cbtlog:
+            self._revert_cbt(dest)
+        elif dest_cbtlog:
+            util.SMlog(
+                f"Reverting {dest.uuid} to non-CBT snapshot, disabling CBT on dest"
+            )
+            self._disable_cbt_on_vdi(
+                dest,
+                "VDI_CBT_REVERT_DISABLE",
+                f"CBT disabled on {dest.uuid}: reverted to non-CBT snapshot",
+            )
+
+        # Cleanup
+        ## Remove backup and journal
+        dest.sr.lvmCache.remove(dest_backup_name)
+        self.sr.journaler.remove(RevertLogEntry.JRN_KEY, journal_id)
+
+    def update_from_disk(self):
+        """Update properties based on the disk content"""
+        if not VdiType.isCowImage(self.vdi_type):
+            raise xs_errors.XenError('Unimplemented', opterr='Can update from COW images')
+
+        image_info = self.cowutil.getInfo(self.path, LvmCowUtil.extractUuid, False)
+        self.utilisation = image_info.sizePhys
+        self.size = image_info.sizeVirt
+        self.parent = image_info.parentUuid
+        self.hidden = image_info.hidden
+        self.read_only = self.sr.lvmCache.getLVInfo(self.lvname)[self.lvname].readonly
+        if self.parent:
+            self.sm_config['vhd-parent'] = self.parent
+
+    @override
     def _do_snapshot(self, sr_uuid, vdi_uuid, snapType,
                      cloneOp=False, secondary=None, cbtlog=None, is_mirror_destination=False) -> str:
         # If cbt enabled, save file consistency state
@@ -1737,75 +2140,79 @@ class LVMVDI(VDI.VDI):
                        (unpause_time - pause_time))
         return snapResult
 
-    def _snapshot(self, snapType, cloneOp=False, cbtlog=None, cbt_consistency=None, is_mirror_destination=False):
+    def _snapshot(
+        self,
+        snapType,
+        cloneOp=False,
+        cbtlog=None,
+        cbt_consistency=None,
+        is_mirror_destination=False,
+    ):
         util.SMlog("LVMVDI._snapshot for %s (type %s)" % (self.uuid, snapType))
 
         if not self.sr.isMaster:
-            raise xs_errors.XenError('LVMMaster')
+            raise xs_errors.XenError("LVMMaster")
         if self.sr.legacyMode:
-            raise xs_errors.XenError('Unimplemented', opterr='In legacy mode')
+            raise xs_errors.XenError("Unimplemented", opterr="In legacy mode")
 
         self._loadThis()
         if self.hidden:
-            raise xs_errors.XenError('VDISnapshot', opterr='hidden VDI')
+            raise xs_errors.XenError("VDISnapshot", opterr="hidden VDI")
 
         snapVdiType = self.sr._get_snap_vdi_type(self.vdi_type, self.size)
 
-        self.sm_config = self.session.xenapi.VDI.get_sm_config( \
-                self.sr.srcmd.params['vdi_ref'])
-        if "type" in self.sm_config and self.sm_config['type'] == 'raw':
+        self.sm_config = self.session.xenapi.VDI.get_sm_config(
+            self.sr.srcmd.params["vdi_ref"]
+        )
+        if "type" in self.sm_config and self.sm_config["type"] == "raw":
             if not util.fistpoint.is_active("testsm_clone_allow_raw"):
-                raise xs_errors.XenError('Unimplemented', \
-                        opterr='Raw VDI, snapshot or clone not permitted')
+                raise xs_errors.XenError(
+                    "Unimplemented", opterr="Raw VDI, snapshot or clone not permitted"
+                )
 
         # we must activate the entire image chain because the real parent could
         # theoretically be anywhere in the chain if all images under it are empty
         self._chainSetActive(True, False)
         if not util.pathexists(self.path):
-            raise xs_errors.XenError('VDIUnavailable', \
-                    opterr='VDI unavailable: %s' % (self.path))
+            raise xs_errors.XenError(
+                "VDIUnavailable", opterr="VDI unavailable: %s" % (self.path)
+            )
 
-        if VdiType.isCowImage(self.vdi_type):
-            depth = self.cowutil.getDepth(self.path)
-            if depth == -1:
-                raise xs_errors.XenError('VDIUnavailable', \
-                        opterr='failed to get COW depth')
-            elif depth >= self.cowutil.getMaxChainLength():
-                raise xs_errors.XenError('SnapshotChainTooLong')
+        self._ensure_not_max_depth()
 
-        self.issnap = self.session.xenapi.VDI.get_is_a_snapshot( \
-                                                self.sr.srcmd.params['vdi_ref'])
+        fullpr, thinpr = self._provisionning_sizes(self.sr.srcmd.params["vdi_ref"])
 
-        fullpr = self.lvmcowutil.calcVolumeSize(self.size)
-        thinpr = util.roundup(
-            lvutil.LVM_SIZE_INCREMENT,
-            self.cowutil.calcOverheadEmpty(max(self.size, self.cowutil.getDefaultPreallocationSizeVirt()))
-        )
         lvSizeOrig = thinpr
         lvSizeClon = thinpr
 
         hostRefs = []
+        # If we do a snapshot, it might mean that the VDI is mounted somewhere
+        # If it's on another machine, we need to copy all data locally
         if self.sr.cmd == "vdi_snapshot":
             hostRefs = util.get_hosts_attached_on(self.session, [self.uuid])
             if hostRefs:
                 lvSizeOrig = fullpr
+
+        # If we have a thick provisionned SR and we're doing a snapshot that won't be writable
+        # We take the minimum possible size for "archiving", it doesn't matter since it'll be read only
         if self.sr.provision == "thick":
             if not self.issnap:
                 lvSizeOrig = fullpr
             if self.sr.cmd != "vdi_snapshot":
                 lvSizeClon = fullpr
 
-        if (snapType == VDI.SNAPSHOT_SINGLE or
-                snapType == VDI.SNAPSHOT_INTERNAL):
+        if snapType == VDI.SNAPSHOT_SINGLE or snapType == VDI.SNAPSHOT_INTERNAL:
             lvSizeClon = 0
 
         # the space required must include 2 journal LVs: a clone journal and an
-        # inflate journal (for the failure handling
+        # inflate journal (for the failure handling)
         size_req = lvSizeOrig + lvSizeClon + 2 * self.sr.journaler.LV_SIZE
         lvSizeBase = self.size
         if VdiType.isCowImage(self.vdi_type):
-            lvSizeBase = util.roundup(lvutil.LVM_SIZE_INCREMENT, self.cowutil.getSizePhys(self.path))
-            size_req -= (self.utilisation - lvSizeBase)
+            lvSizeBase = util.roundup(
+                lvutil.LVM_SIZE_INCREMENT, self.cowutil.getSizePhys(self.path)
+            )
+            size_req -= self.utilisation - lvSizeBase
         self.sr._ensureSpaceAvailable(size_req)
 
         if hostRefs:
@@ -2094,6 +2501,17 @@ class LVMVDI(VDI.VDI):
             self.sm_config_override = {'vdi_type': self.vdi_type}
         self.loaded = True
 
+    def _ensure_not_max_depth(self):
+        if not VdiType.isCowImage(self.vdi_type):
+            return # There is no depth concept outside of cow images
+
+        depth = self.cowutil.getDepth(self.path)
+        if depth == -1:
+            raise xs_errors.XenError('VDIUnavailable', \
+                    opterr='failed to get COW depth')
+        elif depth >= self.cowutil.getMaxChainLength():
+            raise xs_errors.XenError('SnapshotChainTooLong')
+
     def _initFromLVInfo(self, lvInfo):
         self._setType(lvInfo.vdiType)
         self.lvname = lvInfo.name
@@ -2124,8 +2542,13 @@ class LVMVDI(VDI.VDI):
         """
         Determine whether this is a RAW or a COW VDI.
         """
-        if "vdi_ref" in self.sr.srcmd.params:
-            vdi_ref = self.sr.srcmd.params["vdi_ref"]
+
+        try:
+            vdi_ref = self.session.xenapi.VDI.get_by_uuid(self.uuid)
+        except XenAPI.Failure:
+            vdi_ref = None
+
+        if vdi_ref:
             sm_config = self.session.xenapi.VDI.get_sm_config(vdi_ref)
             if sm_config.get("vdi_type"):
                 self._setType(sm_config["vdi_type"])
@@ -2210,6 +2633,34 @@ class LVMVDI(VDI.VDI):
                 # step. The LVs must not have been activated during the current
                 # operation
                 self.sr.lvActivator.add(uuid, lvName, binaryParam)
+
+    def _provisionning_sizes(self, vdi_ref: str) -> Tuple[int, int]:
+        self.issnap = self.session.xenapi.VDI.get_is_a_snapshot(vdi_ref)
+
+        full_provisioning = self.lvmcowutil.calcVolumeSize(self.size)
+        thin_provisioning = util.roundup(
+            lvutil.LVM_SIZE_INCREMENT,
+            self.cowutil.calcOverheadEmpty(
+                max(self.size, self.cowutil.getDefaultPreallocationSizeVirt())
+            ),
+        )
+        return full_provisioning, thin_provisioning
+
+    @contextmanager
+    def activated(self, binary, persistent=False):
+        self.sr.lvActivator.activate(self.uuid, self.lvname, binary, persistent)
+        try:
+            yield
+        finally:
+            self.sr.lvActivator.deactivate(self.uuid, binary, persistent)
+
+    @contextmanager
+    def _activated_chain(self, binary, persistent=False):
+        self._chainSetActive(True, binary, persistent)
+        try:
+            yield
+        finally:
+            self.sr.cleanup()
 
     def _failClone(self, uuid, jval, msg):
         try:
@@ -2382,6 +2833,15 @@ class LVMVDI(VDI.VDI):
     @override
     def _cbt_log_exists(self, logpath) -> bool:
         return lvutil.exists(logpath)
+
+    @override
+    def _create_cbt_log_with_size(self, size: int) -> str:
+        log_path = self._get_cbt_logpath(self.uuid)
+        logsize = max(util.roundup(CBT_BLOCK_SIZE, self.size//CBT_BLOCK_SIZE), self.sr.journaler.LV_SIZE)
+        # We choose 4MiB as the minimum for the log size to maintain the old behavior and compute the correct amount
+        # if we need a bigger LV for the CBT (can happen with big QCOW2)
+        self.sr.lvmCache.create(log_path, logsize, CBTLOG_TAG)
+        return super()._create_cbt_log_with_size(size)
 
 if __name__ == '__main__':
     SRCommand.run(LVMSR, DRIVER_INFO)

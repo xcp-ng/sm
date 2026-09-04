@@ -1,3 +1,4 @@
+import XenAPI
 from sm_typing import override
 
 import copy
@@ -698,6 +699,10 @@ class TestLVMVDI(unittest.TestCase, Stubs):
         Ensure we tell the supporter host when we disable CBT for one of its VMs
         """
         # Arrange
+        def xenapi_failure(_):
+            raise XenAPI.Failure("No uuid")
+
+        mock_xenapi.xapi_local.return_value.xenapi.VDI.get_by_uuid.side_effect = xenapi_failure
         xapi_session = mock_xenapi.xapi_local.return_value
 
         vdi_uuid = str(uuid.uuid4)
