@@ -3224,18 +3224,24 @@ class FileSR(SR):
     @override
     def _handleInterruptedCoalesceLeaf(self) -> None:
         entries = self.journaler.getAll(VDI.JRN_LEAF)
+        extensions = tuple(VDI_TYPE_TO_EXTENSION[vdi_type] for vdi_type in VDI_COW_TYPES)
+
         for uuid, parentUuid in entries.items():
-            fileList = os.listdir(self.path)
-            childName = uuid + VdiTypeExtension.VHD
-            tmpChildName = self.TMP_RENAME_PREFIX + uuid + VdiTypeExtension.VHD
-            parentName1 = parentUuid + VdiTypeExtension.VHD
-            parentName2 = parentUuid + VdiTypeExtension.RAW
-            parentPresent = (parentName1 in fileList or parentName2 in fileList)
-            if parentPresent or tmpChildName in fileList:
+            fileList = frozenset(os.listdir(self.path))
+            hasPath = fileList.__contains__
+
+            hasCowPath = any(
+                hasPath(self.TMP_RENAME_PREFIX + uuid + extension) or hasPath(parentUuid + extension)
+                for extension in extensions
+            )
+
+            if hasCowPath or hasPath(parentUuid + VdiTypeExtension.RAW):
                 self._undoInterruptedCoalesceLeaf(uuid, parentUuid)
             else:
                 self._finishInterruptedCoalesceLeaf(uuid, parentUuid)
+
             self.journaler.remove(VDI.JRN_LEAF, uuid)
+
             vdi = self.getVDI(uuid)
             if vdi:
                 vdi.ensureUnpaused()
