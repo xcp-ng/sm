@@ -37,6 +37,9 @@ import uuid
 # Persistent prefix to add to RAW persistent volumes.
 PERSISTENT_PREFIX = 'xcp-persistent-'
 
+# Prefix added to the UUID of a LINSTOR volume that will be deleted by the GC.
+DELETED_PREFIX = 'DELETED_'
+
 # Contains the data of the "/var/lib/linstor" directory.
 DATABASE_VOLUME_NAME = PERSISTENT_PREFIX + 'database'
 DATABASE_SIZE = 1 << 30  # 1GB.
@@ -241,7 +244,8 @@ class LinstorVolumeManagerError(Exception):
     ERR_VOLUME_NOT_EXISTS = 2,
     ERR_VOLUME_DESTROY = 3,
     ERR_GROUP_NOT_EXISTS = 4,
-    ERR_VOLUME_IN_USE = 5
+    ERR_VOLUME_IN_USE = 5,
+    ERR_VOLUME_PROPERTIES_NOT_EMPTY = 6
 
     def __init__(self, message, code=ERR_GENERIC):
         super(LinstorVolumeManagerError, self).__init__(message)
@@ -1056,9 +1060,10 @@ class LinstorVolumeManager(object):
                 .format(volume_uuid)
             )
 
-        # 1. Copy in temp variables metadata and volume_name.
+        # 1. Copy in temp variables metadata, volume_name and not_exists.
         metadata = volume_properties.get(self.PROP_METADATA)
         volume_name = volume_properties.get(self.PROP_VOLUME_NAME)
+        not_exists = volume_properties.get(self.PROP_NOT_EXISTS)
 
         # 2. Switch to new volume namespace.
         volume_properties.namespace = self._build_volume_namespace(
@@ -1069,7 +1074,8 @@ class LinstorVolumeManager(object):
             raise LinstorVolumeManagerError(
                 'Cannot update volume uuid {} to {}: '
                 .format(volume_uuid, new_volume_uuid) +
-                'this last one is not empty'
+                'this last one is not empty',
+                LinstorVolumeManagerError.ERR_VOLUME_PROPERTIES_NOT_EMPTY
             )
 
         try:
@@ -1088,7 +1094,7 @@ class LinstorVolumeManager(object):
             volume_properties[self.PROP_VOLUME_NAME] = volume_name
 
             # 5. Ok!
-            volume_properties[self.PROP_NOT_EXISTS] = self.STATE_EXISTS
+            volume_properties[self.PROP_NOT_EXISTS] = not_exists
         except Exception as err:
             try:
                 # Clear the new volume properties in case of failure.
@@ -1133,7 +1139,8 @@ class LinstorVolumeManager(object):
             # we are processing a deleted resource.
             assert force
 
-        self._volumes.add(new_volume_uuid)
+        if not_exists == self.STATE_EXISTS:
+            self._volumes.add(new_volume_uuid)
 
         self._logger(
             'UUID update succeeded of {} to {}! (properties={})'
@@ -1142,6 +1149,34 @@ class LinstorVolumeManager(object):
                 self._get_filtered_properties(volume_properties)
             )
         )
+
+    def mark_volume_for_deletion(self, volume_uuid, force=False):
+        """
+        Add a prefix to the volume UUID to mark it for deletion by the GC.
+        :param str volume_uuid: The volume to mark.
+        :param bool force: Whether to force-update the volume UUID. See the
+        documentation of `update_volume_uuid` for more details.
+        """
+        if volume_uuid.startswith(DELETED_PREFIX):
+            return
+
+        deleted_prefix_counter = 0
+        while True:
+            new_volume_uuid = '{}{}_{}'.format(
+                DELETED_PREFIX, deleted_prefix_counter, volume_uuid
+            )
+
+            try:
+                self.update_volume_uuid(
+                    volume_uuid, new_volume_uuid, force=force
+                )
+
+                break
+            except LinstorVolumeManagerError as e:
+                if e.code != LinstorVolumeManagerError.ERR_VOLUME_PROPERTIES_NOT_EMPTY:
+                    raise
+
+                deleted_prefix_counter += 1
 
     def update_volume_name(self, volume_uuid, volume_name):
         """
@@ -1308,6 +1343,20 @@ class LinstorVolumeManager(object):
         for key, value in metadata.items():
             current_metadata[key] = value
         volume_properties[self.PROP_METADATA] = json.dumps(current_metadata)
+
+    def get_volume_not_exists_state(self, volume_uuid):
+        """
+        Get the "not-exists" state of a volume.
+        :param str volume_uuid: The target volume.
+        :return: The "not-exists" state.
+        :rtype: Optional[str]
+        """
+
+        # We do not ensure that the volume exists since it might not
+        # physically exist (for example, the volume creation failed), but it
+        # might still have had its "not-exists" property set.
+        volume_properties = self._get_volume_properties(volume_uuid)
+        return volume_properties.get(self.PROP_NOT_EXISTS)
 
     def shallow_clone_volume(self, volume_uuid, clone_uuid, persistent=True):
         """
@@ -2599,10 +2648,7 @@ class LinstorVolumeManager(object):
                 # This prefix is mandatory if it exists a snap transaction to
                 # rollback because the original VDI UUID can try to be renamed
                 # with the UUID we are trying to delete...
-                if not volume_uuid.startswith('DELETED_'):
-                    self.update_volume_uuid(
-                        volume_uuid, 'DELETED_' + volume_uuid, force=True
-                    )
+                self.mark_volume_for_deletion(volume_uuid, force=True)
 
         for dest_uuid, src_uuid in updating_uuid_volumes.items():
             dest_namespace = self._build_volume_namespace(dest_uuid)
