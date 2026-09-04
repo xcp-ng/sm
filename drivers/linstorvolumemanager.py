@@ -33,6 +33,10 @@ import stat
 import time
 import util
 import uuid
+from datetime import datetime
+from pathlib import Path
+import contextlib
+import zipfile
 
 # Persistent prefix to add to RAW persistent volumes.
 PERSISTENT_PREFIX = 'xcp-persistent-'
@@ -42,7 +46,11 @@ DATABASE_VOLUME_NAME = PERSISTENT_PREFIX + 'database'
 DATABASE_SIZE = 1 << 30  # 1GB.
 DATABASE_PATH = '/var/lib/linstor'
 DATABASE_MKFS = 'mkfs.ext4'
-
+DATABASE_BACKUP_DIR_MAIN = Path(DATABASE_PATH)
+DATABASE_BACKUP_DIR_SPARE = Path("/var/lib/linstor.d/db-backups")
+DATABASE_BACKUP_NAME_FORMAT = "linstor_database_backup-{}-{}"
+DATABASE_BACKUP_RETENTION = 10
+DATABASE_BACKUP_DATE_FORMAT = "%Y%m%d_%H%M%S"
 LINSTOR_SATELLITE_PORT = 3366
 
 REG_DRBDADM_PRIMARY = re.compile("([^\\s]+)\\s+role:Primary")
@@ -251,6 +259,8 @@ class LinstorVolumeManagerError(Exception):
     def code(self):
         return self._code
 
+class LinstorDatabaseBackupError(Exception):
+    pass
 
 # ==============================================================================
 
@@ -1781,6 +1791,51 @@ class LinstorVolumeManager(object):
         return self._request_database_path(self._linstor, activate=True)
 
     @classmethod
+    def is_controller(cls):
+        return cls._is_mounted(DATABASE_PATH)
+
+    @classmethod
+    def get_database_backup_age(cls):
+        """
+        Return the latest backup age in seconds.
+        If not called on the Controller, since backups are not available,
+        returns a huge value (a timestamp of now).
+        """
+        return (datetime.now() - cls._get_latest_database_backup()[1]).total_seconds()
+
+    def database_backup(self, name=""):
+        # Create new backup
+        date = datetime.now().strftime(DATABASE_BACKUP_DATE_FORMAT)
+        filename = DATABASE_BACKUP_NAME_FORMAT.format(date, name)
+        self._linstor.controller_backupdb(filename)
+        # Relative path are ok for a secondary backup filename:
+        # https://github.com/LINBIT/linstor-server/blob/3e9306a9d8215606544c64c50ced150625ee4926/controller/src/main/java/com/linbit/linstor/api/rest/v1/Controller.java#L408
+        self._linstor.controller_backupdb(f"../linstor.d/db-backups/{filename}")
+        util.SMlog(f"[database_backup] Created: {filename}", priority=util.LOG_INFO)
+
+    @classmethod
+    def database_backup_validate_and_prune(cls):
+        """
+        Removes old backup based on two criterias:
+        - Validity of the zipfile done by self._check_database_backup.
+        - Number of valid files found, only the nth latest are kept.
+        """
+        for directory in (DATABASE_BACKUP_DIR_MAIN, DATABASE_BACKUP_DIR_SPARE):
+            valid_backup_count = 0
+            # Validate file and apply retention
+            for database_backup_path, _ in cls._get_sorted_database_backup(directory):
+                try:
+                    cls._check_database_backup(database_backup_path)
+                    valid_backup_count += 1
+                    if valid_backup_count < DATABASE_BACKUP_RETENTION:
+                        continue
+                except LinstorDatabaseBackupError as error:
+                    util.SMlog(f"[database_backup] Check failed `{error}` [{database_backup_path}]",
+                               priority=util.LOG_ERR)
+                with contextlib.suppress(OSError):
+                    os.unlink(database_backup_path)
+
+    @classmethod
     def get_all_group_names(cls, base_name):
         """
         Get all group names. I.e. list of current group + HA.
@@ -2658,6 +2713,67 @@ class LinstorVolumeManager(object):
         return properties
 
     @classmethod
+    def _list_database_backups(cls, database_backup_dir):
+        """
+        List all visible backup files in database_backup_dir.
+        DATABASE_BACKUP_DIR_MAIN is only available on the Linstor Controller.
+        DATABASE_BACKUP_DIR_SPARE will list backups previously made when the Host was the Linstor Controller.
+        This may not be useful information if it is not the Controller anymore.
+        """
+        for path in database_backup_dir.glob(DATABASE_BACKUP_NAME_FORMAT.format(
+                "[0-9]" * 8 + "_" + "[0-9]" * 6, "*") + ".zip"):
+            try:
+                yield path, datetime.strptime(path.name.split("-")[1], DATABASE_BACKUP_DATE_FORMAT)
+            except (ValueError, IndexError):
+                continue
+
+    @classmethod
+    def _get_sorted_database_backup(cls, database_backup_dir):
+        """
+        Return list of backups in database_backup_dir, alongside their creation date.
+        Sorted by date from the more recent to the older one.
+        """
+        return sorted(cls._list_database_backups(database_backup_dir),
+                      reverse=True,
+                      key=lambda p: p[1])
+
+    @classmethod
+    def _get_latest_database_backup(cls):
+        """
+        Return the latest backup in DATABASE_BACKUP_DIR_MAIN, and its creation date.
+        Returns (None, timestamp(0)) when none are found.
+        None will be found if it is not called on the Linstor Controller.
+        (cf _list_database_backups)
+        """
+        return max(cls._list_database_backups(DATABASE_BACKUP_DIR_MAIN),
+                   default=(None, datetime.fromtimestamp(0)),
+                   key=lambda p: p[1])
+
+    @classmethod
+    def _check_database_backup(cls, database_backup_path):
+        """
+        Make some validation of a database backup zip-file.
+        Check its a valid zipfile, and CRC-test its content.
+        Check it contains a non-empty linstordb.mv.db file.
+        Always raises a LinstorDatabaseBackupError if checks failed.
+        """
+        try:
+            with zipfile.ZipFile(database_backup_path, mode="r") as archive:
+                if archive.testzip() is not None:
+                    raise LinstorDatabaseBackupError("zip archive CRC failed")
+                linstordb = next((
+                    f
+                    for f in archive.filelist
+                    if f.filename == "linstordb.mv.db"
+                ), None)
+                if not linstordb:
+                    raise LinstorDatabaseBackupError("cannot find linstordb.mv.db")
+                if linstordb.file_size == 0:
+                    raise LinstorDatabaseBackupError("linstordb.mv.db is empty")
+        except (FileNotFoundError, zipfile.BadZipFile, zipfile.LargeZipFile) as e:
+            raise LinstorDatabaseBackupError(e) from e
+
+    @classmethod
     def _build_sr_namespace(cls):
         return '/{}/'.format(cls.NAMESPACE_SR)
 
@@ -2933,7 +3049,7 @@ class LinstorVolumeManager(object):
                 except Exception:
                     pass
 
-            if mount == cls._is_mounted(DATABASE_PATH):
+            if mount == cls.is_controller():
                 force_exec(lambda: cls._move_files(
                     DATABASE_PATH, backup_path
                 ))
@@ -2941,7 +3057,7 @@ class LinstorVolumeManager(object):
                     volume_path, DATABASE_PATH, not mount
                 ))
 
-            if mount != cls._is_mounted(DATABASE_PATH):
+            if mount != cls.is_controller():
                 force_exec(lambda: cls._move_files(
                     backup_path, DATABASE_PATH
                 ))
