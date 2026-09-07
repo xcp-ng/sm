@@ -14,9 +14,9 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-from sm_typing import Any, Optional, override
+from sm_typing import Any, Optional, override, Literal
 
-from constants import CBTLOG_TAG
+from constants import CBTLOG_TAG, LINSTOR_AUTO_BACKUP_DELAY
 
 try:
     from linstorcowutil import LinstorCowUtil, MultiLinstorCowUtil
@@ -818,6 +818,24 @@ class LinstorSR(SR.SR):
         return self._is_master
 
     @override
+    def check_sr(self, sr_uuid) -> None:
+        # Note: check_sr is called on all hosts by the health check mechanism
+        # not by regular xapi calls such as scans.
+        # Applied only on the Linstor Controller, for reasons -> listed below.
+        if not LinstorVolumeManager.is_controller():
+            return
+        # Validate and clean previous backups if necessary.
+        # -> Needs access to backup files, available only on the Controller.
+        LinstorVolumeManager.database_backup_validate_and_prune()
+        # check_sr is launched on *all* hosts, but it turns out that
+        # we do not want all of them to blindly generate concurrencing backups.
+        # Hence we must choose one, either one is good, but there must be only one.
+        # Apply throttling: only backup if last one is >1h old.
+        # -> Needs access to backup files, available only on the Controller.
+        if LinstorVolumeManager.get_database_backup_age() > LINSTOR_AUTO_BACKUP_DELAY:
+            self.database_backup("auto")
+
+    @override
     @_locked_load
     def vdi(self, uuid) -> VDI.VDI:
         return LinstorVDI(self, uuid)
@@ -1570,6 +1588,23 @@ class LinstorSR(SR.SR):
         util.SMlog('Kicking GC')
         cleanup.start_gc_service(self.uuid)
 
+    def database_backup(self, name: Literal["auto", "create", "delete", "snapshot"]):
+        """
+        Generate a new database backup file.
+        This operation should not prevent the underlying action to be successful.
+        Hence all Exceptions are caught and logged.
+        """
+        if not self._linstor:
+            self._reconnect()
+        try:
+            assert self._linstor
+            self._linstor.database_backup(name)
+        except Exception as e:
+            util.SMlog(
+                f"[database_backup] Error during creation: {e}",
+                priority=util.LOG_ERR,
+            )
+
 # ==============================================================================
 # LinstorSr VDI
 # ==============================================================================
@@ -1753,6 +1788,8 @@ class LinstorVDI(VDI.VDI):
         self.ref = self._db_introduce()
         self.sr._update_stats(self.size)
 
+        self.sr.database_backup("create")
+
         return VDI.VDI.get_params(self)
 
     @override
@@ -1800,7 +1837,8 @@ class LinstorVDI(VDI.VDI):
         # TODO: Check size after delete.
         self.sr._update_stats(-self.size)
         self.sr._kick_gc()
-        return super(LinstorVDI, self).delete(sr_uuid, vdi_uuid, data_only)
+        super(LinstorVDI, self).delete(sr_uuid, vdi_uuid, data_only)
+        self.sr.database_backup("delete")
 
     @override
     def attach(self, sr_uuid, vdi_uuid) -> str:
@@ -2382,6 +2420,7 @@ class LinstorVDI(VDI.VDI):
         finally:
             self.disable_leaf_on_secondary(vdi_uuid, secondary=secondary)
             blktap2.VDI.tap_unpause(self.session, sr_uuid, vdi_uuid, secondary)
+            self.sr.database_backup("snapshot")
 
     def _snapshot(self, snap_type, cbtlog=None, cbt_consistency=None):
         util.SMlog(
