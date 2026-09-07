@@ -19,3 +19,6 @@ if not hasattr(typing, 'Never'):
 
 if not hasattr(typing, 'Final'):
     Final = None # type: ignore
+
+if not hasattr(typing, "Literal"):
+    from typing_extensions import Literal  # noqa: F401, UP035
