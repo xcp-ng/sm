@@ -409,7 +409,7 @@ class QCowUtil(CowUtil):
         parentType = QCOW2_TYPE
         if parentRaw:
             parentType = RAW_TYPE
-        cmd = [QEMU_IMG, "rebase", "-u", "-f", QCOW2_TYPE, "-F", parentType, "-b", parentPath, path]
+        cmd = [QEMU_IMG, "rebase", "-q", "-u", "-f", QCOW2_TYPE, "-F", parentType, "-b", parentPath, path]
         self._ioretry(cmd)
 
     @override
@@ -467,7 +467,7 @@ class QCowUtil(CowUtil):
         size: byte
         jFile: a journal file used for resizing with VHD, not useful for QCOW2
         """
-        cmd = [QEMU_IMG, "resize", path, str(size)]
+        cmd = [QEMU_IMG, "resize", "-q", path, str(size)]
         self._ioretry(cmd)
 
     @override
@@ -609,7 +609,7 @@ class QCowUtil(CowUtil):
 
     @override
     def create(self, path: str, size: int, static: bool, msize: int = 0, block_size: Optional[int] = None) -> None:
-        cmd = [QEMU_IMG, "create", "-f", QCOW2_TYPE, path, str(size)]
+        cmd = [QEMU_IMG, "create", "-q", "-f", QCOW2_TYPE, path, str(size)]
         if static:
             cmd.extend(["-o", "preallocation=full"])
         if block_size:
@@ -631,7 +631,7 @@ class QCowUtil(CowUtil):
         # TODO: checkEmpty? If it is False, then the parent could be empty and should still be used for snapshot
         # But if True, if the parent is empty, we do what? vhd would just use the parent of parent as base, should we emulate this behavior?
 
-        cmd = [QEMU_IMG, "create"]
+        cmd = [QEMU_IMG, "create", "-q"]
 
         if parentRaw:
             parent_type = RAW_TYPE
@@ -670,7 +670,7 @@ class QCowUtil(CowUtil):
         ignoreMissingFooter: bool = False,
         fast: bool = False
     ) -> CowUtil.CheckResult:
-        cmd = [QEMU_IMG, "check", path]
+        cmd = [QEMU_IMG, "check", "-q", path]
         try:
             self._ioretry(cmd)
             return CowUtil.CheckResult.Success
@@ -689,7 +689,7 @@ class QCowUtil(CowUtil):
 
     @override
     def repair(self, path: str) -> None:
-        cmd = [QEMU_IMG, "check", "-f", QCOW2_TYPE, "-r", "all", path]
+        cmd = [QEMU_IMG, "check", "-q", "-f", QCOW2_TYPE, "-r", "all", path]
         self._ioretry(cmd)
 
     @override
