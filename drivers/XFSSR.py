@@ -27,6 +27,7 @@ import VDI
 import FileSR
 import util
 import lvutil
+import lvmbackup
 import scsiutil
 
 import lock
@@ -103,6 +104,8 @@ class XFSSR(FileSR.FileSR):
 
         # Remove LV, VG and pv
         try:
+            lvmbackup.backup_vg(self.vgname)
+
             cmd = ["lvremove", "-f", self.remotepath]
             util.pread2(cmd)
 
@@ -212,6 +215,7 @@ class XFSSR(FileSR.FileSR):
                 size_mb = stats['freespace'] // (1024 * 1024)
             assert(size_mb > 0)
             cmd += ["-L", str(size_mb), self.vgname]
+            lvmbackup.backup_vg(self.vgname)
             text = util.pread(cmd)
 
             cmd = ["lvchange", "-ay", self.remotepath]
