@@ -29,6 +29,7 @@ SM_LIBS += vditype
 SM_LIBS += BaseISCSI
 SM_LIBS += cleanup
 SM_LIBS += lvutil
+SM_LIBS += lvmbackup
 SM_LIBS += lvmcache
 SM_LIBS += util
 SM_LIBS += verifyVDIsOnSR
