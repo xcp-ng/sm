@@ -566,15 +566,25 @@ class QCowUtil(CowUtil):
             raise
 
         try:
-            status, nb, _ = TapCtl.query(pid, minor)
+            status, nb, total = TapCtl.query(pid, minor)
             if status == "undefined":
                 util.SMlog("Tapdisk {} (m: {}) coalesce status undefined for {}".format(pid, minor, path))
                 return 0
 
-            while status !=  "concluded":
+            aborted = False
+            while status != "concluded":
+                if status == "abort":
+                    aborted = True
                 time.sleep(1)
-                status, nb, _ = TapCtl.query(pid, minor, quiet=True)
+                status, nb, total = TapCtl.query(pid, minor, quiet=True)
                 logger.log("Got status {} for tapdisk {} (m: {})".format(status, pid, minor))
+
+            if nb < total:
+                if aborted:
+                    raise xs_errors.XenError("TapdiskFailed",
+                        f"Online coalesce aborted on tapdisk {pid} (m: {minor}) for {path}: {nb}/{total} bytes")
+                raise xs_errors.XenError("TapdiskFailed",
+                    f"Online coalesce incomplete on tapdisk {pid} (m: {minor}) for {path}: {nb}/{total} bytes")
             return nb
         except TapCtl.CommandFailure:
             util.SMlog(f"Query command failed on tapdisk instance {pid} (m: {minor}). Raising...")
