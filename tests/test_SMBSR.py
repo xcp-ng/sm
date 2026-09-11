@@ -24,6 +24,7 @@ class FakeSMBSR(SMBSR.SMBSR):
         self.linkpath = 'aLinkpath'
         self.path = 'aPath'
         self.remoteserver = 'aRemoteserver'
+        self.cmd = srcmd.params["command"]
 
 
 class Test_SMBSR(unittest.TestCase):
