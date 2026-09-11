@@ -2624,7 +2624,8 @@ class LinstorVDI(VDI.VDI):
                 # Use a timeout call because XAPI may be unusable on startup
                 # or if the host has been ejected. So in this case the call can
                 # block indefinitely.
-                session = util.timeout(5, util.get_localAPI_session)
+                api_session = util.timeout(5, util.ApiSession, "SM-ha-linstor-http-server")
+                session = api_session.session
                 host_ip = util.get_this_host_address(session)
             except:
                 # Fallback using the XHA file if session not available.
@@ -2633,6 +2634,8 @@ class LinstorVDI(VDI.VDI):
                     raise Exception(
                         'Cannot start persistent HTTP server: no XAPI session, nor XHA config file'
                     )
+            finally:
+                api_session.logout()
 
             arguments = [
                 'http-disk-server',
@@ -2708,7 +2711,8 @@ class LinstorVDI(VDI.VDI):
                 device_size = 256 * 1024 * 1024
 
             try:
-                session = util.timeout(5, util.get_localAPI_session)
+                api_session = util.timeout(5, util.ApiSession, "SM-ha-linstor-nbd-server")
+                session = api_session.session
                 ips = util.get_host_addresses(session)
             except Exception as e:
                 _, ips = get_ips_from_xha_config_file()
@@ -2717,6 +2721,8 @@ class LinstorVDI(VDI.VDI):
                         'Cannot start persistent NBD server: no XAPI session, nor XHA config file ({})'.format(e)
                     )
                 ips = ips.values()
+            finally:
+                api_session.logout()
 
             arguments = [
                 'nbd-http-server',

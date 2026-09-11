@@ -299,18 +299,12 @@ class XAPI:
     class LookupError(util.SMException):
         pass
 
-    @staticmethod
-    def getSession():
-        session = XenAPI.xapi_local()
-        session.xenapi.login_with_password(XAPI.USER, '', '', 'SM')
-        return session
-
     def __init__(self, session, srUuid):
-        self.sessionPrivate = False
         self.session = session
+        self._api_session = None
         if self.session is None:
-            self.session = self.getSession()
-            self.sessionPrivate = True
+            self._api_session = util.ApiSession("SMGC")
+            self.session = self._api_session.session
         self._srRef = self.session.xenapi.SR.get_by_uuid(srUuid)
         self.srRecord = self.session.xenapi.SR.get_record(self._srRef)
         self.hostUuid = util.get_this_host()
@@ -319,8 +313,8 @@ class XAPI:
         self.task_progress = {"coalescable": 0, "done": 0}
 
     def __del__(self):
-        if self.sessionPrivate:
-            self.session.xenapi.session.logout()
+        if self._api_session:
+            self._api_session.logout()
 
     @property
     def srRef(self):
@@ -2131,32 +2125,31 @@ class SR(object):
         return msg is None
 
     def check_no_space_candidates(self):
-        xapi_session = self.xapi.getSession()
+        with util.ApiSession("SMGC-check-no-space") as xapi_session:
+            msg_id = self.xapi.srRecord["sm_config"].get(VDI.DB_GC_NO_SPACE)
+            if self.no_space_candidates:
+                if msg_id is None or self.msg_cleared(xapi_session, msg_id):
+                    util.SMlog("Could not coalesce due to a lack of space "
+                               f"in SR {self.uuid}")
+                    msg_body = ("Unable to perform data coalesce due to a lack "
+                                f"of space in SR {self.uuid}")
+                    msg_id = xapi_session.xenapi.message.create(
+                        'SM_GC_NO_SPACE',
+                        3,
+                        "SR",
+                        self.uuid,
+                        msg_body)
+                    xapi_session.xenapi.SR.remove_from_sm_config(
+                        self.xapi.srRef, VDI.DB_GC_NO_SPACE)
+                    xapi_session.xenapi.SR.add_to_sm_config(
+                        self.xapi.srRef, VDI.DB_GC_NO_SPACE, msg_id)
 
-        msg_id = self.xapi.srRecord["sm_config"].get(VDI.DB_GC_NO_SPACE)
-        if self.no_space_candidates:
-            if msg_id is None or self.msg_cleared(xapi_session, msg_id):
-                util.SMlog("Could not coalesce due to a lack of space "
-                           f"in SR {self.uuid}")
-                msg_body = ("Unable to perform data coalesce due to a lack "
-                            f"of space in SR {self.uuid}")
-                msg_id = xapi_session.xenapi.message.create(
-                    'SM_GC_NO_SPACE',
-                    3,
-                    "SR",
-                    self.uuid,
-                    msg_body)
-                xapi_session.xenapi.SR.remove_from_sm_config(
-                    self.xapi.srRef, VDI.DB_GC_NO_SPACE)
-                xapi_session.xenapi.SR.add_to_sm_config(
-                    self.xapi.srRef, VDI.DB_GC_NO_SPACE, msg_id)
-
-            for candidate in self.no_space_candidates.values():
-                candidate.setConfig(VDI.DB_GC_NO_SPACE, msg_id)
-        elif msg_id is not None:
-            # Everything was coalescable, remove the message
-            xapi_session.xenapi.SR.remove_from_sm_config(self.xapi.srRef, VDI.DB_GC_NO_SPACE)
-            xapi_session.xenapi.message.destroy(msg_id)
+                for candidate in self.no_space_candidates.values():
+                    candidate.setConfig(VDI.DB_GC_NO_SPACE, msg_id)
+            elif msg_id is not None:
+                # Everything was coalescable, remove the message
+                xapi_session.xenapi.SR.remove_from_sm_config(self.xapi.srRef, VDI.DB_GC_NO_SPACE)
+                xapi_session.xenapi.message.destroy(msg_id)
 
     def clear_no_space_msg(self, vdi):
         msg_id = None
@@ -3940,16 +3933,12 @@ class LinstorSR(SR):
                 if node_name == hostname:
                     continue
 
-                with util.timeout(5):
-                    session = XAPI.getSession()
-                    try:
-                        sr_uuid = util.get_sr_uuid_from_vdi_uuid(session, uuid) if is_vdi_uuid else uuid
-                        util.SMlog(f"LINSTOR volume is coalescing on `{sr_uuid}`. We're going to interrupt the GC...")
-                        return util.strtobool(session.xenapi.host.call_plugin(
-                            util.get_master_ref(session), MANAGER_PLUGIN, "abortGc", {"srUuid": sr_uuid}
-                        ))
-                    finally:
-                        session.xenapi.session.logout()
+                with util.timeout(5), util.ApiSession("SMGC-coalescing") as session:
+                    sr_uuid = util.get_sr_uuid_from_vdi_uuid(session, uuid) if is_vdi_uuid else uuid
+                    util.SMlog(f"LINSTOR volume is coalescing on `{sr_uuid}`. We're going to interrupt the GC...")
+                    return util.strtobool(session.xenapi.host.call_plugin(
+                        util.get_master_ref(session), MANAGER_PLUGIN, "abortGc", {"srUuid": sr_uuid}
+                    ))
         return False
 
 

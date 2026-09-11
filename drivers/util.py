@@ -19,6 +19,7 @@
 from sm_typing import Any, List, Optional, override
 
 import contextlib
+import atexit
 import os
 import re
 import sys
@@ -46,7 +47,8 @@ import resource
 import traceback
 import glob
 import copy
-import tempfile
+import contextlib
+from sm_typing import override
 
 from functools import reduce
 from sm_typing import List, Optional
@@ -467,12 +469,11 @@ def ioretry_stat(path, maxretry=IORETRY_MAX):
 
 def sr_get_capability(sr_uuid, session=None):
     result = []
-    local_session = None
-    if session is None:
-        local_session = get_localAPI_session()
-        session = local_session
-
+    api_session = None
     try:
+        if session is None:
+            api_session = ApiSession("SM-sr-get-capability")
+            session = api_session.session
         sr_ref = session.xenapi.SR.get_by_uuid(sr_uuid)
         sm_type = session.xenapi.SR.get_record(sr_ref)['type']
         sm_rec = session.xenapi.SM.get_all_records_where(
@@ -481,11 +482,10 @@ def sr_get_capability(sr_uuid, session=None):
         # SM expects at least one entry of any SR type
         if len(sm_rec) > 0:
             result = list(sm_rec.values())[0]['capabilities']
-
-        return result
     finally:
-        if local_session:
-            local_session.xenapi.session.logout()
+        if api_session:
+            session.logout()
+    return result
 
 def sr_get_driver_info(driver_info):
     results = {}
@@ -774,14 +774,57 @@ def getrootdevID():
     return rootdevID
 
 
-def get_localAPI_session():
-    # First acquire a valid session
-    session = XenAPI.xapi_local()
-    try:
-        session.xenapi.login_with_password('root', '', '', 'SM')
-    except:
-        raise xs_errors.XenError('APISession')
-    return session
+class ApiSession(contextlib.AbstractContextManager):
+    session = None
+
+    def __init__(self, originator="SM"):
+        self.originator = originator
+        # First acquire a valid session
+        self.session = self._login()
+        atexit.register(self._atexit)
+
+    def _login(self):
+        if self.session:
+            return self.session
+        session = XenAPI.xapi_local()
+        try:
+            session.xenapi.login_with_password('root', '', '', self.originator)
+        except Exception as exc:
+            raise xs_errors.XenError(
+                "APISession",
+                opterr=f"[{self.originator}] Unable to open local XAPI session"
+            ) from exc
+        SMlog("ApiSession [{}] login".format(self.originator), priority=LOG_DEBUG)
+        return session
+
+    def _logout(self, log):
+        """Closes an API session"""
+        if self.session is None:
+            SMlog("ApiSession [{}] session is None {}".format(self.originator, log), priority=LOG_DEBUG)
+            return
+        self.session.xenapi.session.logout()
+        SMlog("ApiSession [{}] {}".format(self.originator, log), priority=LOG_DEBUG)
+        self.session = None
+
+    def logout(self, log="logout"):
+        atexit.unregister(self._atexit)
+        self._logout(log=log)
+
+    def __del__(self):
+        if self.session:
+            self.logout(log="logout del")
+
+    def _atexit(self):
+        self._logout(log="logout atexit")
+
+    @override
+    def __enter__(self):
+        self.session = self._login()
+        return self.session
+
+    @override
+    def __exit__(self, _type, _value, _traceback):
+        self.logout(log=f"logout exception[{_type}] {_value}" if _type else "logout context")
 
 
 def xapi_safe_call(function):
@@ -1453,16 +1496,12 @@ class FistPoint:
         return os.path.exists("/tmp/fist_%s" % name)
 
     def mark_sr(self, name, sruuid, started):
-        session = get_localAPI_session()
-        try:
+        with ApiSession("SM-sr-fist-point") as session:
             sr = session.xenapi.SR.get_by_uuid(sruuid)
-
             if started:
                 session.xenapi.SR.add_to_other_config(sr, name, "active")
             else:
                 session.xenapi.SR.remove_from_other_config(sr, name)
-        finally:
-            session.xenapi.session.logout()
 
     def activate(self, name, sruuid):
         if name in self.points:
