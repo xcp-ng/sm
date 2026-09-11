@@ -61,6 +61,7 @@ try:
     from linstorvolumemanager import get_controller_uri
     from linstorvolumemanager import LinstorVolumeManager, LinstorVolumeManagerError, LinstorVolumeOpeners
     from linstorvolumemanager import PERSISTENT_PREFIX as LINSTOR_PERSISTENT_PREFIX
+    from linstorvolumemanager import DELETED_PREFIX as LINSTOR_DELETED_PREFIX
 
     LINSTOR_AVAILABLE = True
 except ImportError:
@@ -2920,7 +2921,7 @@ class SR(object):
             vdi._coalesceCowImageOnHost(host_ref, vdi) # vdi is the leaf for the online coalesce
             util.fistpoint.activate("LVHDRT_coaleaf_after_coalesce", self.uuid)
             vdi.pause(failfast=True)
-            # We make a pause here after the online coalesce but before the rename so we can refresh the chain for tapdisk. 
+            # We make a pause here after the online coalesce but before the rename so we can refresh the chain for tapdisk.
             # It's also needed to be paused for the rename on slaves with LVMSR.
             # We let the caller `_liveLeafCoalesce` do the unpause with the call to `vdi.ensureUnpaused()`
         else:
@@ -3749,7 +3750,7 @@ class LinstorSR(SR):
                 if not volume_info.name and not list(volume_metadata.items()):
                     continue  # Ignore it, probably deleted.
 
-                if vdi_uuid.startswith('DELETED_'):
+                if vdi_uuid.startswith(LINSTOR_DELETED_PREFIX):
                     # Assume it's really a RAW volume of a failed snap without COW header/footer.
                     # We must remove this VDI now without adding it in the VDI list.
                     # Otherwise `Relinking` calls and other actions can be launched on it.
