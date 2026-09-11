@@ -95,6 +95,7 @@ class LVMSR(SR.SR):
     THIN_PLUGIN = "lvhd-thin"
 
     PLUGIN_ON_SLAVE = "on-slave"
+    PLUGIN_ON_MASTER = "on-master"
 
     FLAG_USE_VHD = "use_vhd"
     MDVOLUME_NAME = "MGT"
@@ -2334,9 +2335,26 @@ class LVMVDI(VDI.VDI):
     @override
     def _delete_cbt_log(self) -> None:
         logpath = self._get_cbt_logpath(self.uuid)
-        if self._cbt_log_exists(logpath):
-            logname = self._get_cbt_logname(self.uuid)
-            self.sr.lvmCache.remove(logname)
+        if not self._cbt_log_exists(logpath):
+            return
+        logname = self._get_cbt_logname(self.uuid)
+        if not self.sr.isMaster and self.sr.is_shared():        
+            master = util.get_master_ref(self.session)
+            response = self.session.xenapi.host.call_plugin(
+                master,
+                self.sr.PLUGIN_ON_MASTER,
+                "delete_cbt_log",
+                {
+                    "vgName": self.sr.vgname,
+                    "lvName": logname,
+                }
+            )
+            util.SMlog(f"on-master.delete_cbt_log call-plugin returned: {response}")
+            if not response:
+                raise Exception(f"plugin {self.sr.PLUGIN_ON_MASTER} failed")    
+            lvutil._lvmBugCleanup(logpath)
+            return
+        self.sr.lvmCache.remove(logname)
 
     @override
     def _rename(self, oldpath, newpath) -> None:
