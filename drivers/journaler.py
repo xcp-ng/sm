@@ -19,7 +19,7 @@
 
 import util
 import xs_errors
-from srmetadata import open_file, file_read_wrapper, file_write_wrapper
+from srmetadata import open_file, file_read_wrapper, file_write_wrapper, align_data_to_file
 
 LVM_MAX_NAME_LEN = 127
 
@@ -34,6 +34,16 @@ class Journaler:
     SEPARATOR = "_"
     JRN_CLONE = "clone"
     JRN_LEAF = "leaf"
+    JRN_REVERT = "revert"
+
+    @classmethod
+    def has_additional_data(cls, type: str) -> bool:
+        """Return True if journal type contains additional data inside of it"""
+        return type in [
+            cls.JRN_CLONE,
+            cls.JRN_LEAF,
+            cls.JRN_REVERT,
+        ]
 
     def __init__(self, lvmCache):
         self.vgName = lvmCache.vgName
@@ -42,54 +52,63 @@ class Journaler:
     def create(self, type, id, val):
         """Create an entry of type "type" for "id" with the value "val".
         Error if such an entry already exists."""
-        valExisting = self.get(type, id)
-        writeData = False
-        if valExisting or util.fistpoint.is_active("LVM_journaler_exists"):
-            raise xs_errors.XenError('LVMCreate', opterr="Journal already exists for '%s:%s': %s" % (type, id, valExisting))
-        lvName = self._getNameLV(type, id, val)
+        to_write = None
+        journal_exists = self.get(type, id)
+        if journal_exists or util.fistpoint.is_active("LVM_journaler_exists"):
+            raise xs_errors.XenError('LVMCreate', opterr=f"Journal already exists for '{type}:{id}': {journal_exists}")
+        lv_name = self._getNameLV(type, id, val)
 
-        mapperDevice = self._getLVMapperName(lvName)
-        if len(mapperDevice) > LVM_MAX_NAME_LEN:
-            lvName = self._getNameLV(type, id)
-            writeData = True
-            mapperDevice = self._getLVMapperName(lvName)
-            assert len(mapperDevice) <= LVM_MAX_NAME_LEN
+        mapper_device = self._getLVMapperName(lv_name)
+        if len(mapper_device) > LVM_MAX_NAME_LEN:
+            lv_name = self._getNameLV(type, id)
+            mapper_device = self._getLVMapperName(lv_name)
+            assert len(mapper_device) <= LVM_MAX_NAME_LEN
 
-        self.lvmCache.create(lvName, self.LV_SIZE, self.LV_TAG)
-
-        if writeData:
-            fullPath = self.lvmCache._getPath(lvName)
-            journal_file = open_file(fullPath, True)
             try:
-                e = None
-                try:
-                    data = ("%d %s" % (len(val), val)).encode()
-                    file_write_wrapper(journal_file, 0, data)
-                    if util.fistpoint.is_active("LVM_journaler_writefail"):
-                        raise ValueError("LVM_journaler_writefail FistPoint active")
-                except Exception as e:
-                    raise
-                finally:
-                    try:
-                        journal_file.close()
-                        self.lvmCache.deactivateNoRefcount(lvName)
-                    except Exception as e2:
-                        msg = 'failed to close/deactivate %s: %s' \
-                                % (lvName, e2)
-                        if not e:
-                            util.SMlog(msg)
-                            raise e2
-                        else:
-                            util.SMlog('WARNING: %s (error ignored)' % msg)
-
-            except:
+                to_write = ("%d %s" % (len(val), val)).encode()
+            except UnicodeEncodeError as e:
                 util.logException("journaler.create")
+                raise xs_errors.XenError("LVMWrite", opterr=f"Failed to encode data for journal {lv_name}") from e
+            used_size = len(align_data_to_file(to_write))
+            if used_size > self.LV_SIZE:
+                raise xs_errors.XenError("LVMWrite", opterr=f"Size of encoded journal {used_size} exceeds limit of {self.LV_SIZE}")
+
+
+        self.lvmCache.create(lv_name, self.LV_SIZE, self.LV_TAG)
+
+        if not to_write:
+            return
+
+        full_path = self.lvmCache._getPath(lv_name)
+        journal_file = open_file(full_path, True)
+        try:
+            raised_exception = None
+            try:
+                file_write_wrapper(journal_file, 0, to_write)
+                if util.fistpoint.is_active("LVM_journaler_writefail"):
+                    raise ValueError("LVM_journaler_writefail FistPoint active")
+            except Exception as e:
+                raised_exception = e
+                raise
+            finally:
                 try:
-                    self.lvmCache.remove(lvName)
+                    journal_file.close()
+                    self.lvmCache.deactivateNoRefcount(lv_name)
                 except Exception as e:
-                    util.SMlog('WARNING: failed to clean up failed journal ' \
-                            ' creation: %s (error ignored)' % e)
-                raise xs_errors.XenError('LVMWrite', opterr="Failed to write to journal %s" % lvName)
+                    msg = f"failed to close/deactivate {lv_name}: {e}"
+                    if not raised_exception:
+                        util.SMlog(msg)
+                        raise e
+                    else:
+                        util.SMlog(f"WARNING: {msg} (error ignored)")
+
+        except:
+            util.logException("journaler.create")
+            try:
+                self.lvmCache.remove(lv_name)
+            except Exception as e:
+                util.SMlog(f"WARNING: failed to clean up failed journal creation: {e} (error ignored)")
+            raise xs_errors.XenError('LVMWrite', opterr=f"Failed to write to journal {lv_name}")
 
     def remove(self, type, id):
         """Remove the entry of type "type" for "id". Error if the entry doesn't
@@ -139,26 +158,23 @@ class Journaler:
             if len(parts) != 3 or util.fistpoint.is_active("LVM_journaler_badname"):
                 raise xs_errors.XenError('LVMNoVolume', opterr="Bad LV name: %s" % lvName)
             type, id, val = parts
-            if readFile:
-                # For clone and leaf journals, additional
-                # data is written inside file
-                # TODO: Remove dependency on journal type
-                if type == self.JRN_CLONE or type == self.JRN_LEAF:
-                    fullPath = self.lvmCache._getPath(lvName)
-                    self.lvmCache.activateNoRefcount(lvName, False)
-                    journal_file = open_file(fullPath)
+            # TODO: Remove dependency on journal type
+            if readFile and self.has_additional_data(type):
+                fullPath = self.lvmCache._getPath(lvName)
+                self.lvmCache.activateNoRefcount(lvName, False)
+                journal_file = open_file(fullPath)
+                try:
                     try:
-                        try:
-                            data = file_read_wrapper(journal_file, 0)
-                            length, val = data.decode().split(" ", 1)
-                            val = val[:int(length)]
-                            if util.fistpoint.is_active("LVM_journaler_readfail"):
-                                raise ValueError("LVM_journaler_readfail FistPoint active")
-                        except:
-                            raise xs_errors.XenError('LVMRead', opterr="Failed to read from journal %s" % lvName)
-                    finally:
-                        journal_file.close()
-                        self.lvmCache.deactivateNoRefcount(lvName)
+                        data = file_read_wrapper(journal_file, 0, -1)
+                        length, val = data.decode().split(" ", 1)
+                        val = val[:int(length)]
+                        if util.fistpoint.is_active("LVM_journaler_readfail"):
+                            raise ValueError("LVM_journaler_readfail FistPoint active")
+                    except:
+                        raise xs_errors.XenError('LVMRead', opterr="Failed to read from journal %s" % lvName)
+                finally:
+                    journal_file.close()
+                    self.lvmCache.deactivateNoRefcount(lvName)
             if not entries.get(type):
                 entries[type] = dict()
             entries[type][id] = val
