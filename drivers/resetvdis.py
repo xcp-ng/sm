@@ -138,16 +138,8 @@ def usage():
             "the VDI is not in use before running this script.")
     sys.exit(1)
 
-if __name__ == '__main__':
-    import atexit
 
-    if len(sys.argv) not in [3, 4, 5]:
-        usage()
-
-    session = XenAPI.xapi_local()
-    session.xenapi.login_with_password('root', '', '', 'SM')
-    atexit.register(session.xenapi.session.logout)
-
+def main(session):
     mode = sys.argv[1]
     if mode == "all":
         if len(sys.argv) not in [4, 5]:
@@ -183,3 +175,10 @@ if __name__ == '__main__':
         reset_sr(session, host_uuid, sr_uuid, is_master)
     else:
         usage()
+
+if __name__ == '__main__':
+    if len(sys.argv) not in [3, 4, 5]:
+        usage()
+
+    with util.ApiSession("SM-resetvdis") as session:
+        main(session)

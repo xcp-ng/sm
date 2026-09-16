@@ -39,9 +39,7 @@ def load_key(key_hash, vdi_uuid):
 
 
 def _check_key(key_hash, vdi_uuid):
-    session = XenAPI.xapi_local()
-    session.xenapi.login_with_password('root', '', '', PROGRAM_NAME)
-    try:
+    with util.ApiSession(PROGRAM_NAME) as session:
         vdi = session.xenapi.VDI.get_by_uuid(vdi_uuid)
         sm_config = session.xenapi.VDI.get_sm_config(vdi)
         if 'key_hash' in sm_config:
@@ -54,8 +52,6 @@ def _check_key(key_hash, vdi_uuid):
             raise Exception('Encryption key requested for VDI {}'
                             ' whose sm_config does not contain the key_hash'
                             ' entry. Its sm_config is {}'.format(vdi_uuid, sm_config))
-    finally:
-        session.xenapi.logout()
 
 
 class InputError(Exception):
