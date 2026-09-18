@@ -708,7 +708,7 @@ class Blktap(ClassDevice):
 
 class Tapdisk(object):
 
-    TYPES = ['aio', 'vhd', 'qcow2']
+    TYPES = ['aio', 'vhd', 'qcow2', 'nbd']
 
     def __init__(self, pid, minor, _type, path, state):
         self.pid = pid

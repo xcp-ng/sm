@@ -188,6 +188,10 @@ class SRCommand:
                 params_to_log = util.hidePasswdInParams(
                     self.params, 'device_config')
 
+            if getattr(sr, 'direct_nbd', False):
+                params_to_log = dict(params_to_log)
+                params_to_log['device_config'] = '<redacted NBD configuration>'
+
             if 'session_ref' in params_to_log:
                 params_to_log['session_ref'] = '******'
 
@@ -198,6 +202,15 @@ class SRCommand:
                                blktap2.VDI.CONF_KEY_MODE_ON_BOOT,
                                blktap2.VDI.CONF_KEY_CACHE_SR,
                                blktap2.VDI.CONF_KEY_O_DIRECT])
+
+        # Explicit opt-in for drivers which own their NBD server. Do not wrap
+        # these attachments in tapdisk or discard their NBD URI.
+        if getattr(sr, "direct_nbd", False):
+            if self.cmd == 'vdi_attach':
+                return target.attach(self.params['sr_uuid'], self.vdi_uuid,
+                                     self.params['args'][0] == 'true')
+            if self.cmd == 'vdi_detach':
+                return target.detach(self.params['sr_uuid'], self.vdi_uuid)
 
         if self.cmd == 'vdi_create':
             # These are the fields owned by the backend, passed on the
