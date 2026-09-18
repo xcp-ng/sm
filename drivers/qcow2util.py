@@ -56,8 +56,8 @@ class QCowUtil(CowUtil):
 
     QCOW2_MAGIC = 0x514649FB  # b"QFI\xfb": Magic number for QCOW2 files
     QCOW2_HEADER_SIZE = 104  # In fact the last information we need is at offset 40-47
-    QCOW2_L2_SIZE = QCOW2_DEFAULT_CLUSTER_SIZE
     QCOW2_BACKING_FILE_OFFSET = 8
+    QCOW2_INCOMPATIBLE_FEATURE_EXTENDED_L2 = 0x10
 
     ALLOCATED_ENTRY_BIT = (
         0x8000_0000_0000_0000  # Bit 63 is the allocated bit for standard cluster
@@ -126,13 +126,21 @@ class QCowUtil(CowUtil):
         Returns:
             list: List of all L2 entries
         """
-        # The size of L2 is 65536 bytes and each entry is 8 bytes.
+        cluster_size = 1 << self.header["cluster_bits"]
+        extended_l2 = bool(self.header["incompatible_features"] & self.QCOW2_INCOMPATIBLE_FEATURE_EXTENDED_L2)
+
+        l2_entry_size = 8
+        L2_format = ">Q"
+        if extended_l2:
+            l2_entry_size = 16
+            L2_format = ">QQ"
+
         file.seek(l2_offset)
-        l2_table = file.read(QCowUtil.QCOW2_L2_SIZE)
+        l2_table = file.read(cluster_size)
 
         return [
-            struct.unpack(">Q", l2_table[i : i + 8])[0]
-            for i in range(0, len(l2_table), 8)
+            struct.unpack(l2_format, l2_table[i : i + l2_entry_size])[0]
+            for i in range(0, len(l2_table), l2_entry_size)
         ]
 
     @staticmethod
@@ -172,6 +180,7 @@ class QCowUtil(CowUtil):
         # refcount_table_clusters: u32, // Number of clusters for the refcount table
         # nb_snapshots: u32,            // Number of snapshots in the image
         # snapshots_offset: u64,        // Offset to the snapshot table
+        # incompatible_features: u64,   // Bitmask of incompatible features
 
         file.seek(0)
         header = file.read(QCowUtil.QCOW2_HEADER_SIZE)
@@ -189,7 +198,8 @@ class QCowUtil(CowUtil):
             _,
             _,
             snapshots_offset,
-        ) = struct.unpack(">IIQIIQIIQQIIQ", header[:72])
+            incompatible_features,
+        ) = struct.unpack(">IIQIIQIIQQIIQQ", header[:80])
 
         if magic != QCowUtil.QCOW2_MAGIC:
             raise ValueError("Not a valid QCOW2 file")
@@ -207,6 +217,7 @@ class QCowUtil(CowUtil):
             "refcount_table_offset": refcount_table_offset,
             "snapshots_offset": snapshots_offset,
             "parent": parent_name,
+            "incompatible_features": incompatible_features,
         }
 
     @staticmethod
@@ -425,6 +436,9 @@ class QCowUtil(CowUtil):
                     idx = 0
         return struct.pack("B"*len(bitmap), *bitmap)
 
+    def _convert_bool_to_qemu_option_value(self, option: bool) -> str:
+        return 'on' if option else 'off'
+
     # ----
     # Implementation of CowUtil
     # ----
@@ -441,6 +455,11 @@ class QCowUtil(CowUtil):
     def getBlockSize(self, path: str) -> int:
         self._read_qcow2(path)
         return 1 << self.header["cluster_bits"]
+
+    @override
+    def getExtendedL2(self, path: str) -> bool:
+        self._read_qcow2(path)
+        return bool(self.header["incompatible_features"] & self.QCOW2_INCOMPATIBLE_FEATURE_EXTENDED_L2)
 
     @override
     def getFooterSize(self) -> int:
@@ -461,7 +480,7 @@ class QCowUtil(CowUtil):
             cluster_size = block_size
         else:
             cluster_size = QCOW2_DEFAULT_CLUSTER_SIZE
-        cmd = [QEMU_IMG, "measure", "-O", "qcow2", "--output", "json", "-o", f"cluster_size={cluster_size}", "--size", f"{virtual_size}"]
+        cmd = [QEMU_IMG, "measure", "-O", "qcow2", "--output", "json", "-o", f"cluster_size={cluster_size},extended_l2=on", "--size", f"{virtual_size}"]
         output = json.loads(self._ioretry(cmd))
         return int(output["required"])
 
@@ -822,9 +841,11 @@ class QCowUtil(CowUtil):
         if parentRaw:
             parent_type = RAW_TYPE
             cluster_size = QCOW2_DEFAULT_CLUSTER_SIZE
+            extended_l2 = False
         else:
             parent_type = QCOW2_TYPE
             cluster_size = self.getBlockSize(parent)
+            extended_l2 = self.getExtendedL2(parent)
         args = ["-f", QCOW2_TYPE, "-F", parent_type, "-b", parent]
 
         if is_mirror_image:
@@ -836,9 +857,9 @@ class QCowUtil(CowUtil):
             # Ensuring we go back to a better cluster_size for performance reasons.
             # This limit our images max size to 64TiB.
             cluster_size = 16 * 1024 # 16KiB
-            args.extend(["-o", "extended_l2=on"])
+            extended_l2 = True
 
-        args.extend(["-o", f"cluster_size={cluster_size}"])
+        args.extend(["-o", f"cluster_size={cluster_size},extended_l2={self._convert_bool_to_qemu_option_value(extended_l2)}"])
         cmd.extend(args)
         cmd.append(path)
 
