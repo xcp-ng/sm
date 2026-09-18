@@ -17,7 +17,7 @@
 #
 # blktap2: blktap/tapdisk management layer
 #
-from sm_typing import Any, Callable, ClassVar, Dict, override, List, Union
+from sm_typing import Any, Callable, ClassVar, Dict, Optional, override, List, Union
 
 from abc import abstractmethod
 
@@ -786,8 +786,48 @@ class Tapdisk(object):
         return cls.get(path=path)
 
     @classmethod
-    def get_pid_for_path(cls, path: str) -> str:
-        return util.pread2(['/usr/sbin/lsof', '-t', path]).strip()
+    def get_pid_for_path(cls, path: str) -> Optional[str]:
+        """
+        Return the PID of the tapdisk process holding the blktap device
+        `path` open, or None if nobody does.
+
+        Only tapdisk processes ever hold blktap devices, so it is enough to
+        look at the file descriptors of these processes in /proc. This
+        replaces `lsof -t <path>`, which walks every file descriptor of
+        every process on the host: measured at 1.5 to 4 s per call on
+        XCP-ng 8.3 dom0s with 650-800 processes (i.e. 3 to 8 s added to
+        every VDI activate/deactivate, hence to every VM start, stop and
+        live migration), whereas this scan takes about 0.1 s.
+        """
+        try:
+            tapdisk_stat = os.stat(path)
+        except OSError:
+            return None
+        if not stat.S_ISCHR(tapdisk_stat.st_mode):
+            return None
+        try:
+            pids = os.listdir('/proc')
+        except OSError as e:
+            raise util.SMException("Internal error: unable to list PIDs") from e
+        for pid in pids:
+            if not pid.isdigit():
+                continue
+            try:
+                with open(f'/proc/{pid}/comm') as f:
+                    if f.read().strip() != 'tapdisk':
+                        continue
+                fd_path = f'/proc/{pid}/fd'
+                for fd in os.listdir(fd_path):
+                    try:
+                        st = os.stat(f'{fd_path}/{fd}')
+                    except OSError:
+                        continue
+                    if st.st_rdev == tapdisk_stat.st_rdev:
+                        return pid
+            except OSError:
+                # The process went away or is not readable: not ours.
+                continue
+        return None
 
     @classmethod
     def from_minor(cls, minor):
