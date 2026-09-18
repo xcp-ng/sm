@@ -40,6 +40,7 @@ from linstorvolumemanager import (
     LinstorVolumeManager,
     LINSTOR_SATELLITE_PORT,
 )
+import lvmbackup
 import json
 import LinstorSR
 import lock
@@ -684,6 +685,17 @@ def has_controller_running(session, args):
     return str(ret == 0)
 
 
+def backup_lvm_metadata(session, args):
+    vgname = args["vgName"]
+
+    try:
+        lvmbackup.backup_vg(vgname)
+        return str(True)
+    except Exception as e:
+        util.SMlog(f"linstor-manager:backup_lvm_metadata error: {e}")
+        return str(False)
+
+
 def add_host(session, args):
     group_name = args['groupName']
 
@@ -1311,6 +1323,7 @@ if __name__ == '__main__':
 
         'lockVdi': lock_vdi,
         'hasControllerRunning': has_controller_running,
+        'backupLvmMetadata': backup_lvm_metadata,
         'addHost': add_host,
         'removeHost': remove_host,
         'createSr': create_sr,

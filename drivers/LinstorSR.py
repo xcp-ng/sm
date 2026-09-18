@@ -1580,6 +1580,41 @@ class LinstorSR(SR.SR):
             self._reconnect()
         self._linstor.database_backup(name, delay=delay)
 
+    @property
+    def _vgname(self):
+        # For thin provisioning, group name is `vgname/lvname`.
+        # For thick provisioning, group name is `vgname`.
+        return self._group_name.split("/")[0]
+
+    def _backup_vg_on_all_hosts(self):
+        """
+        Back up the metadata of the LVM volume group associated to this LINSTOR
+        SR, on all hosts.
+
+        This is a best-effort operation: if it fails, no exception is raised and
+        it is up to the caller to react according to the return value.
+        """
+        if self.session is None:
+            return
+
+        vgname = self._vgname
+        args = {"vgName": vgname}
+
+        try:
+            for host_ref in util.get_online_hosts(self.session):
+                try:
+                    self._exec_manager_command(
+                        host_ref, "backupLvmMetadata", args, "LVMBackup"
+                    )
+                except Exception as e:
+                    util.SMlog(
+                        f"Failed to back up LINSTOR LVM metadata of `{vgname}` on host `{host_ref}`: {e}"
+                    )
+        except Exception as e:
+            util.SMlog(
+                f"Failed to back up LINSTOR LVM metadata of `{vgname}`: {e}"
+            )
+
 # ==============================================================================
 # LinstorSr VDI
 # ==============================================================================
@@ -1691,6 +1726,8 @@ class LinstorVDI(VDI.VDI):
             elif self.ty == 'redo_log':
                 volume_name = REDO_LOG_VOLUME_NAME
 
+            self.sr._backup_vg_on_all_hosts()
+
             self._linstor.create_volume(
                 self.uuid,
                 volume_size,
@@ -1786,6 +1823,8 @@ class LinstorVDI(VDI.VDI):
             )
 
         try:
+            self.sr._backup_vg_on_all_hosts()
+
             # Remove from XAPI and delete from LINSTOR.
             self._linstor.destroy_volume(self.uuid)
             if not data_only:
@@ -1984,6 +2023,8 @@ class LinstorVDI(VDI.VDI):
 
         space_needed = new_volume_size - old_volume_size
         self.sr._ensure_space_available(space_needed)
+
+        self.sr._backup_vg_on_all_hosts()
 
         old_size = self.size
         if not VdiType.isCowImage(self.vdi_type):
@@ -2391,6 +2432,7 @@ class LinstorVDI(VDI.VDI):
         if not blktap2.VDI.tap_pause(self.session, sr_uuid, vdi_uuid):
             raise util.SMException('Failed to pause VDI {}'.format(vdi_uuid))
         try:
+            self.sr._backup_vg_on_all_hosts()
             return self._snapshot(snapType, cbtlog, consistency_state)
         finally:
             self.disable_leaf_on_secondary(vdi_uuid, secondary=secondary)
