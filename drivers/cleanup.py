@@ -33,6 +33,7 @@ import base64
 import zlib
 import errno
 import stat
+from pathlib import Path
 
 import XenAPI # pylint: disable=import-error
 import util
@@ -3217,18 +3218,28 @@ class FileSR(SR):
     @override
     def _handleInterruptedCoalesceLeaf(self) -> None:
         entries = self.journaler.getAll(VDI.JRN_LEAF)
+        extensions = tuple(VDI_TYPE_TO_EXTENSION[vdi_type] for vdi_type in VDI_COW_TYPES)
+        srRoot = Path(self.path)
+
         for uuid, parentUuid in entries.items():
-            fileList = os.listdir(self.path)
-            childName = uuid + VdiTypeExtension.VHD
-            tmpChildName = self.TMP_RENAME_PREFIX + uuid + VdiTypeExtension.VHD
-            parentName1 = parentUuid + VdiTypeExtension.VHD
-            parentName2 = parentUuid + VdiTypeExtension.RAW
-            parentPresent = (parentName1 in fileList or parentName2 in fileList)
-            if parentPresent or tmpChildName in fileList:
+            hasCowPath = False
+
+            for extension in extensions:
+                hasCowPath = (
+                    (srRoot / (self.TMP_RENAME_PREFIX + uuid + extension)).exists() or
+                    (srRoot / (parentUuid + extension)).exists()
+                )
+
+                if hasCowPath:
+                    break
+
+            if hasCowPath or (srRoot / (parentUuid + VdiTypeExtension.RAW)).exists():
                 self._undoInterruptedCoalesceLeaf(uuid, parentUuid)
             else:
                 self._finishInterruptedCoalesceLeaf(uuid, parentUuid)
+
             self.journaler.remove(VDI.JRN_LEAF, uuid)
+
             vdi = self.getVDI(uuid)
             if vdi:
                 vdi.ensureUnpaused()
