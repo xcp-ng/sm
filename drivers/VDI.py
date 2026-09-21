@@ -15,9 +15,13 @@
 #
 # VDI: Base class for virtual disk instances
 #
+import XenAPI # pylint: disable=import-error
+import time
+from contextlib import contextmanager
 
 from sm_typing import Dict, Optional
 
+import blktap2
 import cleanup
 import SR
 import xmlrpc.client
@@ -37,6 +41,7 @@ SM_CONFIG_PASS_THROUGH_FIELDS = ["base_mirror", "key_hash"]
 SNAPSHOT_SINGLE = 1  # true snapshot: 1 leaf, 1 read-only parent
 SNAPSHOT_DOUBLE = 2  # regular snapshot/clone that creates 2 leaves
 SNAPSHOT_INTERNAL = 3  # SNAPSHOT_SINGLE but don't update SR's virtual allocation
+LONG_PAUSE_TIME = 60
 
 
 class VDI(object):
@@ -210,6 +215,9 @@ class VDI(object):
                      cloneOp=False, secondary=None, cbtlog=None, is_mirror_destination=False) -> str:
         raise xs_errors.XenError('Unimplemented')
 
+    def _do_revert(self, dest: "VDI", src_cbtlog: Optional[str], dest_cbtlog: Optional[str]) -> None:
+        raise xs_errors.XenError('Unimplemented')
+
     def _delete_cbt_log(self) -> None:
         raise xs_errors.XenError('Unimplemented')
 
@@ -241,6 +249,39 @@ class VDI(object):
         advance.
         """
         raise xs_errors.XenError('Unimplemented')
+
+    def revert(self, _sr_uuid: str, _vdi_uuid: str, target_uuid: str) -> None:
+        """Replaces the contents of the target_uuid VDI with the contents of the vdi_uuid
+        without changing the identitity of the target (i.e. name-label, uuid and location
+        are guaranteed to remain the same)..
+
+        This operation IS idempotent and the vdi pointed by vdi_uuid is preserved.
+        """
+        if not self.managed:
+            raise util.SMException(f"Source {self.uuid} is a base copy.")
+
+        dest = self.sr.vdi(target_uuid)
+
+        if not dest.managed:
+            raise util.SMException(f"Destination {self.uuid} is a base copy.")
+
+        if self.vdi_type != dest.vdi_type:
+            raise util.SMException(f"{self.uuid} and {dest.uuid} has incompatible types {self.vdi_type} != {dest.vdi_type}")
+
+        for vdi in [self, dest]:
+            if not VdiType.isCowImage(vdi.vdi_type):
+                raise xs_errors.XenError(
+                    "Unimplemented", opterr=f"VDI {vdi.uuid} is not a COW image"
+                )
+
+        src_cbtlog = self._get_cbt_logpath(self.uuid) if self._get_blocktracking_status() else None
+        dest_cbtlog = dest._get_cbt_logpath(dest.uuid) if dest._get_blocktracking_status() else None
+
+        dest.sm_config = dest.session.xenapi.VDI.get_sm_config(dest.session.xenapi.VDI.get_by_uuid(dest.uuid))
+        self.sm_config = dest.session.xenapi.VDI.get_sm_config(dest.session.xenapi.VDI.get_by_uuid(dest.uuid))
+
+        self._do_revert(dest, src_cbtlog=src_cbtlog, dest_cbtlog=dest_cbtlog)
+
 
     def resize_cbt(self, sr_uuid, vdi_uuid, size):
         """Resize the given VDI to size <size> MB. Size can
@@ -279,7 +320,6 @@ class VDI(object):
         prior to deletion, otherwise the delete() will fail if the
         disk is still attached.
         """
-        import blktap2
         from lock import Lock
 
         if data_only == False and self._get_blocktracking_status():
@@ -436,6 +476,19 @@ class VDI(object):
             finally:
                 lock.release()
 
+    @contextmanager
+    def tap_pause(self, secondary=None):
+        start = time.monotonic()
+        if not blktap2.VDI.tap_pause(self.session, self.sr.uuid, self.uuid):
+            raise util.SMException(f"Could not pause disk {self.uuid} on sr {self.sr.uuid}")
+        try:
+            yield
+        finally:
+            blktap2.VDI.tap_unpause(self.session, self.sr.uuid, self.uuid, secondary)
+            pause_time = time.monotonic() - start
+            if pause_time > LONG_PAUSE_TIME:
+                util.SMlog(f"WARNING: vdi {self.uuid} was paused for {pause_time} seconds")
+
     def get_params(self) -> str:
         """
         Returns:
@@ -466,6 +519,14 @@ class VDI(object):
         cbt_enabled = util.default(self, "cbt_enabled", lambda: False)
         vdi = self.sr.session.xenapi.VDI.db_introduce(uuid, self.label, self.description, self.sr.sr_ref, ty, self.shareable, self.read_only, {}, self.location, {}, sm_config, self.managed, str(self.size), str(self.utilisation), metadata_of_pool, is_a_snapshot, xmlrpc.client.DateTime(snapshot_time), snapshot_of, cbt_enabled)
         return vdi
+
+    def _db_update_or_introduce(self):
+        try:
+            vdi_ref = self.sr.session.xenapi.VDI.get_by_uuid(self.uuid)
+        except XenAPI.Failure:
+            return self._db_introduce()
+        self._db_update()
+        return vdi_ref
 
     def _db_forget(self):
         self.sr.forget_vdi(self.uuid)
@@ -557,7 +618,6 @@ class VDI(object):
 
     def configure_blocktracking(self, sr_uuid, vdi_uuid, enable):
         """Function for configuring blocktracking"""
-        import blktap2
         vdi_ref = self.sr.srcmd.params['vdi_ref']
 
         # Check if raw VDI or snapshot
@@ -891,6 +951,44 @@ class VDI(object):
                                               alert_prio_warning,
                                               alert_obj, alert_uuid,
                                               alert_str)
+
+    def _disable_cbt_on_vdi(self, vdi: "VDI", alert_name: str, alert_str: str) -> None:
+        """Disable CBT on an explicit VDI and send an alert"""
+        util.SMlog(alert_str)
+        vdi._delete_cbt_log()
+        vdi_ref = vdi.session.xenapi.VDI.get_by_uuid(vdi.uuid)
+        vdi.session.xenapi.VDI.set_cbt_enabled(vdi_ref, False)
+        alert_uuid = str(vdi.uuid)
+        vdi.session.xenapi.message.create(
+            alert_name, "3", "VDI", alert_uuid, alert_str
+        )
+
+    def _create_cbt_log_with_size(self, size: int) -> str:
+        """ Create a CBT log using an explicit size, without relying on srcmd """
+        log_path = self._get_cbt_logpath(self.uuid)
+        self._cbt_op(self.uuid, cbtutil.create_cbt_log, log_path, size)
+        self._cbt_op(self.uuid, cbtutil.set_cbt_consistency, log_path, True)
+        return log_path
+
+    def _reset_cbt_log(self) -> None:
+        """Delete and recreate a fresh CBT log for this VDI"""
+        self._delete_cbt_log()
+        self._ensure_cbt_space()
+        self._create_cbt_log_with_size(self.size)
+
+    def _revert_cbt(self, dest: "VDI") -> None:
+        """Update the CBT log chain after a vdi_revert"""
+        util.SMlog(f"CBT revert: wiring chain for src={self.uuid} dest={dest.uuid}")
+        
+        self._reset_cbt_log()
+        dest._reset_cbt_log()
+
+        for vdi in [self, dest]:
+            vdi.session.xenapi.VDI.set_cbt_enabled(
+                vdi.session.xenapi.VDI.get_by_uuid(vdi.uuid), True
+            )
+
+        util.SMlog("CBT revert: chain wired successfully")
 
     def disable_leaf_on_secondary(self, vdi_uuid, secondary=None):
         vdi_ref = self.session.xenapi.VDI.get_by_uuid(vdi_uuid)
