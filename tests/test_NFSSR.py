@@ -20,6 +20,7 @@ class FakeNFSSR(NFSSR.NFSSR):
     def __init__(self, srcmd, none):
         self.dconf = srcmd.dconf
         self.srcmd = srcmd
+        self.cmd = srcmd.params["command"]
 
 
 class TestNFSSR(unittest.TestCase):
