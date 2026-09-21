@@ -723,15 +723,19 @@ class Tapdisk(object):
     @classmethod
     def path_opened(cls, pid: str, path: str) -> bool:
         pid_fd_path = os.path.join('/proc', pid, 'fd')
-        fd_info = os.listdir(pid_fd_path)
-        for fd in fd_info:
-            try:
-                if os.readlink(os.path.join(pid_fd_path, fd)) == path:
-                    return True
-            except OSError as ose:
-                # fd might be closed between calls
-                if ose.errno != errno.ENOENT:
-                    raise
+        try:
+            fd_info = os.listdir(pid_fd_path)
+            for fd in fd_info:
+                try:
+                    if os.readlink(os.path.join(pid_fd_path, fd)) == path:
+                        return True
+                except FileNotFoundError:
+                    # fd might be closed between calls
+                    pass
+        except FileNotFoundError:
+            # Process might exit before we get here
+            pass
+
         return False
 
     @classmethod
@@ -739,10 +743,9 @@ class Tapdisk(object):
         try:
             return (os.path.exists(os.path.join('/proc/', pid, 'exe')) and os.readlink(
                 os.path.join('/proc/', pid, 'exe')) == '/usr/libexec/tapdisk')
-        except OSError as ose:
+        except FileNotFoundError:
             # process might exit between calls
-            if ose.errno != errno.ENOENT:
-                raise
+            pass
 
         return False
 

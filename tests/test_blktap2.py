@@ -117,7 +117,8 @@ class TestTapdisk(unittest.TestCase):
     def test_from_minor_success(self, mock_exists, mock_readlink, mock_listdir):
         # Arrange
         proc_paths = {
-            '/proc': ['14378', '20947', '21457'],
+            '/proc': ['14378', '20947', '21245', '21457'],
+            '/proc/21245/fd': OSError(errno.ENOENT, ""),
             '/proc/21457/fd': ['4', '5']
         }
         mock_paths = {"/dev/xen/blktap-2/blktap3"}
@@ -125,6 +126,7 @@ class TestTapdisk(unittest.TestCase):
         link_paths = {
             "/proc/14378/exe": OSError(errno.ENOENT, ""),
             "/proc/20947/exe": "/bin/bash",
+            "/proc/21245/exe": "/usr/libexec/tapdisk",
             "/proc/21457/exe": "/usr/libexec/tapdisk",
             "/proc/21457/fd/4": OSError(errno.ENOENT, ""),
             "/proc/21457/fd/5": "/dev/xen/blktap-2/blktap3"}
@@ -140,7 +142,15 @@ class TestTapdisk(unittest.TestCase):
 
             return result
 
-        mock_listdir.side_effect = proc_paths.get
+        def listdir(path):
+            result = proc_paths.get(path)
+            print(f"Result for path {path} is {result}")
+            if isinstance(result, Exception):
+                raise result
+
+            return result
+
+        mock_listdir.side_effect = listdir
         mock_exists.side_effect = exists
         mock_readlink.side_effect = readlink
 
