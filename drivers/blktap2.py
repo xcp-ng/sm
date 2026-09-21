@@ -34,6 +34,7 @@ import syslog as _syslog
 import glob
 import json
 import xs_errors
+from typing import Optional
 import XenAPI # pylint: disable=import-error
 import scsiutil
 from syslog import openlog, syslog
@@ -720,8 +721,42 @@ class Tapdisk(object):
         return cls.get(path=path)
 
     @classmethod
-    def get_pid_for_path(cls, path: str) -> str:
-        return util.pread2(['/usr/sbin/lsof', '-t', path]).strip()
+    def path_opened(cls, pid: str, path: str) -> bool:
+        pid_fd_path = os.path.join('/proc', pid, 'fd')
+        fd_info = os.listdir(pid_fd_path)
+        for fd in fd_info:
+            try:
+                if os.readlink(os.path.join(pid_fd_path, fd)) == path:
+                    return True
+            except OSError as ose:
+                # fd might be closed between calls
+                if ose.errno != errno.ENOENT:
+                    raise
+        return False
+
+    @classmethod
+    def check_process_is_tapdisk(cls, pid: str) -> bool:
+        try:
+            return (os.path.exists(os.path.join('/proc/', pid, 'exe')) and os.readlink(
+                os.path.join('/proc/', pid, 'exe')) == '/usr/libexec/tapdisk')
+        except OSError as ose:
+            # process might exit between calls
+            if ose.errno != errno.ENOENT:
+                raise
+
+        return False
+
+    @classmethod
+    def get_pid_for_path(cls, path: str) -> Optional[str]:
+        PID_MATCHER = re.compile(r'^\d+$')
+        dir = os.listdir('/proc')
+
+        for pid in [x for x in dir if PID_MATCHER.match(x) and
+                                      cls.check_process_is_tapdisk(x)]:
+            if cls.path_opened(pid, path):
+                return pid
+
+        return None
 
     @classmethod
     def from_minor(cls, minor):

@@ -111,19 +111,38 @@ class TestTapdisk(unittest.TestCase):
 
         self.assertEqual(456, srose.exception.errno)
 
+    @mock.patch('blktap2.os.listdir', autospec=True)
+    @mock.patch('blktap2.os.readlink', autospec=True)
     @mock.patch('blktap2.os.path.exists', autospec=True)
-    @mock.patch("blktap2.util.pread2", autospec=True)
-    def test_from_minor_success(self, mock_pread2, mock_exists):
+    def test_from_minor_success(self, mock_exists, mock_readlink, mock_listdir):
         # Arrange
+        proc_paths = {
+            '/proc': ['14378', '20947', '21457'],
+            '/proc/21457/fd': ['4', '5']
+        }
         mock_paths = {"/dev/xen/blktap-2/blktap3"}
 
+        link_paths = {
+            "/proc/14378/exe": OSError(errno.ENOENT, ""),
+            "/proc/20947/exe": "/bin/bash",
+            "/proc/21457/exe": "/usr/libexec/tapdisk",
+            "/proc/21457/fd/4": OSError(errno.ENOENT, ""),
+            "/proc/21457/fd/5": "/dev/xen/blktap-2/blktap3"}
+
         def exists(path):
-            print(f"Checking if {path} in {mock_paths}")
-            return path in mock_paths
+            return path in mock_paths or path in link_paths.keys()
 
+        def readlink(path):
+            result = link_paths.get(path)
+
+            if isinstance(result, Exception):
+                raise result
+
+            return result
+
+        mock_listdir.side_effect = proc_paths.get
         mock_exists.side_effect = exists
-
-        mock_pread2.side_effect = ['21457']
+        mock_readlink.side_effect = readlink
 
         blktap2.TapCtl = self.real_tapctl
         mock_process = mock.MagicMock(autospec='subprocess.Popen')
@@ -143,6 +162,44 @@ class TestTapdisk(unittest.TestCase):
         self.assertEqual(
             "/dev/VG_XenStorage-2eeb9fd5-6545-8f0b-cf72-0378e413a31c/VHD-a7c0f37e-b7fb-4a44-a6fe-05067fb84c09",
             tapdisk.path)
+
+    @mock.patch('blktap2.os.listdir', autospec=True)
+    @mock.patch('blktap2.os.readlink', autospec=True)
+    @mock.patch('blktap2.os.path.exists', autospec=True)
+    def test_from_minor_not_found(self,mock_exists, mock_readlink, mock_listdir):
+        # Arrange
+        proc_paths = {
+            '/proc': ['14378', '20947', '21457'],
+            '/proc/21457/fd': ['4', '5']
+        }
+
+        mock_paths = {"/dev/xen/blktap-2/blktap3"}
+
+        link_paths = {
+            "/proc/14378/exe": OSError(errno.ENOENT, ""),
+            "/proc/20947/exe": "/bin/bash",
+            "/proc/21457/exe": "/usr/libexec/tapdisk",
+            "/proc/21457/fd/4": OSError(errno.ENOENT, ""),
+            "/proc/21457/fd/5": "/dev/xen/blktap-2/blktap4"}
+
+        def exists(path):
+            return path in mock_paths or path in link_paths.keys()
+
+        def readlink(path):
+            result = link_paths.get(path)
+
+            if isinstance(result, Exception):
+                raise result
+
+            return result
+
+        mock_listdir.side_effect = proc_paths.get
+        mock_exists.side_effect = exists
+        mock_readlink.side_effect = readlink
+
+        # Act
+        with self.assertRaises(blktap2.TapdiskNotRunning):
+            blktap2.Tapdisk.from_minor(3)
 
 
 class TestVDI(unittest.TestCase):

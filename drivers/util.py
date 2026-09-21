@@ -472,7 +472,6 @@ def pathexists(path):
         if inst.errno == errno.EIO:
             time.sleep(1)
             try:
-                listdir(os.path.realpath(os.path.dirname(path)))
                 os.lstat(path)
                 return True
             except:

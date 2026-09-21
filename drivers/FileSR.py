@@ -419,16 +419,16 @@ class FileVDI(VDI.VDI):
         tries = 0
         while tries < maxretry and not found:
             tries += 1
-            if util.ioretry(lambda: util.pathexists(vhd_path)):
+            if util.pathexists(vhd_path):
                 self.vdi_type = vhdutil.VDI_TYPE_VHD
                 self.path = vhd_path
                 found = True
-            elif util.ioretry(lambda: util.pathexists(raw_path)):
+            elif util.pathexists(raw_path):
                 self.vdi_type = vhdutil.VDI_TYPE_RAW
                 self.path = raw_path
                 self.hidden = False
                 found = True
-            elif util.ioretry(lambda: util.pathexists(cbt_path)):
+            elif util.pathexists(cbt_path):
                 self.vdi_type = CBTLOG_TAG
                 self.path = cbt_path
                 self.hidden = False
