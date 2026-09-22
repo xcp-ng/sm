@@ -431,7 +431,7 @@ def check(session, args):
             args['ignoreMissingFooter']
         )
         fast = util.strtobool(args['fast'])
-        return cowutil.check(device_path, ignore_missing_footer, fast)
+        return str(cowutil.check(device_path, ignore_missing_footer, fast))
     except Exception as e:
         util.SMlog('linstor-manager:check error: {}'.format(e))
         raise
