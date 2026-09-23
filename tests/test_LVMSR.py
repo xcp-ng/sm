@@ -60,6 +60,10 @@ class TestLVMSR(unittest.TestCase, Stubs):
             'sr_ref': 'test_sr_ref'}
         if sr_uuid is None:
             sr_uuid = str(uuid.uuid4())
+
+        self.stubout('SR.SR.is_shared', return_value=False)
+        self.stubout('LVMSR.util.is_master', return_value=master)
+
         return LVMSR.LVMSR(srcmd, sr_uuid)
 
     @mock.patch('lvutil.Fairlock', autospec=True)

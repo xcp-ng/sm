@@ -159,8 +159,13 @@ class LVMSR(SR.SR):
         self.ops_exclusive = OPS_EXCLUSIVE
 
         self.isMaster = False
-        if 'SRmaster' in self.dconf and self.dconf['SRmaster'] == 'true':
-            self.isMaster = True
+        if 'SRmaster' in self.dconf:
+            self.isMaster = self.dconf['SRmaster'] == 'true'
+        elif self.sr_ref and self.session:
+            # SR.from_uuid() builds dconf straight from the PBD's stored
+            # device-config, which never carries the synthetic SRmaster key;
+            # XAPI only injects that key into the params of a live SM call.
+            self.isMaster = not self.is_shared() or util.is_master(self.session)
 
         self.lock = lock.Lock(lock.LOCK_TYPE_SR, self.uuid)
         self.sr_vditype = SR.DEFAULT_TAP
