@@ -34,7 +34,7 @@ import blktap2
 import time
 import glob
 from uuid import uuid4
-from cowutil import getCowUtil, getImageStringFromVdiType
+from cowutil import getCowUtil, getImageStringFromVdiType, getVdiTypeFromImageFormat
 from vditype import VdiType, VdiTypeExtension, VDI_COW_TYPES, VDI_TYPE_TO_EXTENSION
 import xmlrpc.client
 import XenAPI # pylint: disable=import-error
@@ -484,10 +484,22 @@ class FileVDI(VDI.VDI):
                 self.key_hash = vdi_sm_config.get("key_hash")
 
             if not image_format:
-                image_format = self.sr.preferred_image_formats[0]
+                size = int(self.sr.srcmd.params['args'][0])
+                # In the case of vdi_create, the first parameter is size.
+                # We need it to validate the vdi_type choice
+                for image_format in self.sr.preferred_image_formats:
+                    vdi_type = getVdiTypeFromImageFormat(image_format)
+                    cowutil = getCowUtil(vdi_type)
+                    try:
+                        cowutil.validateAndRoundImageSize(size)
+                        break
+                    except xs_errors.SROSError:
+                        util.SMlog(f"We won't be able to create the VDI with format {vdi_type}.")
+                        # If the last one also fail we still give the vdi_type and cowutil,
+                        # it will fail in the `create` function instead when re-running `validateAndRoundImageSize`
             self.vdi_type = self.sr._resolve_vdi_type_from_image_format(image_format)
-
             self.cowutil = getCowUtil(self.vdi_type)
+
             self.path = os.path.join(self.sr.path, "%s%s" %
                 (vdi_uuid, VDI_TYPE_TO_EXTENSION[self.vdi_type]))
         else:
@@ -737,7 +749,7 @@ class FileVDI(VDI.VDI):
 
     @override
     def _do_snapshot(self, sr_uuid, vdi_uuid, snapType,
-                     cloneOp=False, secondary=None, cbtlog=None) -> str:
+                     cloneOp=False, secondary=None, cbtlog=None, is_mirror_destination=False) -> str:
         # If cbt enabled, save file consistency state
         if cbtlog is not None:
             if blktap2.VDI.tap_status(self.session, vdi_uuid):
@@ -755,7 +767,7 @@ class FileVDI(VDI.VDI):
         if not blktap2.VDI.tap_pause(self.session, sr_uuid, vdi_uuid):
             raise util.SMException("failed to pause VDI %s" % vdi_uuid)
         try:
-            return self._snapshot(snapType, cbtlog, consistency_state)
+            return self._snapshot(snapType, cbtlog, consistency_state, is_mirror_destination)
         finally:
             self.disable_leaf_on_secondary(vdi_uuid, secondary=secondary)
             blktap2.VDI.tap_unpause(self.session, sr_uuid, vdi_uuid, secondary)
@@ -782,7 +794,7 @@ class FileVDI(VDI.VDI):
     def __fist_enospace(self):
         raise util.CommandException(28, "cowutil snapshot", reason="No space")
 
-    def _snapshot(self, snap_type, cbtlog=None, cbt_consistency=None):
+    def _snapshot(self, snap_type, cbtlog=None, cbt_consistency=None, is_mirror_destination=False):
         util.SMlog("FileVDI._snapshot for %s (type %s)" % (self.uuid, snap_type))
 
         args = []
@@ -834,7 +846,7 @@ class FileVDI(VDI.VDI):
             util.fistpoint.activate_custom_fn(
                 "FileSR_fail_snap1",
                 self.__fist_enospace)
-            util.ioretry(lambda: self._snap(tmpsrc, newsrcname))
+            util.ioretry(lambda: self._snap(tmpsrc, newsrcname, is_mirror_destination))
             # SMB3 can return EACCES if we attempt to rename over the
             # hardlink leaf too quickly after creating it.
             util.ioretry(lambda: self._rename(tmpsrc, src),
@@ -875,6 +887,8 @@ class FileVDI(VDI.VDI):
                 leaf_vdi.utilisation = self.utilisation
                 leaf_vdi.sm_config = {}
                 leaf_vdi.sm_config['vhd-parent'] = dstparent
+                # TODO: fix the raw snapshot case  
+                leaf_vdi.sm_config["image-format"] = getImageStringFromVdiType(self.vdi_type)
                 # If the parent is encrypted set the key_hash
                 # for the new snapshot disk
                 vdi_ref = self.sr.srcmd.params['vdi_ref']
@@ -895,6 +909,8 @@ class FileVDI(VDI.VDI):
                 base_vdi.size = self.size
                 base_vdi.utilisation = self.utilisation
                 base_vdi.sm_config = {}
+                # TODO: fix the raw snapshot case 
+                base_vdi.sm_config["image-format"] = getImageStringFromVdiType(self.vdi_type)
                 grandparent = self.cowutil.getParent(newsrc, FileVDI.extractUuid)
                 if grandparent:
                     base_vdi.sm_config['vhd-parent'] = grandparent
@@ -912,6 +928,8 @@ class FileVDI(VDI.VDI):
                 vdi_ref = self.sr.srcmd.params['vdi_ref']
                 sm_config = self.session.xenapi.VDI.get_sm_config(vdi_ref)
                 sm_config['vhd-parent'] = srcparent
+                # TODO: fix the raw snapshot case 
+                sm_config["image-format"] = getImageStringFromVdiType(self.vdi_type)
                 self.session.xenapi.VDI.set_sm_config(vdi_ref, sm_config)
             except Exception as e:
                 util.SMlog("vdi_clone: caught error during VDI.db_introduce: %s" % (str(e)))
@@ -953,8 +971,8 @@ class FileVDI(VDI.VDI):
                   opterr='VDI %s unavailable %s' % (self.uuid, self.path))
         return super(FileVDI, self).get_params()
 
-    def _snap(self, child, parent):
-        self.cowutil.snapshot(child, parent, self.vdi_type == VdiType.RAW)
+    def _snap(self, child, parent, is_mirror_destination=False):
+        self.cowutil.snapshot(child, parent, self.vdi_type == VdiType.RAW, is_mirror_image=is_mirror_destination)
 
     def _clonecleanup(self, src, dst, newsrc):
         try:
@@ -994,10 +1012,10 @@ class FileVDI(VDI.VDI):
     def _is_hidden(self, path):
         return self.cowutil.getHidden(path) == 1
 
-    def extractUuid(path):
+    @staticmethod
+    def extractUuid(path: str) -> str:
         fileName = os.path.basename(path)
         return os.path.splitext(fileName)[0]
-    extractUuid = staticmethod(extractUuid)
 
     @override
     def generate_config(self, sr_uuid, vdi_uuid) -> str:

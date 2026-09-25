@@ -115,7 +115,7 @@ class CowUtil(ABC):
         pass
 
     @abstractmethod
-    def calcOverheadEmpty(self, virtual_size: int) -> int:
+    def calcOverheadEmpty(self, virtual_size: int, block_size: Optional[int] = None) -> int:
         pass
 
     @abstractmethod
@@ -223,7 +223,7 @@ class CowUtil(ABC):
         pass
 
     @abstractmethod
-    def create(self, path: str, size: int, static: bool, msize: int = 0) -> None:
+    def create(self, path: str, size: int, static: bool, msize: int = 0, block_size: Optional[int] = None) -> None:
         pass
 
     @abstractmethod
@@ -233,7 +233,8 @@ class CowUtil(ABC):
         parent: str,
         parentRaw: bool,
         msize: int = 0,
-        checkEmpty: bool = True
+        checkEmpty: bool = True,
+        is_mirror_image: bool = False
     ) -> None:
         pass
 
@@ -268,6 +269,20 @@ class CowUtil(ABC):
 
     @abstractmethod
     def setKey(self, path: str, key_hash: str) -> None:
+        pass
+
+    # The availability of coalesceOnline and cancelCoalesceOnline are dependent on isCoalesceableOnRemote() returning True
+    # If not, both function should raise NotImplementedError
+    @abstractmethod
+    def isCoalesceableOnRemote(self) -> bool:
+        pass
+
+    @abstractmethod
+    def coalesceOnline(self, path: str) -> int:
+        pass
+
+    @abstractmethod
+    def cancelCoalesceOnline(self, path: str) -> None:
         pass
 
     def getParentChain(self, lvName: str, extractUuidFunction: Callable[[str], str], vgName: str) -> Dict[str, str]:
@@ -335,8 +350,9 @@ def getCowUtilFromImageFormat(image_format: ImageFormat) -> CowUtil:
 
     if image_format in (ImageFormat.RAW, ImageFormat.VHD):
         return vhdutil.VhdUtil()
+
     if image_format == ImageFormat.QCOW2:
-        return qcow2util.QCow2Util()
+        return qcow2util.QCowUtil()
 
     assert False, f"Unsupported image format: {image_format}"
 

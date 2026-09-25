@@ -18,6 +18,9 @@
 # A plugin for synchronizing slaves when something changes on the Master
 
 import sys
+import os
+import time
+import errno
 sys.path.append("/opt/xensource/sm/")
 import util
 import lock
@@ -148,7 +151,6 @@ def is_open(session, args):
         util.logException("is_open")
         raise
 
-
 def refresh_lun_size_by_SCSIid(session, args):
     """Refresh the size of LUNs backing the SCSIid on the local node."""
     util.SMlog("on-slave.refresh_lun_size_by_SCSIid(,%s)" % args)
@@ -160,10 +162,102 @@ def refresh_lun_size_by_SCSIid(session, args):
         util.SMlog("on-slave.refresh_lun_size_by_SCSIid with %s failed" % args)
         return "False"
 
+def _make_chain_RW(cowutil, leaf_path, write: bool):
+    def set_RW(path):
+        try:
+            util.pread2(["lvchange", "-p", "rw", path])
+        except:
+            pass
+
+    # if path.startswith("/dev/"):
+    #     set_RW(leaf_path) # Not needed since it's a leaf
+
+    parent = cowutil.getParentNoCheck(leaf_path)
+    while parent:
+        if parent.startswith("/dev/"):
+            set_RW(parent)
+        parent = cowutil.getParentNoCheck(parent)
+
+def commit_tapdisk(session, args):
+    path: str = args["path"]
+    vdi_type = args["vdi_type"]
+    leaf_path: str = args["leaf_path"] # The path of the leaf used by the tapdisk
+
+    from cowutil import getCowUtil
+    cowutil = getCowUtil(vdi_type)
+    try:
+        if path.startswith("/dev/"):
+            # We need to make children RW or tapdisk will crash trying to do it
+            _make_chain_RW(cowutil, leaf_path, True)
+        return str(cowutil.coalesceOnline(path))
+    except:
+        util.logException("Couldn't coalesce online")
+        raise
+
+def commit_cancel(session, args):
+    path = args["path"]
+    vdi_type = args["vdi_type"]
+    from cowutil import getCowUtil
+    cowutil = getCowUtil(vdi_type)
+    try:
+        cowutil.cancelCoalesceOnline(path)
+    except:
+        return "False"
+    return "True"
+
+def cancel_coalesce_master(session, args):
+    sr_uuid = args["sr_uuid"]
+    vdi_uuid = args["vdi_uuid"]
+
+    #TODO(XCPNG-3499): We could use IPCFlag to interrupt the GC instead of our custom function.
+    # from ipc import IPCFlag
+    # flag = IPCFlag(sr_uuid)
+
+    # runningStr = "gc_running_{}".format(vdi_uuid)
+    # abortStr = "abort_{}".format(vdi_uuid)
+
+    # if not flag.test(runningStr):
+    #     return "True"
+
+    # if not flag.test(abortStr):
+    #     flag.set(abortStr)
+
+    # while flag.test(abortStr) or flag.test(runningStr):
+    #     time.sleep(1)
+
+    # return "True"
+
+    util.SMlog("Running cancel_coalesce_master plugin: {}".format(vdi_uuid))
+    path = "/run/nonpersistent/sm/{}/gc_running_{}".format(sr_uuid, vdi_uuid)
+
+    try:
+        with open(path, "r+") as f:
+            f.truncate(0)
+            f.flush()
+            os.fsync(f.fileno())
+    except IOError as e:
+        if e.errno == errno.ENOENT:
+            return "True"
+        raise
+
+    while os.path.exists(path):
+        time.sleep(1)
+
+    return "True"
+
+def is_openers(session, args):
+    path = args["path"]
+    openers_pid= util.get_openers_pid(path)
+    return str(bool(openers_pid))
 
 if __name__ == "__main__":
     import XenAPIPlugin
     XenAPIPlugin.dispatch({
         "multi": multi,
         "is_open": is_open,
-        "refresh_lun_size_by_SCSIid": refresh_lun_size_by_SCSIid})
+        "refresh_lun_size_by_SCSIid": refresh_lun_size_by_SCSIid,
+        "is_openers": is_openers,
+        "commit_tapdisk": commit_tapdisk,
+        "commit_cancel": commit_cancel,
+        "cancel_coalesce_master": cancel_coalesce_master,
+        })

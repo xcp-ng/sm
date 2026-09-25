@@ -333,7 +333,8 @@ class TestVDI(unittest.TestCase):
     @mock.patch('blktap2.VDI.BackendLink', autospec=True)
     @mock.patch('blktap2.VDI.NBDLink', autospec=True)
     @mock.patch('blktap2.Tapdisk')
-    def test_activate(self, mock_tapdisk, mock_nbd_link, mock_backend,
+    @mock.patch('blktap2.VDI._check_journal_coalesce_chain', autospec=True)
+    def test_activate(self, mock_checkjournalcoalesce, mock_tapdisk, mock_nbd_link, mock_backend,
                       mock_attach, mock_this_host, mock_sleep):
         """
         Test blktap2.VDI.activate, no cache, RW, success
@@ -360,8 +361,9 @@ class TestVDI(unittest.TestCase):
     @mock.patch('blktap2.VDI.BackendLink', autospec=True)
     @mock.patch('blktap2.VDI.NBDLink', autospec=True)
     @mock.patch('blktap2.Tapdisk')
+    @mock.patch('blktap2.VDI._check_journal_coalesce_chain', autospec=True)
     def test_activate_relink_retry(
-            self, mock_tapdisk, mock_nbd_link, mock_backend,
+            self, mock_checkjournalcoalesce, mock_tapdisk, mock_nbd_link, mock_backend,
             mock_attach, mock_this_host, mock_sleep):
         """
         Test blktap2.VDI.activate, relinking, retry 1, success
@@ -386,8 +388,9 @@ class TestVDI(unittest.TestCase):
     @mock.patch('blktap2.VDI.BackendLink', autospec=True)
     @mock.patch('blktap2.VDI.NBDLink', autospec=True)
     @mock.patch('blktap2.Tapdisk')
+    @mock.patch('blktap2.VDI._check_journal_coalesce_chain', autospec=True)
     def test_activate_pause_retry(
-            self, mock_tapdisk, mock_nbd_link, mock_backend,
+            self, mock_checkjournalcoalesce, mock_tapdisk, mock_nbd_link, mock_backend,
             mock_attach, mock_this_host, mock_sleep):
         """
         Test blktap2.VDI.activate, paused, retry 1, success
@@ -411,8 +414,9 @@ class TestVDI(unittest.TestCase):
     @mock.patch('blktap2.VDI.BackendLink', autospec=True)
     @mock.patch('blktap2.VDI.NBDLink', autospec=True)
     @mock.patch('blktap2.Tapdisk')
+    @mock.patch('blktap2.VDI._check_journal_coalesce_chain', autospec=True)
     def test_activate_paused_while_tagging(
-            self, mock_tapdisk, mock_nbd_link, mock_backend,
+            self, mock_checkjournalcoalesce, mock_tapdisk, mock_nbd_link, mock_backend,
             mock_attach, mock_this_host, mock_sleep):
         """
         Test blktap2.VDI.activate, paused, while tagging, success
@@ -442,8 +446,9 @@ class TestVDI(unittest.TestCase):
     @mock.patch('blktap2.VDI.BackendLink', autospec=True)
     @mock.patch('blktap2.VDI.NBDLink', autospec=True)
     @mock.patch('blktap2.Tapdisk')
+    @mock.patch('blktap2.VDI._check_journal_coalesce_chain', autospec=True)
     def test_activate_relink_while_tagging(
-            self, mock_tapdisk, mock_nbd_link, mock_backend,
+            self, mock_checkjournalcoalesce, mock_tapdisk, mock_nbd_link, mock_backend,
             mock_attach, mock_this_host, mock_sleep):
         """
         Test blktap2.VDI.activate, relinking, while tagging, retry 1, success
@@ -473,8 +478,9 @@ class TestVDI(unittest.TestCase):
     @mock.patch('blktap2.VDI.BackendLink', autospec=True)
     @mock.patch('blktap2.VDI.NBDLink', autospec=True)
     @mock.patch('blktap2.Tapdisk')
+    @mock.patch('blktap2.VDI._check_journal_coalesce_chain', autospec=True)
     def test_activate_ro_already_activating_retry(
-            self, mock_tapdisk, mock_nbd_link, mock_backend,
+            self, mock_checkjournalcoalesce, mock_tapdisk, mock_nbd_link, mock_backend,
             mock_attach, mock_this_host, mock_sleep):
         """
         If we're activating for read-only access, with someone else (let's
@@ -509,8 +515,9 @@ class TestVDI(unittest.TestCase):
     @mock.patch('blktap2.VDI.BackendLink', autospec=True)
     @mock.patch('blktap2.VDI.NBDLink', autospec=True)
     @mock.patch('blktap2.Tapdisk')
+    @mock.patch('blktap2.VDI._check_journal_coalesce_chain', autospec=True)
     def test_activate_rw_already_activating_fail(
-            self, mock_tapdisk, mock_nbd_link, mock_backend,
+            self, mock_checkjournalcoalesce, mock_tapdisk, mock_nbd_link, mock_backend,
             mock_attach, mock_this_host, mock_sleep):
         """
         If we're activating for read-write access, with someone else (let's

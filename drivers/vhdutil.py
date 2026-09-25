@@ -76,7 +76,7 @@ class VhdUtil(CowUtil):
         return MAX_VHD_CHAIN_LENGTH
 
     @override
-    def calcOverheadEmpty(self, virtual_size: int) -> int:
+    def calcOverheadEmpty(self, virtual_size: int, block_size: Optional[int] = None) -> int:
         """
         Calculate the VHD space overhead (metadata size) for an empty VDI of
         size virtual_size.
@@ -337,7 +337,7 @@ class VhdUtil(CowUtil):
         return 0
 
     @override
-    def create(self, path: str, size: int, static: bool, msize: int = 0) -> None:
+    def create(self, path: str, size: int, static: bool, msize: int = 0, block_size: Optional[int] = None) -> None:
         cmd = [VHD_UTIL, "create", OPT_LOG_ERR, "-n", path, "-s", str(size // (1024 * 1024))]
         if static:
             cmd.append("-r")
@@ -353,7 +353,8 @@ class VhdUtil(CowUtil):
         parent: str,
         parentRaw: bool,
         msize: int = 0,
-        checkEmpty: bool = True
+        checkEmpty: bool = True,
+        is_mirror_image: bool = False
     ) -> None:
         cmd = [VHD_UTIL, "snapshot", OPT_LOG_ERR, "-n", path, "-p", parent]
         if parentRaw:
@@ -438,6 +439,18 @@ class VhdUtil(CowUtil):
         Set the encryption key for a VHD.
         """
         self._ioretry([VHD_UTIL, "key", "-s", "-n", path, "-H", key_hash])
+
+    @override
+    def isCoalesceableOnRemote(self) -> bool:
+        return False
+
+    @override
+    def coalesceOnline(self, path: str) -> int:
+        raise NotImplementedError("Online coalesce not implemented for vhdutil")
+
+    @override
+    def cancelCoalesceOnline(self, path: str) -> None:
+        raise NotImplementedError("Online coalesce not implemented for vhdutil")
 
     @staticmethod
     def _convertBlockSizeToBytes(size: int):

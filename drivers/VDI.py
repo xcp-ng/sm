@@ -30,14 +30,13 @@ from constants import CBTLOG_TAG
 from bitarray import bitarray
 from vditype import VdiType
 import uuid
-
+from constants import CBT_BLOCK_SIZE
 
 SM_CONFIG_PASS_THROUGH_FIELDS = ["base_mirror", "key_hash"]
 
 SNAPSHOT_SINGLE = 1  # true snapshot: 1 leaf, 1 read-only parent
 SNAPSHOT_DOUBLE = 2  # regular snapshot/clone that creates 2 leaves
 SNAPSHOT_INTERNAL = 3  # SNAPSHOT_SINGLE but don't update SR's virtual allocation
-CBT_BLOCK_SIZE = (64 * 1024)
 
 
 class VDI(object):
@@ -214,7 +213,7 @@ class VDI(object):
         raise xs_errors.XenError('Unimplemented')
 
     def _do_snapshot(self, sr_uuid, vdi_uuid, snapType,
-                     cloneOp=False, secondary=None, cbtlog=None) -> str:
+                     cloneOp=False, secondary=None, cbtlog=None, is_mirror_destination=False) -> str:
         raise xs_errors.XenError('Unimplemented')
 
     def _delete_cbt_log(self) -> None:
@@ -379,12 +378,15 @@ class VDI(object):
         if self.sr.srcmd.params['driver_params'].get("mirror"):
             secondary = self.sr.srcmd.params['driver_params']["mirror"]
 
+        is_mirror_destination = bool(self.sr.srcmd.params['driver_params'].get("base_mirror")) and not secondary
+        # This allow us to know is we are a snapshot for a migration mirror on the destination SR to apply specific configuration on the QCOW2 snapshot. See qcow2util.py::QCowUtil.snapshot() for more details.
+
         if self._get_blocktracking_status():
             cbtlog = self._get_cbt_logpath(self.uuid)
         else:
             cbtlog = None
         return  self._do_snapshot(sr_uuid, vdi_uuid, snapType,
-                                  secondary=secondary, cbtlog=cbtlog)
+                                  secondary=secondary, cbtlog=cbtlog, is_mirror_destination=is_mirror_destination)
 
     def activate(self, sr_uuid, vdi_uuid) -> Optional[Dict[str, str]]:
         """Activate VDI - called pre tapdisk open"""
@@ -581,6 +583,9 @@ class VDI(object):
             error = "Failed to pause VDI %s" % vdi_uuid
             raise xs_errors.XenError('CBTActivateFailed', opterr=error)
         logfile = None
+
+        self.size = int(self.session.xenapi.VDI.get_virtual_size(vdi_ref))
+        # We need virtual_size to compute the CBT volume size in case of a bigger VDI (e.g. for creating LV) but it's not already available
 
         try:
             if enable:
@@ -797,7 +802,7 @@ class VDI(object):
         """ Get blocktracking status """
         if not uuid:
             uuid = self.uuid
-        if not VdiType.isCowImage(self.vdi_type):
+        if self.vdi_type == VdiType.RAW:
             return False
         elif 'VDI_CONFIG_CBT' not in util.sr_get_capability(
                 self.sr.uuid, session=self.sr.session):
