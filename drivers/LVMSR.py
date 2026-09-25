@@ -26,6 +26,7 @@ import VDI
 import SRCommand
 import util
 import lvutil
+import lvmbackup
 import lvmcache
 import scsiutil
 import lock
@@ -571,6 +572,7 @@ class LVMSR(SR.SR):
                             "for details.")
 
         lvutil.removeVG(self.dconf['device'], self.vgname)
+        lvmbackup.remove_vg_backups(self.vgname)
         self._cleanup()
 
     @override
