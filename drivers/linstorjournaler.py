@@ -45,6 +45,8 @@ class LinstorJournaler:
     CLONE = 'clone'
     INFLATE = 'inflate'
     ZERO = 'zero'
+    REVERT = "revert"
+    INSERT_CLONE = "insert-clone"
 
     @staticmethod
     def default_logger(*args):
