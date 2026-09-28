@@ -371,7 +371,7 @@ class TestGetPVsInVG(unittest.TestCase):
         result = lvutil.getPVsInVG("vg1")
         self.assertEqual(result, ["pv1", "pv2"])
         mock_smlog.assert_called_once_with("PVs in VG vg1: ['pv1', 'pv2']")
-    
+
     def test_no_pvs(self, mock_smlog, mock_cmd_lvm):
         # Test when no PVs are returned
         mock_cmd_lvm.return_value = ""
@@ -420,7 +420,7 @@ class TestGetPVsInVG(unittest.TestCase):
                               '36001405fdd436fa7f854cd685fc3b1fd')
 
 
-@mock.patch("lvutil.lvmbackup", autospec=True)
+@mock.patch("lvutil.LVM_METADATA_BACKUP", autospec=True)
 class TestCmdLvmBackup(unittest.TestCase):
     def test_vgcreate_does_not_back_up(self, mock_lvmbackup):
         lvutil._try_backup_vg(
@@ -428,11 +428,11 @@ class TestCmdLvmBackup(unittest.TestCase):
             ["--metadatasize", "10M", TEST_VG, "/dev/sda1"]
         )
 
-        mock_lvmbackup.backup_vg.assert_not_called()
+        mock_lvmbackup.try_backup.assert_not_called()
 
     def test_vgremove_does_back_up(self, mock_lvmbackup):
         lvutil._try_backup_vg(lvutil.CMD_VGREMOVE, [TEST_VG])
-        mock_lvmbackup.backup_vg.assert_called_once_with(TEST_VG)
+        mock_lvmbackup.try_backup.assert_called_once_with(TEST_VG)
 
     def test_vgextend_does_back_up(self, mock_lvmbackup):
         lvutil._try_backup_vg(
@@ -440,7 +440,7 @@ class TestCmdLvmBackup(unittest.TestCase):
             [TEST_VG, "/dev/sdb1"]
         )
 
-        mock_lvmbackup.backup_vg.assert_called_once_with(TEST_VG)
+        mock_lvmbackup.try_backup.assert_called_once_with(TEST_VG)
 
     def test_lvcreate_does_back_up(self, mock_lvmbackup):
         lvutil._try_backup_vg(
@@ -448,11 +448,11 @@ class TestCmdLvmBackup(unittest.TestCase):
             ["-n", "vol", "-L", "100", TEST_VG]
         )
 
-        mock_lvmbackup.backup_vg.assert_called_once_with(TEST_VG)
+        mock_lvmbackup.try_backup.assert_called_once_with(TEST_VG)
 
     def test_lvremove_does_back_up(self, mock_lvmbackup):
         lvutil._try_backup_vg(lvutil.CMD_LVREMOVE, ["-f", TEST_VOL])
-        mock_lvmbackup.backup_vg.assert_called_once_with(TEST_VG)
+        mock_lvmbackup.try_backup.assert_called_once_with(TEST_VG)
 
     def test_lvremove_with_config_does_back_up(self, mock_lvmbackup):
         lvutil._try_backup_vg(
@@ -460,7 +460,7 @@ class TestCmdLvmBackup(unittest.TestCase):
             ["-f", TEST_VOL, "--config", "devices{}"]
         )
 
-        mock_lvmbackup.backup_vg.assert_called_once_with(TEST_VG)
+        mock_lvmbackup.try_backup.assert_called_once_with(TEST_VG)
 
     def test_lvrename_does_back_up(self, mock_lvmbackup):
         lvutil._try_backup_vg(
@@ -468,7 +468,7 @@ class TestCmdLvmBackup(unittest.TestCase):
             [TEST_VOL, "new_name"]
         )
 
-        mock_lvmbackup.backup_vg.assert_called_once_with(TEST_VG)
+        mock_lvmbackup.try_backup.assert_called_once_with(TEST_VG)
 
     def test_lvresize_does_back_up(self, mock_lvmbackup):
         lvutil._try_backup_vg(
@@ -476,7 +476,7 @@ class TestCmdLvmBackup(unittest.TestCase):
             ["-L", "200", TEST_VOL]
         )
 
-        mock_lvmbackup.backup_vg.assert_called_once_with(TEST_VG)
+        mock_lvmbackup.try_backup.assert_called_once_with(TEST_VG)
 
     def test_lvextend_does_back_up(self, mock_lvmbackup):
         lvutil._try_backup_vg(
@@ -484,11 +484,11 @@ class TestCmdLvmBackup(unittest.TestCase):
             ["-L", "+100", TEST_VOL]
         )
 
-        mock_lvmbackup.backup_vg.assert_called_once_with(TEST_VG)
+        mock_lvmbackup.try_backup.assert_called_once_with(TEST_VG)
 
     def test_vgchange_activate_does_not_backup(self, mock_lvmbackup):
         lvutil._try_backup_vg(lvutil.CMD_VGCHANGE, ["-an", TEST_VG])
-        mock_lvmbackup.backup_vg.assert_not_called()
+        mock_lvmbackup.try_backup.assert_not_called()
 
     def test_vgchange_activate_with_config_does_not_backup(self, mock_lvmbackup):
         lvutil._try_backup_vg(
@@ -496,15 +496,15 @@ class TestCmdLvmBackup(unittest.TestCase):
             ["-an", "--config", "devices{}", TEST_VG]
         )
 
-        mock_lvmbackup.backup_vg.assert_not_called()
+        mock_lvmbackup.try_backup.assert_not_called()
 
     def test_lvchange_activate_does_not_backup(self, mock_lvmbackup):
         lvutil._try_backup_vg(lvutil.CMD_LVCHANGE, ["-an", TEST_VOL])
-        mock_lvmbackup.backup_vg.assert_not_called()
+        mock_lvmbackup.try_backup.assert_not_called()
 
     def test_lvchange_perm_does_backup(self, mock_lvmbackup):
         lvutil._try_backup_vg(lvutil.CMD_LVCHANGE, ["-p", "r", TEST_VOL])
-        mock_lvmbackup.backup_vg.assert_called_once_with(TEST_VG)
+        mock_lvmbackup.try_backup.assert_called_once_with(TEST_VG)
 
     def test_vgchange_perm_with_config_does_backup(self, mock_lvmbackup):
         lvutil._try_backup_vg(
@@ -512,11 +512,11 @@ class TestCmdLvmBackup(unittest.TestCase):
             ["-p", "r", "--config", "devices{}", TEST_VOL]
         )
 
-        mock_lvmbackup.backup_vg.assert_called_once_with(TEST_VG)
+        mock_lvmbackup.try_backup.assert_called_once_with(TEST_VG)
 
     def test_vgs_does_not_back_up(self, mock_lvmbackup):
         lvutil._try_backup_vg(lvutil.CMD_VGS, ["--readonly", TEST_VG])
-        mock_lvmbackup.backup_vg.assert_not_called()
+        mock_lvmbackup.try_backup.assert_not_called()
 
     def test_pvcreate_does_not_backup(self, mock_lvmbackup):
         lvutil._try_backup_vg(
@@ -524,4 +524,4 @@ class TestCmdLvmBackup(unittest.TestCase):
             ["-ff", "-y", "--metadatasize", "10M", "/dev/sda1"]
         )
 
-        mock_lvmbackup.backup_vg.assert_not_called()
+        mock_lvmbackup.try_backup.assert_not_called()
