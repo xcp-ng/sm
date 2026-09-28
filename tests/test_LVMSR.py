@@ -376,7 +376,10 @@ class TestLVMSR(unittest.TestCase, Stubs):
             return vdi_data[vdi_ref][vdi_key]
 
         def get_vdi_by_uuid(vdi_uuid):
-            return [v for v in vdi_data if vdi_data[v]['uuid'] == vdi_uuid][0]
+            try:
+                return [v for v in vdi_data if vdi_data[v]['uuid'] == vdi_uuid][0]
+            except IndexError:
+                raise XenAPI.Failure("No uuid")
 
         def db_introduce(uuid, label, description, sr_ref, ty, shareable, read_only, other_config, location, xenstore_data, sm_config, managed, size, utilisation, metadata_of_pool, is_a_snapshot, snapshot_time, snapshot_of, cbt_enabled):
             vdi_data.update({
@@ -497,7 +500,7 @@ class TestLVMSR(unittest.TestCase, Stubs):
 
         vdi = sr.vdi(vdi_uuid)
         vdi.vdi_type = VdiType.VHD
-        mock_sr_util_pathexists.return_value = True
+        mock_sr_util_pathexists.side_effect = lambda path: path == os.path.join(sr.path, "test-lv")
         def gen_uuid():
             return str(uuid.uuid4())
         mock_sr_util_gen_uuid.side_effect = gen_uuid
