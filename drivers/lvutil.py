@@ -28,9 +28,9 @@ import util
 import xs_errors
 import xml.dom.minidom
 from constants import EXT_PREFIX, VG_LOCATION, VG_PREFIX
-import lvmbackup
 import lvmcache
 import srmetadata
+from lvmbackup import LVMMetadataBackup
 
 MDVOLUME_NAME = 'MGT'
 VDI_UUID_TAG_PREFIX = 'vdi_'
@@ -80,6 +80,8 @@ BACKUP_VCHANGE_IGNORED_OPTIONS = frozenset({"-ay", "-an", "--refresh",
                                             "--config"})
 
 LVM_LOCK = 'lvm'
+
+LVM_METADATA_BACKUP = LVMMetadataBackup()
 
 
 def extract_vgname(str_in):
@@ -176,7 +178,7 @@ def _try_backup_vg(lvm_cmd, lvm_args):
     if not vgname:
         return
 
-    lvmbackup.backup_vg(vgname)
+    LVM_METADATA_BACKUP.try_backup(vgname)
 
 
 def cmd_lvm(cmd, pread_func=util.pread2, *args):

@@ -16,9 +16,13 @@
 
 import shutil
 import time
+from datetime import datetime
 from pathlib import Path
 
 import util
+from backupmanager import BackupManager
+
+from sm_typing import override
 
 # ==============================================================================
 
@@ -35,100 +39,74 @@ DST_PATH = Path("/etc/sm/lvm-backups")
 
 # ------------------------------------------------------------------------------
 
-def _vg_backup_dir_path(vgname):
-    return DST_PATH / vgname
+class LVMMetadataBackup(BackupManager):
+    def __init__(self):
+        super().__init__(files_to_keep=FILES_TO_KEEP, enabled=ENABLED)
 
+    # ----------------------------------
+    # Backup file naming.
+    # ----------------------------------
 
-def _next_backup_file_path(dst_dir):
-    formatted_time = time.strftime(BACKUP_FILE_NAME_DATE_FORMAT)
-    file_path = dst_dir / f"{formatted_time}.vg"
-    i = 1
+    @override
+    def _backup_dir_path(self, ctx):
+        return DST_PATH / ctx
 
-    while file_path.exists():
-        file_path = dst_dir / f"{formatted_time}.{i}.vg"
-        i += 1
+    @override
+    def _format_backup_file_name(self, _ctx, counter):
+        formatted_time = time.strftime(BACKUP_FILE_NAME_DATE_FORMAT)
 
-    return file_path
+        if counter is not None:
+            return f"{formatted_time}.{counter}.vg"
 
-# ------------------------------------------------------------------------------
+        return f"{formatted_time}.vg"
 
-def _do_backup(vgname):
-    backup_dir_path = _vg_backup_dir_path(vgname)
-    backup_dir_path.mkdir(parents=True, exist_ok=True)
+    # ----------------------------------
+    # Backup file listing.
+    # ----------------------------------
 
-    source_file_path = SRC_PATH / vgname
-    backup_file_path = _next_backup_file_path(backup_dir_path)
+    @override
+    def _backup_files(self, ctx):
+        backup_dir_path = self._backup_dir_path(ctx)
 
-    shutil.copyfile(source_file_path, backup_file_path)
-    return backup_file_path
-
-
-def _remove_expired(vgname):
-    backup_dir_path = _vg_backup_dir_path(vgname)
-    existing_files = []
-
-    try:
-        for file_path in backup_dir_path.iterdir():
-            try:
-                existing_files.append((file_path.stat().st_mtime, file_path))
-            except OSError as e:
-                util.SMlog(
-                    f"Unable to stat LVM metadata backup file `{file_path}`: {e}"
-                )
-
-                continue
-    except OSError as e:
-        util.SMlog(
-            f"Unable to get files of LVM metadata backup directory `{backup_dir_path}`: {e}"
-        )
-
-        return
-
-    existing_files.sort()
-    oldest_files = existing_files[:-FILES_TO_KEEP]
-
-    for _, file_path in oldest_files:
         try:
-            file_path.unlink()
+            for file_path in backup_dir_path.iterdir():
+                try:
+                    yield file_path, datetime.fromtimestamp(file_path.stat().st_mtime)
+                except OSError as e:
+                    util.SMlog(
+                        f"Unable to stat LVM metadata backup file `{file_path}`: {e}"
+                    )
+
+                    continue
         except OSError as e:
             util.SMlog(
-                f"Unable to unlink LVM metadata backup file `{file_path}`: {e}"
+                f"Unable to get files of LVM metadata backup directory `{backup_dir_path}`: {e}"
             )
 
-# ------------------------------------------------------------------------------
+    # ----------------------------------
+    # Backup ops.
+    # ----------------------------------
 
-def backup_vg(vgname):
-    """
-    Back up the metadata of a LVM volume group to a SM-managed directory.
+    @override
+    def _do_backup(self, ctx):
+        dst_dir = self._backup_dir_path(ctx)
+        dst_dir.mkdir(parents=True, exist_ok=True)
 
-    This is a best-effort operation: if it fails, no exception is raised and
-    it is up to the caller to react according to the return value.
+        source_file_path = SRC_PATH / ctx
+        backup_file_path = self._next_backup_file_path(ctx)
 
-    :param str vgname: The name of the volume group to back up.
-    :return: True if a new backup was created, False otherwise.
-    """
-    if not ENABLED:
-        return False
+        shutil.copyfile(source_file_path, backup_file_path)
+        return backup_file_path
 
-    try:
-        backup_file_path = _do_backup(vgname)
-        _remove_expired(vgname)
-    except Exception as e:
-        util.SMlog(f"Failed to back up LVM metadata of `{vgname}`: {e}")
-        return False
+    def remove_vg_backups(self, vgname):
+        """
+        Remove the metadata backup files of a LVM volume group.
 
-    util.SMlog(f"LVM metadata backed up in `{backup_file_path}`")
-    return True
+        This is a best-effort operation: if it fails, no exception is raised.
 
-def remove_vg_backups(vgname):
-    """
-    Remove the metadata backup files of a LVM volume group.
-
-    This is a best-effort operation: if it fails, no exception is raised.
-
-    :param str vgname: The name of the volume group to remove the backup files of.
-    """
-    try:
-        shutil.rmtree(_vg_backup_dir_path(vgname))
-    except Exception as e:
-        util.SMlog(f"Failed to remove LVM metadata backups of `{vgname}`: {e}")
+        :param str vgname: The name of the volume group to remove the backup files of.
+        """
+        try:
+            shutil.rmtree(self._backup_dir_path(vgname))
+        except Exception as e:
+            util.SMlog(f"Failed to remove LVM metadata backups of `{vgname}`: {e}")
