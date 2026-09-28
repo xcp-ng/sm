@@ -14,18 +14,17 @@ XML_DEFS = os.path.dirname(os.path.abspath(__file__)) + \
 
 
 class FakeZFSSR(ZFSSR.ZFSSR):
-    uuid = None
-    sr_ref = None
-    session = None
-    srcmd = None
-    other_config = {}
-    vdis = {}
-    passthrough = True
 
-    def __init__(self, srcmd, none):
+    def __init__(self, srcmd, _):
         self.dconf = srcmd.dconf
         self.srcmd = srcmd
         self.uuid = str(uuid.uuid4())
+        self.sr_ref = None
+        self.session = None
+        self.other_config = {}
+        self.vdis = {}
+        self.passthrough = True
+        self.cmd = srcmd.params['command']
 
 
 class TestZFSSR(unittest.TestCase):
