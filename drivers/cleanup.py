@@ -57,7 +57,7 @@ from lvmcowutil import LV_PREFIX, LvmCowUtil
 from vditype import VdiType, VdiTypeExtension, VDI_COW_TYPES, VDI_TYPE_TO_EXTENSION
 
 try:
-    from linstorcowutil import LinstorCowUtil, MultiLinstorCowUtil
+    from linstorcowutil import LinstorCowUtil, MultiLinstorCowUtil, MANAGER_PLUGIN
     from linstorjournaler import LinstorJournaler
     from linstorvolumemanager import get_controller_uri
     from linstorvolumemanager import LinstorVolumeManager, LinstorVolumeManagerError, LinstorVolumeOpeners
@@ -2914,7 +2914,7 @@ class SR(object):
             vdi._coalesceCowImageOnHost(host_ref, vdi) # vdi is the leaf for the online coalesce
             util.fistpoint.activate("LVHDRT_coaleaf_after_coalesce", self.uuid)
             vdi.pause(failfast=True)
-            # We make a pause here after the online coalesce but before the rename so we can refresh the chain for tapdisk. 
+            # We make a pause here after the online coalesce but before the rename so we can refresh the chain for tapdisk.
             # It's also needed to be paused for the rename on slaves with LVMSR.
             # We let the caller `_liveLeafCoalesce` do the unpause with the call to `vdi.ensureUnpaused()`
         else:
@@ -3926,30 +3926,28 @@ class LinstorSR(SR):
 
     @staticmethod
     def _abort_gc_from_openers(uuid: str, is_vdi_uuid: bool, openers: "LinstorVolumeOpeners") -> bool:
-        from linstorcowutil import MANAGER_PLUGIN
+        # Only gethostname() once, and if needed
+        def node_name():
+            if not hasattr(node_name, 'socket_name'):
+                import socket
+                node_name.socket_name = socket.gethostname()
+            return node_name.socket_name
 
-        node_name = None
+        def is_coalesce(opener, hostname):
+            return opener["process-name"].endswith("vhd-util") \
+                and "coalesce" in opener["cmdline"] \
+                and hostname != node_name()
 
-        for host_openers in openers.values():
-            for hostname, opener in host_openers.items():
-                # Not the most accurate check but it works...
-                # `vhd-util` is probably prefixed with a "+" which is ignored here.
-                if not opener["process-name"].endswith("vhd-util") or "coalesce" not in opener["cmdline"]:
-                    continue
-
-                if not node_name:
-                    import socket
-                    node_name = socket.gethostname()
-
-                if node_name == hostname:
-                    continue
-
-                with util.timeout(5), util.ApiSession("SMGC-coalescing") as session:
-                    sr_uuid = util.get_sr_uuid_from_vdi_uuid(session, uuid) if is_vdi_uuid else uuid
-                    util.SMlog(f"LINSTOR volume is coalescing on `{sr_uuid}`. We're going to interrupt the GC...")
-                    return util.strtobool(session.xenapi.host.call_plugin(
-                        util.get_master_ref(session), MANAGER_PLUGIN, "abortGc", {"srUuid": sr_uuid}
-                    ))
+        if any(is_coalesce(opener, hostname)
+               for hostname, host_openers in openers.items()
+               for opener in host_openers.values()
+               ):
+            with util.timeout(5), util.ApiSession("SMGC-coalescing") as session:
+                sr_uuid = util.get_sr_uuid_from_vdi_uuid(session, uuid) if is_vdi_uuid else uuid
+                util.SMlog(f"LINSTOR volume is coalescing on `{sr_uuid}`. We're going to interrupt the GC...")
+                return util.strtobool(session.xenapi.host.call_plugin(
+                    util.get_master_ref(session), MANAGER_PLUGIN, "abortGc", {"srUuid": sr_uuid}
+                ))
         return False
 
 
