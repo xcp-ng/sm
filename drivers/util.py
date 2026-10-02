@@ -1068,10 +1068,6 @@ def test_SCSIid(session, sr_uuid, SCSIid):
     return False
 
 
-class TimeoutException(SMException):
-    pass
-
-
 def _incr_iscsiSR_refcount(targetIQN, uuid):
     if not os.path.exists(ISCSI_REFDIR):
         os.mkdir(ISCSI_REFDIR)
