@@ -3933,12 +3933,14 @@ class LinstorSR(SR):
                 node_name.socket_name = socket.gethostname()
             return node_name.socket_name
 
-        if any(True
+        def is_coalesce(opener, hostname):
+            return opener["process-name"].endswith("vhd-util") \
+                and "coalesce" in opener["cmdline"] \
+                and hostname != node_name()
+
+        if any(is_coalesce(opener, hostname)
                for hostname, host_openers in openers.items()
                for opener in host_openers.values()
-               if opener["process-name"].endswith("vhd-util")
-               and "coalesce" in opener["cmdline"]
-               and hostname != node_name()
                ):
             with util.timeout(5), util.ApiSession("SMGC-coalescing") as session:
                 sr_uuid = util.get_sr_uuid_from_vdi_uuid(session, uuid) if is_vdi_uuid else uuid
