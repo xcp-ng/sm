@@ -3924,21 +3924,22 @@ class LinstorSR(SR):
     def abort_gc_from_openers_sr(cls, sr_uuid: str, openers: "LinstorVolumeOpeners") -> bool:
         return cls._abort_gc_from_openers(sr_uuid, False, openers)
 
+    # Only gethostname() once, and if needed
+    @classmethod
+    def node_name(cls):
+        if not hasattr(cls, '_node_name'):
+            import socket
+            cls._node_name = socket.gethostname()
+        return cls._node_name
+
+    @staticmethod
+    def is_opener_coalesce(opener):
+        return opener["process-name"].endswith("vhd-util") \
+            and "coalesce" in opener["cmdline"]
+
     @staticmethod
     def _abort_gc_from_openers(uuid: str, is_vdi_uuid: bool, openers: "LinstorVolumeOpeners") -> bool:
-        # Only gethostname() once, and if needed
-        def node_name():
-            if not hasattr(node_name, 'socket_name'):
-                import socket
-                node_name.socket_name = socket.gethostname()
-            return node_name.socket_name
-
-        def is_coalesce(opener, hostname):
-            return opener["process-name"].endswith("vhd-util") \
-                and "coalesce" in opener["cmdline"] \
-                and hostname != node_name()
-
-        if any(is_coalesce(opener, hostname)
+        if any(LinstorSR.is_opener_coalesce(opener) and hostname != LinstorSR.node_name()
                for hostname, host_openers in openers.items()
                for opener in host_openers.values()
                ):
