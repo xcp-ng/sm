@@ -543,13 +543,14 @@ class LinstorCowUtil:
                     return local_method(device_path, *args, **kwargs)
                 except util.CommandException as e:
                     if e.code in (errno.EROFS, errno.EMEDIUMTYPE):
-                        raise ErofsLinstorCallException(e)  # Break retry calls.
+                        raise ErofsLinstorCallException(e)
                     if e.code == errno.ENODATA:
                         raise NoDataLinstorCallException(e)
                     if e.code == errno.ENOENT:
                         raise NoPathLinstorCallException(e)
-                    raise e
-            # Retry only locally if it's not an EROFS exception.
+                    raise e  # Continue to retry calls.
+            # Retry only locally if it's not a LinstorCallException.
+            # ENODATA is retried on blktap2 directly, to handle transient DRBD errors.
             return util.retry(local_call, 5, 2, exceptions=[util.CommandException])
         except util.CommandException as e:
             util.SMlog('failed to execute locally CowUtil (sys {})'.format(e.code))
