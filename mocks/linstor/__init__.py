@@ -1,2 +1,2 @@
 class Linstor(object):
-    pass
+    def controller_backupdb(self, backup_name: str): ...

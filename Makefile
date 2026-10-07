@@ -29,6 +29,7 @@ SM_LIBS += vditype
 SM_LIBS += BaseISCSI
 SM_LIBS += cleanup
 SM_LIBS += lvutil
+SM_LIBS += lvmbackup
 SM_LIBS += lvmcache
 SM_LIBS += util
 SM_LIBS += verifyVDIsOnSR
@@ -73,6 +74,7 @@ SM_LIBS += fcoelib
 SM_LIBS += constants
 SM_LIBS += cbtutil
 SM_LIBS += sr_health_check
+SM_LIBS += backupmanager
 
 UDEV_RULES = 65-multipath 55-xs-mpath-scsidev 57-usb 58-xapi 99-purestorage
 MPATH_DAEMON = sm-multipath
