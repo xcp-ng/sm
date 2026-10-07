@@ -25,6 +25,7 @@ import struct
 import zlib
 import json
 from pathlib import Path
+from enum import IntFlag
 
 import util
 import xs_errors
@@ -59,6 +60,13 @@ class QCowUtil(CowUtil):
     QCOW2_MAGIC = 0x514649FB  # b"QFI\xfb": Magic number for QCOW2 files
     QCOW2_HEADER_SIZE = 104  # In fact the last information we need is at offset 40-47
     QCOW2_BACKING_FILE_OFFSET = 8
+    QCOW2_INCOMPATIBLE_FEATURE_MASK = 0x0000_0000_0000_001F # Bit 0-4
+    class IncompatibleFeatures(IntFlag):
+        DIRTY = 0x01
+        CORRUPT = 0x02
+        EXTERNAL_DATA_FILE = 0x04
+        COMPRESSION_TYPE = 0x08
+        EXTENDED_L2 = 0x10
 
     def _read_qcow2(self, path: str):
         with open(path, "rb") as qcow2_file:
@@ -102,6 +110,7 @@ class QCowUtil(CowUtil):
         # refcount_table_clusters: u32, // Number of clusters for the refcount table
         # nb_snapshots: u32,            // Number of snapshots in the image
         # snapshots_offset: u64,        // Offset to the snapshot table
+        # incompatible_features: u64,   // Bitmask of incompatible features
 
         file.seek(0)
         header = file.read(QCowUtil.QCOW2_HEADER_SIZE)
@@ -119,10 +128,26 @@ class QCowUtil(CowUtil):
             _,
             _,
             snapshots_offset,
-        ) = struct.unpack(">IIQIIQIIQQIIQ", header[:72])
+            incompatible_features,
+        ) = struct.unpack(">IIQIIQIIQQIIQQ", header[:80])
 
         if magic != QCowUtil.QCOW2_MAGIC:
             raise ValueError("Not a valid QCOW2 file")
+
+        if incompatible_features & ~QCowUtil.QCOW2_INCOMPATIBLE_FEATURE_MASK:
+            raise ValueError("QCOW2: Unknown incompatible feature bit set")
+
+        if incompatible_features & QCowUtil.IncompatibleFeatures.DIRTY:
+            raise ValueError("QCOW2: Image is dirty")
+
+        if incompatible_features & QCowUtil.IncompatibleFeatures.CORRUPT:
+            raise ValueError("QCOW2: Image is corrupt; cannot be opened read/write")
+
+        if incompatible_features & QCowUtil.IncompatibleFeatures.EXTERNAL_DATA_FILE:
+            raise ValueError("QCOW2: Image with external data file is unsupported")
+
+        if incompatible_features & QCowUtil.IncompatibleFeatures.COMPRESSION_TYPE:
+            raise ValueError("QCOW2: Image compression is not supported")
 
         parent_name = QCowUtil._read_qcow2_backingfile(file, backing_file_offset, backing_file_size)
 
@@ -137,6 +162,7 @@ class QCowUtil(CowUtil):
             "refcount_table_offset": refcount_table_offset,
             "snapshots_offset": snapshots_offset,
             "parent": parent_name,
+            "incompatible_features": incompatible_features,
         }
 
     @staticmethod
@@ -248,6 +274,14 @@ class QCowUtil(CowUtil):
 
             return custom_data_offset
 
+    def _has_extended_l2(self, path: str) -> bool:
+        self._read_qcow2(path)
+        return bool(self.header["incompatible_features"] & self.IncompatibleFeatures.EXTENDED_L2)
+
+    @staticmethod
+    def _convert_bool_to_qemu_option_value(option: bool) -> str:
+        return 'on' if option else 'off'
+
     # ----
     # Implementation of CowUtil
     # ----
@@ -284,7 +318,7 @@ class QCowUtil(CowUtil):
             cluster_size = block_size
         else:
             cluster_size = QCOW2_DEFAULT_CLUSTER_SIZE
-        cmd = [QEMU_IMG, "measure", "-O", "qcow2", "--output", "json", "-o", f"cluster_size={cluster_size}", "--size", f"{virtual_size}"]
+        cmd = [QEMU_IMG, "measure", "-O", "qcow2", "--output", "json", "-o", f"cluster_size={cluster_size},extended_l2=on", "--size", f"{virtual_size}"]
         output = json.loads(self._ioretry(cmd))
         return int(output["required"])
 
@@ -662,9 +696,11 @@ class QCowUtil(CowUtil):
         if parentRaw:
             parent_type = RAW_TYPE
             cluster_size = QCOW2_DEFAULT_CLUSTER_SIZE
+            extended_l2 = False
         else:
             parent_type = QCOW2_TYPE
             cluster_size = self.getBlockSize(parent)
+            extended_l2 = self._has_extended_l2(parent)
         args = ["-f", QCOW2_TYPE, "-F", parent_type, "-b", parent]
 
         if is_mirror_image:
@@ -676,9 +712,9 @@ class QCowUtil(CowUtil):
             # Ensuring we go back to a better cluster_size for performance reasons.
             # This limit our images max size to 64TiB.
             cluster_size = 16 * 1024 # 16KiB
-            args.extend(["-o", "extended_l2=on"])
+            extended_l2 = True
 
-        args.extend(["-o", f"cluster_size={cluster_size}"])
+        args.extend(["-o", f"cluster_size={cluster_size},extended_l2={self._convert_bool_to_qemu_option_value(extended_l2)}"])
         cmd.extend(args)
         cmd.append(path)
 
