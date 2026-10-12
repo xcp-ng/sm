@@ -113,6 +113,7 @@ tests/run_python_unittests.sh
 /etc/xapi.d/plugins/lvhd-thin
 /etc/xapi.d/plugins/nfs-on-slave
 /etc/xapi.d/plugins/on-slave
+/etc/xapi.d/plugins/on-master
 /etc/xapi.d/plugins/tapdisk-pause
 /etc/xapi.d/plugins/testing-hooks
 /etc/xapi.d/plugins/intellicache-clean

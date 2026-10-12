@@ -19,6 +19,7 @@ from sm_typing import (
     Any,
     Dict,
     List,
+    cast,
     override,
 )
 
@@ -32,6 +33,10 @@ import stat
 import time
 import util
 import uuid
+from datetime import datetime
+from pathlib import Path
+import contextlib
+import zipfile
 
 # Persistent prefix to add to RAW persistent volumes.
 PERSISTENT_PREFIX = 'xcp-persistent-'
@@ -41,7 +46,11 @@ DATABASE_VOLUME_NAME = PERSISTENT_PREFIX + 'database'
 DATABASE_SIZE = 1 << 30  # 1GB.
 DATABASE_PATH = '/var/lib/linstor'
 DATABASE_MKFS = 'mkfs.ext4'
-
+DATABASE_BACKUP_DIR_MAIN = Path(DATABASE_PATH)
+DATABASE_BACKUP_DIR_SPARE = Path("/var/lib/linstor.d/db-backups")
+DATABASE_BACKUP_NAME_FORMAT = "linstor_database_backup-{}-{}"
+DATABASE_BACKUP_RETENTION = 10
+DATABASE_BACKUP_DATE_FORMAT = "%Y%m%d_%H%M%S"
 LINSTOR_SATELLITE_PORT = 3366
 
 REG_DRBDADM_PRIMARY = re.compile("([^\\s]+)\\s+role:Primary")
@@ -51,10 +60,12 @@ DRBD_BY_RES_PATH = '/dev/drbd/by-res/'
 
 PLUGIN = 'linstor-manager'
 
+LinstorLocalVolumeOpeners = Dict[str, Dict[str, Any]]
+LinstorVolumeOpeners = Dict[str, LinstorLocalVolumeOpeners]
 
 # ==============================================================================
 
-def get_local_volume_openers(resource_name, volume):
+def get_local_volume_openers(resource_name, volume) -> LinstorLocalVolumeOpeners:
     if not resource_name or volume is None:
         raise Exception('Cannot get DRBD openers without resource name and/or volume.')
 
@@ -77,41 +88,48 @@ def get_local_volume_openers(resource_name, volume):
         process_name = groups[0]
         pid = groups[1]
         open_duration_ms = groups[2]
+
+        try:
+            cmdline = util.get_process_cmdline(int(pid))
+        except Exception as e:
+            util.SMlog(f"Failed to get command line of `{pid}`: {e}")
+            cmdline = []
+
         result[pid] = {
             'process-name': process_name,
-            'open-duration': open_duration_ms
+            'open-duration': open_duration_ms,
+            'cmdline': cmdline
         }
 
-    return json.dumps(result)
+    return cast(LinstorLocalVolumeOpeners, json.dumps(result))
 
-def get_all_volume_openers(resource_name, volume):
+def get_all_volume_openers(resource_name, volume) -> LinstorVolumeOpeners:
     PLUGIN_CMD = 'getDrbdOpeners'
 
     volume = str(volume)
     openers = {}
 
-    session = util.get_localAPI_session()
+    with util.ApiSession("SM-get-linstor-volume-openers") as session:
+        hosts = session.xenapi.host.get_all_records()
+        for host_ref, host_record in hosts.items():
+            node_name = host_record['hostname']
+            try:
+                if not session.xenapi.host_metrics.get_record(
+                    host_record['metrics']
+                )['live']:
+                    # Ensure we call plugin on online hosts only.
+                    continue
 
-    hosts = session.xenapi.host.get_all_records()
-    for host_ref, host_record in hosts.items():
-        node_name = host_record['hostname']
-        try:
-            if not session.xenapi.host_metrics.get_record(
-                host_record['metrics']
-            )['live']:
-                # Ensure we call plugin on online hosts only.
-                continue
-
-            openers[node_name] = json.loads(
-                session.xenapi.host.call_plugin(host_ref, PLUGIN, PLUGIN_CMD, {
-                    'resourceName': resource_name,
-                    'volume': volume
-                })
-            )
-        except Exception as e:
-            util.SMlog('Failed to get openers of `{}` on `{}`: {}'.format(
-                resource_name, node_name, e
-            ))
+                openers[node_name] = json.loads(
+                    session.xenapi.host.call_plugin(host_ref, PLUGIN, PLUGIN_CMD, {
+                        'resourceName': resource_name,
+                        'volume': volume
+                    })
+                )
+            except Exception as e:
+                util.SMlog('Failed to get openers of `{}` on `{}`: {}'.format(
+                    resource_name, node_name, e
+                ))
 
     return openers
 
@@ -180,7 +198,7 @@ def get_controller_node_name():
         if res:
             return res.groups()[0]
 
-    session = util.timeout_call(5, util.get_localAPI_session)
+    session = util.timeout(5, util.ApiSession, "SM-get-linstor-controller-node-name").session
 
     for host_ref, host_record in session.xenapi.host.get_all_records().items():
         node_name = host_record['hostname']
@@ -203,7 +221,7 @@ def get_controller_node_name():
 def demote_drbd_resource(node_name, resource_name):
     PLUGIN_CMD = 'demoteDrbdResource'
 
-    session = util.timeout_call(5, util.get_localAPI_session)
+    session = util.timeout(5, util.ApiSession, "SM-demote-drbd-resource").session
 
     for host_ref, host_record in session.xenapi.host.get_all_records().items():
         if host_record['hostname'] != node_name:
@@ -240,6 +258,8 @@ class LinstorVolumeManagerError(Exception):
     def code(self):
         return self._code
 
+class LinstorDatabaseBackupError(Exception):
+    pass
 
 # ==============================================================================
 
@@ -376,7 +396,7 @@ class LinstorVolumeManager(object):
         self._base_group_name = group_name
 
         # Ensure group exists.
-        group_name = self._build_group_name(group_name)
+        group_name = self.build_group_name(group_name)
         groups = self._linstor.resource_group_list_raise([group_name]).resource_groups
         if not groups:
             raise LinstorVolumeManagerError(
@@ -404,6 +424,10 @@ class LinstorVolumeManager(object):
     @property
     def uri(self) -> str:
         return self._uri
+
+    @property
+    def native_client(self) -> "linstor.Linstor":
+        return self._linstor
 
     @property
     def group_name(self):
@@ -945,7 +969,13 @@ class LinstorVolumeManager(object):
         """
 
         volume_name = self.get_volume_name(volume_uuid)
-        return self._get_volumes_info()[volume_name]
+        try:
+            return self._get_volumes_info()[volume_name]
+        except KeyError:
+            raise LinstorVolumeManagerError(
+                f"Could not find info about volume `{volume_uuid}`, the resource definition has likely been deleted",
+                LinstorVolumeManagerError.ERR_VOLUME_NOT_EXISTS
+            )
 
     def get_device_path(self, volume_uuid):
         """
@@ -1163,7 +1193,7 @@ class LinstorVolumeManager(object):
 
         return states
 
-    def get_volume_openers(self, volume_uuid):
+    def get_volume_openers(self, volume_uuid) -> LinstorVolumeOpeners:
         """
         Get openers of a volume.
         :param str volume_uuid: The volume uuid to monitor.
@@ -1396,7 +1426,7 @@ class LinstorVolumeManager(object):
             # It needs to be done locally by each host so we go through the linstor-manager plugin.
             # If we don't do this sometimes, the destroy will fail when trying to destroy the resource groups with:
             # "linstor-manager:destroy error: Failed to destroy SP `xcp-sr-linstor_group_thin_device` on node `r620-s2`: The specified storage pool 'xcp-sr-linstor_group_thin_device' on node 'r620-s2' can not be deleted as volumes / snapshot-volumes are still using it."
-            session = util.timeout_call(5, util.get_localAPI_session)
+            session = util.timeout(5, util.ApiSession, "SM-linstor-destroy").session
             for host_ref in session.xenapi.host.get_all():
                 try:
                     response = session.xenapi.host.call_plugin(
@@ -1760,6 +1790,51 @@ class LinstorVolumeManager(object):
         return self._request_database_path(self._linstor, activate=True)
 
     @classmethod
+    def is_controller(cls):
+        return cls._is_mounted(DATABASE_PATH)
+
+    @classmethod
+    def get_database_backup_age(cls):
+        """
+        Return the latest backup age in seconds.
+        If not called on the Controller, since backups are not available,
+        returns a huge value (a timestamp of now).
+        """
+        return (datetime.now() - cls._get_latest_database_backup()[1]).total_seconds()
+
+    def database_backup(self, name=""):
+        # Create new backup
+        date = datetime.now().strftime(DATABASE_BACKUP_DATE_FORMAT)
+        filename = DATABASE_BACKUP_NAME_FORMAT.format(date, name)
+        self._linstor.controller_backupdb(filename)
+        # Relative path are ok for a secondary backup filename:
+        # https://github.com/LINBIT/linstor-server/blob/3e9306a9d8215606544c64c50ced150625ee4926/controller/src/main/java/com/linbit/linstor/api/rest/v1/Controller.java#L408
+        self._linstor.controller_backupdb(f"../linstor.d/db-backups/{filename}")
+        util.SMlog(f"[database_backup] Created: {filename}", priority=util.LOG_INFO)
+
+    @classmethod
+    def database_backup_validate_and_prune(cls):
+        """
+        Removes old backup based on two criterias:
+        - Validity of the zipfile done by self._check_database_backup.
+        - Number of valid files found, only the nth latest are kept.
+        """
+        for directory in (DATABASE_BACKUP_DIR_MAIN, DATABASE_BACKUP_DIR_SPARE):
+            valid_backup_count = 0
+            # Validate file and apply retention
+            for database_backup_path, _ in cls._get_sorted_database_backup(directory):
+                try:
+                    cls._check_database_backup(database_backup_path)
+                    valid_backup_count += 1
+                    if valid_backup_count < DATABASE_BACKUP_RETENTION:
+                        continue
+                except LinstorDatabaseBackupError as error:
+                    util.SMlog(f"[database_backup] Check failed `{error}` [{database_backup_path}]",
+                               priority=util.LOG_ERR)
+                with contextlib.suppress(OSError):
+                    os.unlink(database_backup_path)
+
+    @classmethod
     def get_all_group_names(cls, base_name):
         """
         Get all group names. I.e. list of current group + HA.
@@ -1767,7 +1842,28 @@ class LinstorVolumeManager(object):
         :return: List of group names.
         :rtype: list
         """
-        return [cls._build_group_name(base_name), cls._build_ha_group_name(base_name)]
+        return [cls.build_group_name(base_name), cls._build_ha_group_name(base_name)]
+
+    @classmethod
+    def get_volume_group_name(cls, volume_name) -> str:
+        """
+        Get the group name associated with a volume.
+        :param str volume_name: The volume name to find.
+        :return: A group name.
+        :rtype: str
+        """
+
+        lin = cls._create_linstor_instance(uri=None)
+        try:
+            for dfn in lin.resource_dfn_list_raise(
+                query_volume_definitions=False,
+                filter_by_resource_definitions=[volume_name]
+            ).resource_definitions:
+                return dfn.resource_group_name
+        finally:
+            lin.disconnect()
+
+        return ''
 
     @classmethod
     def create_sr(cls, group_name, ips, redundancy, thin_provisioning, logger=default_logger.__func__):
@@ -1837,7 +1933,7 @@ class LinstorVolumeManager(object):
 
         driver_pool_name = group_name
         base_group_name = group_name
-        group_name = cls._build_group_name(group_name)
+        group_name = cls.build_group_name(group_name)
         storage_pool_name = group_name
         pools = lin.storage_pool_list_raise(filter_by_stor_pools=[storage_pool_name]).storage_pools
         if pools:
@@ -1894,7 +1990,7 @@ class LinstorVolumeManager(object):
                     result
                 )
                 if errors:
-                    if len(errors) == 1 and errors[0].is_error(
+                    if errors[0].is_error(
                         linstor.consts.FAIL_STOR_POOL_CONFIGURATION_ERROR
                     ) and reg_volume_group_not_found.match(errors[0].message):
                         logger(
@@ -2433,13 +2529,13 @@ class LinstorVolumeManager(object):
             )
 
         # If force is used, ensure there is no opener.
-        all_openers = get_all_volume_openers(resource_name, '0')
-        for openers in all_openers.values():
-            if openers:
+        openers = get_all_volume_openers(resource_name, '0')
+        for host_openers in openers.values():
+            if host_openers:
                 self._mark_resource_cache_as_dirty()
                 raise LinstorVolumeManagerError(
                     'Could not force destroy resource `{}` from SR `{}`: {} (openers=`{}`)'
-                    .format(resource_name, self._group_name, error_str, all_openers)
+                    .format(resource_name, self._group_name, error_str, openers)
                 )
 
         # Maybe the resource is blocked in primary mode. DRBD/LINSTOR issue?
@@ -2614,6 +2710,67 @@ class LinstorVolumeManager(object):
         properties = self._get_kv_cache()
         properties.namespace = self._build_volume_namespace(volume_uuid)
         return properties
+
+    @classmethod
+    def _list_database_backups(cls, database_backup_dir):
+        """
+        List all visible backup files in database_backup_dir.
+        DATABASE_BACKUP_DIR_MAIN is only available on the Linstor Controller.
+        DATABASE_BACKUP_DIR_SPARE will list backups previously made when the Host was the Linstor Controller.
+        This may not be useful information if it is not the Controller anymore.
+        """
+        for path in database_backup_dir.glob(DATABASE_BACKUP_NAME_FORMAT.format(
+                "[0-9]" * 8 + "_" + "[0-9]" * 6, "*") + ".zip"):
+            try:
+                yield path, datetime.strptime(path.name.split("-")[1], DATABASE_BACKUP_DATE_FORMAT)
+            except (ValueError, IndexError):
+                continue
+
+    @classmethod
+    def _get_sorted_database_backup(cls, database_backup_dir):
+        """
+        Return list of backups in database_backup_dir, alongside their creation date.
+        Sorted by date from the more recent to the older one.
+        """
+        return sorted(cls._list_database_backups(database_backup_dir),
+                      reverse=True,
+                      key=lambda p: p[1])
+
+    @classmethod
+    def _get_latest_database_backup(cls):
+        """
+        Return the latest backup in DATABASE_BACKUP_DIR_MAIN, and its creation date.
+        Returns (None, timestamp(0)) when none are found.
+        None will be found if it is not called on the Linstor Controller.
+        (cf _list_database_backups)
+        """
+        return max(cls._list_database_backups(DATABASE_BACKUP_DIR_MAIN),
+                   default=(None, datetime.fromtimestamp(0)),
+                   key=lambda p: p[1])
+
+    @classmethod
+    def _check_database_backup(cls, database_backup_path):
+        """
+        Make some validation of a database backup zip-file.
+        Check its a valid zipfile, and CRC-test its content.
+        Check it contains a non-empty linstordb.mv.db file.
+        Always raises a LinstorDatabaseBackupError if checks failed.
+        """
+        try:
+            with zipfile.ZipFile(database_backup_path, mode="r") as archive:
+                if archive.testzip() is not None:
+                    raise LinstorDatabaseBackupError("zip archive CRC failed")
+                linstordb = next((
+                    f
+                    for f in archive.filelist
+                    if f.filename == "linstordb.mv.db"
+                ), None)
+                if not linstordb:
+                    raise LinstorDatabaseBackupError("cannot find linstordb.mv.db")
+                if linstordb.file_size == 0:
+                    raise LinstorDatabaseBackupError("linstordb.mv.db is empty")
+        except (FileNotFoundError, zipfile.BadZipFile, zipfile.LargeZipFile) as e:
+            raise LinstorDatabaseBackupError(e) from e
 
     @classmethod
     def _build_sr_namespace(cls):
@@ -2891,7 +3048,7 @@ class LinstorVolumeManager(object):
                 except Exception:
                     pass
 
-            if mount == cls._is_mounted(DATABASE_PATH):
+            if mount == cls.is_controller():
                 force_exec(lambda: cls._move_files(
                     DATABASE_PATH, backup_path
                 ))
@@ -2899,7 +3056,7 @@ class LinstorVolumeManager(object):
                     volume_path, DATABASE_PATH, not mount
                 ))
 
-            if mount != cls._is_mounted(DATABASE_PATH):
+            if mount != cls.is_controller():
                 force_exec(lambda: cls._move_files(
                     backup_path, DATABASE_PATH
                 ))
@@ -3007,7 +3164,7 @@ class LinstorVolumeManager(object):
         return util.retry(destroy, maxretry=10)
 
     @classmethod
-    def _build_group_name(cls, base_name):
+    def build_group_name(cls, base_name):
         # If thin provisioning is used we have a path like this:
         # `VG/LV`. "/" is not accepted by LINSTOR.
         return '{}{}'.format(cls.PREFIX_SR, base_name.replace('/', '_'))

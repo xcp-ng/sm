@@ -18,7 +18,7 @@
 # Script to coalesce and garbage collect COW-based SR's in the background
 #
 
-from sm_typing import Any, Optional, List, override
+from sm_typing import Any, Dict, Optional, List, override
 
 import os
 import os.path
@@ -33,6 +33,7 @@ import base64
 import zlib
 import errno
 import stat
+from pathlib import Path
 
 import XenAPI # pylint: disable=import-error
 import util
@@ -59,8 +60,7 @@ try:
     from linstorcowutil import LinstorCowUtil, MultiLinstorCowUtil
     from linstorjournaler import LinstorJournaler
     from linstorvolumemanager import get_controller_uri
-    from linstorvolumemanager import LinstorVolumeManager
-    from linstorvolumemanager import LinstorVolumeManagerError
+    from linstorvolumemanager import LinstorVolumeManager, LinstorVolumeManagerError, LinstorVolumeOpeners
     from linstorvolumemanager import PERSISTENT_PREFIX as LINSTOR_PERSISTENT_PREFIX
 
     LINSTOR_AVAILABLE = True
@@ -300,18 +300,12 @@ class XAPI:
     class LookupError(util.SMException):
         pass
 
-    @staticmethod
-    def getSession():
-        session = XenAPI.xapi_local()
-        session.xenapi.login_with_password(XAPI.USER, '', '', 'SM')
-        return session
-
     def __init__(self, session, srUuid):
-        self.sessionPrivate = False
         self.session = session
+        self._api_session = None
         if self.session is None:
-            self.session = self.getSession()
-            self.sessionPrivate = True
+            self._api_session = util.ApiSession("SMGC")
+            self.session = self._api_session.session
         self._srRef = self.session.xenapi.SR.get_by_uuid(srUuid)
         self.srRecord = self.session.xenapi.SR.get_record(self._srRef)
         self.hostUuid = util.get_this_host()
@@ -320,8 +314,8 @@ class XAPI:
         self.task_progress = {"coalescable": 0, "done": 0}
 
     def __del__(self):
-        if self.sessionPrivate:
-            self.session.xenapi.session.logout()
+        if self._api_session:
+            self._api_session.logout()
 
     @property
     def srRef(self):
@@ -607,6 +601,10 @@ class VDI(object):
         self.sr.xapi.removeFromConfigVDI(self, key)
         Util.log("Removed %s from %s" % (key, self))
 
+    def ensurePaused(self):
+        if not self.getConfig(self.DB_VDI_PAUSED) == "true":
+            self.pause(failfast=True)
+
     def ensureUnpaused(self):
         if self.getConfig(self.DB_VDI_PAUSED) == "true":
             Util.log("Unpausing VDI %s" % self)
@@ -666,11 +664,20 @@ class VDI(object):
 
     def isCoalesceable(self):
         """A VDI is coalesceable if it has no siblings and is not a leaf"""
-        return not self.scanError and \
-                self.parent and \
-                len(self.parent.children) == 1 and \
-                self.isHidden() and \
-                len(self.children) > 0
+        return (
+            not self.scanError and
+            self.parent and
+            len(self.parent.children) == 1 and
+            self.isHidden() and
+            len(self.children) > 0 and (
+                # Conditions below are Qcow2 specific:
+                # A Qcow2 chain can't be coalesce with more than one leaf attached.
+                # Put it another way, Qcow2 leaves activated on multiple hosts must
+                # prevent the coalesce of the chain.
+                self.vdi_type != VdiType.QCOW2 or
+                (self.vdi_type == VdiType.QCOW2 and len(self.sr.hasLeavesAttachedOn(self)) <= 1)
+            )
+        )
 
     def isLeafCoalesceable(self):
         """A VDI is leaf-coalesceable if it has no siblings and is a leaf"""
@@ -2119,32 +2126,31 @@ class SR(object):
         return msg is None
 
     def check_no_space_candidates(self):
-        xapi_session = self.xapi.getSession()
+        with util.ApiSession("SMGC-check-no-space") as xapi_session:
+            msg_id = self.xapi.srRecord["sm_config"].get(VDI.DB_GC_NO_SPACE)
+            if self.no_space_candidates:
+                if msg_id is None or self.msg_cleared(xapi_session, msg_id):
+                    util.SMlog("Could not coalesce due to a lack of space "
+                               f"in SR {self.uuid}")
+                    msg_body = ("Unable to perform data coalesce due to a lack "
+                                f"of space in SR {self.uuid}")
+                    msg_id = xapi_session.xenapi.message.create(
+                        'SM_GC_NO_SPACE',
+                        3,
+                        "SR",
+                        self.uuid,
+                        msg_body)
+                    xapi_session.xenapi.SR.remove_from_sm_config(
+                        self.xapi.srRef, VDI.DB_GC_NO_SPACE)
+                    xapi_session.xenapi.SR.add_to_sm_config(
+                        self.xapi.srRef, VDI.DB_GC_NO_SPACE, msg_id)
 
-        msg_id = self.xapi.srRecord["sm_config"].get(VDI.DB_GC_NO_SPACE)
-        if self.no_space_candidates:
-            if msg_id is None or self.msg_cleared(xapi_session, msg_id):
-                util.SMlog("Could not coalesce due to a lack of space "
-                           f"in SR {self.uuid}")
-                msg_body = ("Unable to perform data coalesce due to a lack "
-                            f"of space in SR {self.uuid}")
-                msg_id = xapi_session.xenapi.message.create(
-                    'SM_GC_NO_SPACE',
-                    3,
-                    "SR",
-                    self.uuid,
-                    msg_body)
-                xapi_session.xenapi.SR.remove_from_sm_config(
-                    self.xapi.srRef, VDI.DB_GC_NO_SPACE)
-                xapi_session.xenapi.SR.add_to_sm_config(
-                    self.xapi.srRef, VDI.DB_GC_NO_SPACE, msg_id)
-
-            for candidate in self.no_space_candidates.values():
-                candidate.setConfig(VDI.DB_GC_NO_SPACE, msg_id)
-        elif msg_id is not None:
-            # Everything was coalescable, remove the message
-            xapi_session.xenapi.SR.remove_from_sm_config(self.xapi.srRef, VDI.DB_GC_NO_SPACE)
-            xapi_session.xenapi.message.destroy(msg_id)
+                for candidate in self.no_space_candidates.values():
+                    candidate.setConfig(VDI.DB_GC_NO_SPACE, msg_id)
+            elif msg_id is not None:
+                # Everything was coalescable, remove the message
+                xapi_session.xenapi.SR.remove_from_sm_config(self.xapi.srRef, VDI.DB_GC_NO_SPACE)
+                xapi_session.xenapi.message.destroy(msg_id)
 
     def clear_no_space_msg(self, vdi):
         msg_id = None
@@ -2521,7 +2527,7 @@ class SR(object):
     def cleanupCache(self, maxAge=-1) -> int:
         return 0
 
-    def _hasLeavesAttachedOn(self, vdi: VDI):
+    def hasLeavesAttachedOn(self, vdi: VDI):
         leaves = vdi.getAllLeaves()
         leaves_vdi = [leaf.uuid for leaf in leaves]
         return util.get_hosts_attached_on_with_vdi_uuid(self.xapi.session, leaves_vdi)
@@ -2559,11 +2565,13 @@ class SR(object):
             self._create_running_file(vdi)
 
             self.journaler.create(vdi.JRN_COALESCE, vdi.uuid, "1")
-            host_refs = self._hasLeavesAttachedOn(vdi)
-            #TODO: this check of multiple host_refs should be done earlier in `is_coalesceable` to avoid stopping this late every time
-            if len(host_refs) > 1:
+            host_refs = self.hasLeavesAttachedOn(vdi)
+            # This check of multiple host_refs was done earlier in `isCoalesceable` but
+            # we recheck here to be sure another leaf wasn't activated in the meantime.
+            if vdi.cowutil.isCoalesceableOnRemote() and len(host_refs) > 1:
                 Util.log("Not coalesceable, chain activated more than once")
-                raise Exception("Not coalesceable, chain activated more than once") #TODO: Use correct error
+                Util.log(f"VDI '{vdi.uuid}' has leaves attached on {host_refs}")
+                raise Exception("Not coalesceable, chain activated more than once")
 
             try:
                 if host_refs and vdi.cowutil.isCoalesceableOnRemote():
@@ -2899,7 +2907,7 @@ class SR(object):
         self._prepareCoalesceLeaf(vdi)
         vdi.parent._setHidden(False)
         vdi.parent._increaseSizeVirt(vdi.sizeVirt, False)
-        host_refs = self._hasLeavesAttachedOn(vdi) if coalesce_on_remote else None
+        host_refs = self.hasLeavesAttachedOn(vdi) if coalesce_on_remote else None
         if host_refs:
             util.fistpoint.activate("LVHDRT_coaleaf_before_coalesce", self.uuid)
             _, host_ref = next(iter(host_refs.items()))
@@ -3210,18 +3218,28 @@ class FileSR(SR):
     @override
     def _handleInterruptedCoalesceLeaf(self) -> None:
         entries = self.journaler.getAll(VDI.JRN_LEAF)
+        extensions = tuple(VDI_TYPE_TO_EXTENSION[vdi_type] for vdi_type in VDI_COW_TYPES)
+        srRoot = Path(self.path)
+
         for uuid, parentUuid in entries.items():
-            fileList = os.listdir(self.path)
-            childName = uuid + VdiTypeExtension.VHD
-            tmpChildName = self.TMP_RENAME_PREFIX + uuid + VdiTypeExtension.VHD
-            parentName1 = parentUuid + VdiTypeExtension.VHD
-            parentName2 = parentUuid + VdiTypeExtension.RAW
-            parentPresent = (parentName1 in fileList or parentName2 in fileList)
-            if parentPresent or tmpChildName in fileList:
+            hasCowPath = False
+
+            for extension in extensions:
+                hasCowPath = (
+                    (srRoot / (self.TMP_RENAME_PREFIX + uuid + extension)).exists() or
+                    (srRoot / (parentUuid + extension)).exists()
+                )
+
+                if hasCowPath:
+                    break
+
+            if hasCowPath or (srRoot / (parentUuid + VdiTypeExtension.RAW)).exists():
                 self._undoInterruptedCoalesceLeaf(uuid, parentUuid)
             else:
                 self._finishInterruptedCoalesceLeaf(uuid, parentUuid)
+
             self.journaler.remove(VDI.JRN_LEAF, uuid)
+
             vdi = self.getVDI(uuid)
             if vdi:
                 vdi.ensureUnpaused()
@@ -3499,6 +3517,7 @@ class LVMSR(SR):
             parent._setHidden(True)
         if not parent.lvReadonly:
             self.lvmCache.setReadonly(parent.fileName, True)
+        child.ensurePaused()
         self._updateSlavesOnUndoLeafCoalesce(parent, child)
         util.fistpoint.activate("LVHDRT_coaleaf_undo_end", self.uuid)
         Util.log("*** leaf-coalesce undo successful")
@@ -3627,6 +3646,7 @@ class LinstorSR(SR):
                 assert self.sr, "Cannot use `LinstorProxy` without valid `LinstorVolumeManager` instance"
                 return getattr(self.sr._linstor, attr)
 
+        self._linstor = None
         self._linstor_proxy = LinstorProxy(self)
         self._reloadLinstor(journaler_only=True)
 
@@ -3676,17 +3696,19 @@ class LinstorSR(SR):
         group_name = dconf['group-name']
 
         controller_uri = get_controller_uri()
+
+        if not journaler_only:
+            self._linstor = LinstorVolumeManager(
+                controller_uri,
+                group_name,
+                repair=True,
+                logger=util.SMlog
+            )
+
         self.journaler = LinstorJournaler(
-            controller_uri, group_name, logger=util.SMlog
-        )
-
-        if journaler_only:
-            return
-
-        self._linstor = LinstorVolumeManager(
-            controller_uri,
             group_name,
-            repair=True,
+            uri=None if self._linstor else controller_uri,
+            native_client=self._linstor.native_client if self._linstor else None,
             logger=util.SMlog
         )
 
@@ -3883,16 +3905,53 @@ class LinstorSR(SR):
 
     def _checkSlaves(self, vdi):
         try:
-            all_openers = self._linstor.get_volume_openers(vdi.uuid)
-            for openers in all_openers.values():
-                for opener in openers.values():
+            openers = self._linstor.get_volume_openers(vdi.uuid)
+            for host_openers in openers.values():
+                for opener in host_openers.values():
                     if opener['process-name'] != 'tapdisk':
                         raise util.SMException(
-                            'VDI {} is in use: {}'.format(vdi.uuid, all_openers)
+                            'VDI {} is in use: {}'.format(vdi.uuid, openers)
                         )
         except LinstorVolumeManagerError as e:
             if e.code != LinstorVolumeManagerError.ERR_VOLUME_NOT_EXISTS:
                 raise
+
+    @classmethod
+    def abort_gc_from_openers_vdi(cls, vdi_uuid: str, openers: "LinstorVolumeOpeners") -> bool:
+        return cls._abort_gc_from_openers(vdi_uuid, True, openers)
+
+    @classmethod
+    def abort_gc_from_openers_sr(cls, sr_uuid: str, openers: "LinstorVolumeOpeners") -> bool:
+        return cls._abort_gc_from_openers(sr_uuid, False, openers)
+
+    @staticmethod
+    def _abort_gc_from_openers(uuid: str, is_vdi_uuid: bool, openers: "LinstorVolumeOpeners") -> bool:
+        from linstorcowutil import MANAGER_PLUGIN
+
+        node_name = None
+
+        for host_openers in openers.values():
+            for hostname, opener in host_openers.items():
+                # Not the most accurate check but it works...
+                # `vhd-util` is probably prefixed with a "+" which is ignored here.
+                if not opener["process-name"].endswith("vhd-util") or "coalesce" not in opener["cmdline"]:
+                    continue
+
+                if not node_name:
+                    import socket
+                    node_name = socket.gethostname()
+
+                if node_name == hostname:
+                    continue
+
+                with util.timeout(5), util.ApiSession("SMGC-coalescing") as session:
+                    sr_uuid = util.get_sr_uuid_from_vdi_uuid(session, uuid) if is_vdi_uuid else uuid
+                    util.SMlog(f"LINSTOR volume is coalescing on `{sr_uuid}`. We're going to interrupt the GC...")
+                    return util.strtobool(session.xenapi.host.call_plugin(
+                        util.get_master_ref(session), MANAGER_PLUGIN, "abortGc", {"srUuid": sr_uuid}
+                    ))
+        return False
+
 
 
 ################################################################################

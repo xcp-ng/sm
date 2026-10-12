@@ -16,6 +16,10 @@
 # Miscellaneous utility functions
 #
 
+from sm_typing import Any, List, Optional, override
+
+import contextlib
+import atexit
 import os
 import re
 import sys
@@ -24,6 +28,7 @@ import shutil
 import tempfile
 import signal
 import time
+import types
 import datetime
 import errno
 import functools
@@ -35,13 +40,15 @@ import stat
 import xs_errors
 import XenAPI # pylint: disable=import-error
 import xmlrpc.client
+import http.client
 import base64
 import syslog
 import resource
 import traceback
 import glob
 import copy
-import tempfile
+import contextlib
+from sm_typing import override
 
 from functools import reduce
 from sm_typing import List, Optional
@@ -69,6 +76,55 @@ CMD_KICKPIPE = '/opt/xensource/libexec/kickpipe'
 
 FIST_PAUSE_PERIOD = 30  # seconds
 
+class _TimeoutContextManager(contextlib.AbstractContextManager):
+    def __init__(self, delay: int) -> None:
+        self.delay = delay
+        self.old_handler: Any = None
+
+    @override
+    def __enter__(self) -> "_TimeoutContextManager":
+        def handle_timeout(_signum: int, _frame: Optional[types.FrameType]) -> None:
+            raise TimeoutError(f"Timed out after {self.delay} seconds")
+        self.old_handler = signal.signal(signal.SIGALRM, handle_timeout)
+        signal.alarm(self.delay)
+        return self
+
+    @override
+    def __exit__(
+        self,
+        exc_type: Optional[Any],
+        exc_val: Optional[BaseException],
+        exc_tb: Optional[types.TracebackType]
+    ):
+        signal.alarm(0)
+        if self.old_handler is not None:
+            signal.signal(signal.SIGALRM, self.old_handler)
+            self.old_handler = None
+        return False
+
+    def __call__(self, func):
+        def wrapper(*args, **kwargs):
+            with self:
+                return func(*args, **kwargs)
+        return wrapper
+
+def timeout(*args, **kwargs):
+    if len(args) >= 2 and callable(args[1]):
+        delay, func = args[0], args[1]
+        remaining_args = args[2:]
+        with _TimeoutContextManager(delay):
+            return func(*remaining_args, **kwargs)
+
+    if len(args) == 1 and callable(args[0]):
+        raise TypeError("timeout() missing 1 required argument: 'delay'")
+
+    if args:
+        delay = args[0]
+    elif "delay" in kwargs:
+        delay = kwargs["delay"]
+    else:
+        raise TypeError("timeout() missing 1 required argument: 'delay'")
+    return _TimeoutContextManager(delay)
 
 class SMException(Exception):
     """Base class for all SM exceptions for easier catching & wrapping in
@@ -413,12 +469,11 @@ def ioretry_stat(path, maxretry=IORETRY_MAX):
 
 def sr_get_capability(sr_uuid, session=None):
     result = []
-    local_session = None
-    if session is None:
-        local_session = get_localAPI_session()
-        session = local_session
-
+    api_session = None
     try:
+        if session is None:
+            api_session = ApiSession("SM-sr-get-capability")
+            session = api_session.session
         sr_ref = session.xenapi.SR.get_by_uuid(sr_uuid)
         sm_type = session.xenapi.SR.get_record(sr_ref)['type']
         sm_rec = session.xenapi.SM.get_all_records_where(
@@ -427,11 +482,10 @@ def sr_get_capability(sr_uuid, session=None):
         # SM expects at least one entry of any SR type
         if len(sm_rec) > 0:
             result = list(sm_rec.values())[0]['capabilities']
-
-        return result
     finally:
-        if local_session:
-            local_session.xenapi.session.logout()
+        if api_session:
+            session.logout()
+    return result
 
 def sr_get_driver_info(driver_info):
     results = {}
@@ -719,14 +773,79 @@ def getrootdevID():
     return rootdevID
 
 
-def get_localAPI_session():
-    # First acquire a valid session
-    session = XenAPI.xapi_local()
-    try:
-        session.xenapi.login_with_password('root', '', '', 'SM')
-    except:
-        raise xs_errors.XenError('APISession')
-    return session
+class ApiSession(contextlib.AbstractContextManager):
+    session = None
+
+    def __init__(self, originator="SM"):
+        self.originator = originator
+        # First acquire a valid session
+        self.session = self._login()
+        atexit.register(self._atexit)
+
+    def _login(self):
+        if self.session:
+            return self.session
+        session = XenAPI.xapi_local()
+        try:
+            session.xenapi.login_with_password('root', '', '', self.originator)
+        except Exception as exc:
+            raise xs_errors.XenError(
+                "APISession",
+                opterr=f"[{self.originator}] Unable to open local XAPI session"
+            ) from exc
+        SMlog("ApiSession [{}] login".format(self.originator), priority=LOG_DEBUG)
+        return session
+
+    def _logout(self, log):
+        """Closes an API session"""
+        if self.session is None:
+            SMlog("ApiSession [{}] session is None {}".format(self.originator, log), priority=LOG_DEBUG)
+            return
+        self.session.xenapi.session.logout()
+        SMlog("ApiSession [{}] {}".format(self.originator, log), priority=LOG_DEBUG)
+        self.session = None
+
+    def logout(self, log="logout"):
+        atexit.unregister(self._atexit)
+        self._logout(log=log)
+
+    def __del__(self):
+        if self.session:
+            self.logout(log="logout del")
+
+    def _atexit(self):
+        self._logout(log="logout atexit")
+
+    @override
+    def __enter__(self):
+        self.session = self._login()
+        return self.session
+
+    @override
+    def __exit__(self, _type, _value, _traceback):
+        self.logout(log=f"logout exception[{_type}] {_value}" if _type else "logout context")
+
+
+def xapi_safe_call(function):
+    """
+    Decorator to catch classic XAPI connection problems and retry forever.
+    The method should be only called for XAPI calls.
+    eg: blktap2.py#VDI:_remove_tag()
+    """
+    def wrapper(*args, **kwargs):
+        call_str = f"{function.__name__}(args={args}, kwargs={kwargs})"
+        while True:
+            try:
+                return function(*args, **kwargs)
+            except xmlrpc.client.ProtocolError as e:
+                # If there's a connection error, keep trying forever.
+                if e.errcode == http.HTTPStatus.INTERNAL_SERVER_ERROR.value:
+                    continue
+                raise
+            except Exception as e:
+                SMlog(f"Failed XAPI call `{call_str}`: `{e}`")
+                raise
+    return wrapper
 
 
 def get_this_host():
@@ -951,17 +1070,6 @@ def test_SCSIid(session, sr_uuid, SCSIid):
 
 class TimeoutException(SMException):
     pass
-
-
-def timeout_call(timeoutseconds, function, *arguments):
-    def handler(signum, frame):
-        raise TimeoutException()
-    signal.signal(signal.SIGALRM, handler)
-    signal.alarm(timeoutseconds)
-    try:
-        return function(*arguments)
-    finally:
-        signal.alarm(0)
 
 
 def _incr_iscsiSR_refcount(targetIQN, uuid):
@@ -1259,6 +1367,15 @@ def _getVDIs(srobj):
     return VDIs
 
 
+def get_sr_uuid_from_vdi_ref(session, vdi_ref: str) -> str:
+    sr_ref = session.xenapi.VDI.get_SR(vdi_ref)
+    return session.xenapi.SR.get_uuid(sr_ref)
+
+
+def get_sr_uuid_from_vdi_uuid(session, vdi_uuid: str) -> str:
+    return get_sr_uuid_from_vdi_ref(session, session.xenapi.VDI.get_by_uuid(vdi_uuid))
+
+
 def _getVDI(srobj, vdi_uuid):
     vdi = srobj.session.xenapi.VDI.get_by_uuid(vdi_uuid)
     ref = srobj.session.xenapi.VDI.get_record(vdi)
@@ -1378,16 +1495,12 @@ class FistPoint:
         return os.path.exists("/tmp/fist_%s" % name)
 
     def mark_sr(self, name, sruuid, started):
-        session = get_localAPI_session()
-        try:
+        with ApiSession("SM-sr-fist-point") as session:
             sr = session.xenapi.SR.get_by_uuid(sruuid)
-
             if started:
                 session.xenapi.SR.add_to_other_config(sr, name, "active")
             else:
                 session.xenapi.SR.remove_from_other_config(sr, name)
-        finally:
-            session.xenapi.session.logout()
 
     def activate(self, name, sruuid):
         if name in self.points:
@@ -1531,6 +1644,17 @@ def pid_is_alive(pid):
         if e.errno == errno.EPERM:
             return True
         return False
+
+
+def get_process_cmdline(pid: int) -> List[str]:
+    try:
+        with open(os.path.join('/proc', str(pid), 'cmdline'), 'rb') as f:
+            line = f.read().split(b'\0')
+        return [arg.decode() for arg in line]
+    except OSError as e:
+        if e.errno != errno.ENOENT:
+            raise
+        return []
 
 
 # Looks at /proc and figures either
@@ -2221,3 +2345,25 @@ def conditional_decorator(decorator, condition):
             return func
         return decorator(func)
     return wrapper
+
+
+def get_srs_uuid_from_type(session, type):
+    srs = session.xenapi.SR.get_all_records_where(f"field \"type\" = \"{type}\"")
+    return {sr["uuid"]: sr for sr in srs.values()}
+
+
+def get_linstor_srs_uuid(session):
+    import LinstorSR # pylint: disable=C0415
+    return get_srs_uuid_from_type(session, LinstorSR.LinstorSR.DRIVER_TYPE)
+
+
+def find_pbd_ref_from_dconf_value(session, srs, key, value, value_modifier = None):
+    for sr in srs.values():
+        for pbd_ref in sr["PBDs"]:
+            device_config = session.xenapi.PBD.get_device_config(pbd_ref)
+            cur_value = device_config.get(key)
+            if value_modifier:
+                cur_value = value_modifier(cur_value)
+            if cur_value and cur_value == value:
+                return pbd_ref
+    return None

@@ -17,7 +17,6 @@
 #
 # blktap2: blktap/tapdisk management layer
 #
-
 from sm_typing import Any, Callable, ClassVar, Dict, override, List, Union
 
 from abc import abstractmethod
@@ -31,7 +30,6 @@ import copy
 from lock import Lock
 import util
 import xmlrpc.client
-import http.client
 import errno
 import signal
 import subprocess
@@ -59,7 +57,7 @@ from socket import socket, AF_UNIX, SOCK_STREAM
 
 
 try:
-    from linstorvolumemanager import log_drbd_openers
+    from linstorvolumemanager import get_controller_uri, get_all_volume_openers, LinstorVolumeManager
     LINSTOR_AVAILABLE = True
 except ImportError:
     LINSTOR_AVAILABLE = False
@@ -76,6 +74,13 @@ POOL_SIZE_KEY = "mem-pool-size-rings"
 
 ENABLE_MULTIPLE_ATTACH = "/etc/xensource/allow_multiple_vdi_attach"
 NO_MULTIPLE_ATTACH = not (os.path.exists(ENABLE_MULTIPLE_ATTACH))
+
+# Including DRBD in the pattern to prevent matching with other SRs than LinstorSR
+TAP_CTL_ERROR_PATTERN = re.compile(
+    r"(?P<status>ERROR|SUCCESS)\s"
+    r"\[(?P<code>-?[0-9]+)\s-\s(?P<category>.+?)]:\s"
+    r"(?P<message>.*)\sReason:\s(?P<reason>.+drbd.+)"
+)
 
 
 def locking(excType, override=True):
@@ -427,7 +432,26 @@ class TapCtl(object):
             args += ["-a", str(params)]
         if cbtlog:
             args.extend(["-c", cbtlog])
-        cls._pread(args)
+
+        @retried(backoff=.5, limit=3)
+        def unpause_impl():
+            drbd_path = _file
+            try:
+                cls._pread(args)
+            except TapCtl.CommandFailure as e:
+                error_code = e.get_error_code()
+                if error_code == errno.ENODATA:
+                    raise RetryLoop.TransientFailure(e)
+                if error_code not in (errno.EROFS, errno.EMEDIUMTYPE):
+                    raise
+                match = TAP_CTL_ERROR_PATTERN.search(e.info.get("errmsg", ""))
+                if match and match.group("reason"):
+                    drbd_path = match.group("reason")
+                if Tapdisk.abort_linstor_gc(drbd_path):
+                    raise RetryLoop.TransientFailure(e)
+                raise
+
+        unpause_impl()
 
     @classmethod
     def shutdown(cls, pid):
@@ -890,9 +914,44 @@ class Tapdisk(object):
         except util.CommandException as e:
             util.logException(e)
 
+    @staticmethod
+    def abort_linstor_gc(drbd_path: str) -> bool:
+        if not LINSTOR_AVAILABLE or not drbd_path.startswith("/dev/drbd/by-res/xcp-volume-"):
+            return False
+
+        _, volume_name, _ = drbd_path.rsplit("/", 2)
+        group_name = LinstorVolumeManager.get_volume_group_name(volume_name)
+
+        openers = get_all_volume_openers(volume_name, "0")
+
+        api_session = util.timeout(5, util.ApiSession, "SM-blktap2-abort-linstor-gc")
+        try:
+            srs = util.get_linstor_srs_uuid(api_session.session)
+            pbd_ref = util.find_pbd_ref_from_dconf_value(
+                api_session.session, srs, "group-name", group_name,
+                LinstorVolumeManager.build_group_name,
+            )
+            if pbd_ref:
+                pbd_rec = api_session.session.xenapi.PBD.get_record(pbd_ref)
+
+                sr_ref = pbd_rec["SR"]
+                sr_uuid = api_session.session.xenapi.SR.get_uuid(sr_ref)
+
+                import cleanup # pylint: disable=C0415
+                if cleanup.LinstorSR.abort_gc_from_openers_sr(sr_uuid, openers):
+                    return True
+            else:
+                util.SMlog(f"Unable to find PBD of LINSTOR group `{group_name}`...")
+
+            util.SMlog(f"Unable to run tapdisk, openers of DRBD resource `{drbd_path}`: {openers}")
+        finally:
+            api_session.logout()
+
+        return False
+
     @classmethod
     def launch_on_tap(cls, blktap, path, _type, options):
-
+        drbd_path = path
         tapdisk = cls.find_by_path(path)
         if tapdisk:
             raise TapdiskExists(tapdisk)
@@ -911,16 +970,17 @@ class Tapdisk(object):
                             TapCtl.open(pid, minor, _type, path, options)
                             break
                         except TapCtl.CommandFailure as e:
-                            err = (
-                                'status' in e.info and e.info['status']
-                            ) or None
-                            if err in (errno.EIO, errno.EROFS, errno.EAGAIN):
-                                if retry_open < 5:
-                                    retry_open += 1
-                                    time.sleep(1)
-                                    continue
-                                if LINSTOR_AVAILABLE and err == errno.EROFS:
-                                    log_drbd_openers(path)
+                            err = e.get_error_code()
+                            match = TAP_CTL_ERROR_PATTERN.search(e.info.get("errmsg", ""))
+                            if match and match.group("reason"):
+                                drbd_path = match.group("reason")
+                            if err in (errno.EROFS, errno.EMEDIUMTYPE) and cls.abort_linstor_gc(drbd_path):
+                                continue
+
+                            if err in (errno.EIO, errno.EAGAIN, errno.EROFS, errno.EMEDIUMTYPE, errno.ENODATA) and retry_open < 1:
+                                retry_open += 1
+                                time.sleep(1)
+                                continue
                             raise
                     try:
                         tapdisk = cls.__from_blktap(blktap)
@@ -1136,14 +1196,9 @@ class VDI(object):
 
     @classmethod
     def from_cli(cls, uuid):
-        session = XenAPI.xapi_local()
-        session.xenapi.login_with_password('root', '', '', 'SM')
-
-        target = sm.VDI.from_uuid(session, uuid)
-        driver_info = target.sr.srcmd.driver_info
-
-        session.xenapi.session.logout()
-
+        with util.ApiSession("SM-blktap2") as session:
+            target = sm.VDI.from_uuid(session, uuid)
+            driver_info = target.sr.srcmd.driver_info
         return cls(uuid, target, driver_info)
 
     @staticmethod
@@ -1539,6 +1594,13 @@ class VDI(object):
             util.logException("BLKTAP2:call_pluginhandler %s" % e)
             return False
 
+    @util.xapi_safe_call
+    def _call_xapi_plugin(self, *args):
+        """
+        wrapper to retry xenapi.host.call_plugin on XAPI HTTP failure.
+        """
+        return self._session.xenapi.host.call_plugin(*args)
+
     def _add_tag(self, vdi_uuid, writable):
         util.SMlog("Adding tag to: %s" % vdi_uuid)
         attach_mode = "RO"
@@ -1584,6 +1646,7 @@ class VDI(object):
         util.SMlog("Activate lock succeeded")
         return True
 
+    @util.xapi_safe_call
     def _check_tag(self, vdi_uuid):
         vdi_ref = self._session.xenapi.VDI.get_by_uuid(vdi_uuid)
         sm_config = self._session.xenapi.VDI.get_sm_config(vdi_ref)
@@ -1592,6 +1655,7 @@ class VDI(object):
             return False
         return True
 
+    @util.xapi_safe_call
     def _remove_tag(self, vdi_uuid):
         vdi_ref = self._session.xenapi.VDI.get_by_uuid(vdi_uuid)
         host_ref = self._session.xenapi.host.get_by_uuid(util.get_this_host())
@@ -1603,8 +1667,9 @@ class VDI(object):
         else:
             util.SMlog("_remove_tag: host key %s not found, ignore" % host_key)
 
+    @util.xapi_safe_call
     def _get_pool_config(self, pool_name):
-        pool_info = dict()
+        pool_info = {}
         vdi_ref = self.target.vdi.sr.srcmd.params.get('vdi_ref')
         if not vdi_ref:
             # attach_from_config context: HA disks don't need to be in any
@@ -1689,9 +1754,7 @@ class VDI(object):
         options = {"rdonly": not writable}
         options.update(caching_params)
 
-        sr_ref = self.target.vdi.sr.srcmd.params.get('sr_ref')
-        sr_other_config = self._session.xenapi.SR.get_other_config(sr_ref)
-        for i in range(self.ATTACH_DETACH_RETRY_SECS):
+        for _ in range(self.ATTACH_DETACH_RETRY_SECS):
             try:
                 if self._activate_locked(sr_uuid, vdi_uuid, options):
                     return
@@ -1778,8 +1841,8 @@ class VDI(object):
         host_ref = self._get_sr_master_host_ref()
         for vdi in vdi_to_cancel:
             args = {"sr_uuid": sr_uuid, "vdi_uuid": vdi}
-            util.SMlog("Calling cancel_coalesce_master with args: {}".format(args))
-            self._session.xenapi.host.call_plugin(\
+            util.SMlog(f"Calling cancel_coalesce_master with args: {args}")
+            self._call_xapi_plugin(
                 host_ref, PLUGIN_ON_SLAVE, "cancel_coalesce_master", args)
 
         return True
@@ -1854,22 +1917,9 @@ class VDI(object):
             util.SMlog("Exception in activate/attach")
             if self.tap_wanted():
                 util.fistpoint.activate_custom_fn(
-                        "blktap_activate_error_handling",
-                        lambda: time.sleep(30))
-                while True:
-                    try:
-                        self._remove_tag(vdi_uuid)
-                        break
-                    except xmlrpc.client.ProtocolError as e:
-                        # If there's a connection error, keep trying forever.
-                        if e.errcode == http.HTTPStatus.INTERNAL_SERVER_ERROR.value:
-                            continue
-                        else:
-                            util.SMlog('failed to remove tag: %s' % e)
-                            break
-                    except Exception as e:
-                        util.SMlog('failed to remove tag: %s' % e)
-                        break
+                    "blktap_activate_error_handling",
+                    lambda: time.sleep(30))
+                self._remove_tag(vdi_uuid)
             raise
         finally:
             vdi_ref = self._session.xenapi.VDI.get_by_uuid(vdi_uuid)

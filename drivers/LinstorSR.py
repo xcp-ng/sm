@@ -14,9 +14,9 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-from sm_typing import Any, Optional, override
+from sm_typing import Any, Optional, override, Literal
 
-from constants import CBTLOG_TAG
+from constants import CBTLOG_TAG, LINSTOR_AUTO_BACKUP_DELAY
 
 try:
     from linstorcowutil import LinstorCowUtil, MultiLinstorCowUtil
@@ -446,10 +446,6 @@ class LinstorSR(SR.SR):
                                 opterr='No valid controller URI to attach/detach from config'
                             )
 
-                    self._journaler = LinstorJournaler(
-                        controller_uri, self._group_name, logger=util.SMlog
-                    )
-
                 return wrapped_method(self, *args, **kwargs)
 
             if not self.is_master():
@@ -506,15 +502,17 @@ class LinstorSR(SR.SR):
                         'vdi_attach', 'vdi_detach',
                         'vdi_activate', 'vdi_deactivate',
                         'vdi_epoch_begin', 'vdi_epoch_end',
-                        'vdi_update', 'vdi_destroy'
+                        'vdi_update', 'vdi_destroy',
+                        'nop' # Deal with `SR.from_uuid` that emits a fake `nop` command.
                     ]:
+                        journaler = self._get_journaler()
                         load_vdis = (
                             self.cmd == 'sr_scan' or
                             self.cmd == 'sr_attach'
                         ) or len(
-                            self._journaler.get_all(LinstorJournaler.INFLATE)
+                            journaler.get_all(LinstorJournaler.INFLATE)
                         ) or len(
-                            self._journaler.get_all(LinstorJournaler.CLONE)
+                            journaler.get_all(LinstorJournaler.CLONE)
                         )
 
                         if load_vdis:
@@ -573,23 +571,21 @@ class LinstorSR(SR.SR):
                 opterr='Redundancy greater than host count'
             )
 
-        xenapi = self.session.xenapi
-        srs = xenapi.SR.get_all_records_where(
-            'field "type" = "{}"'.format(self.DRIVER_TYPE)
-        )
-        srs = dict([e for e in srs.items() if e[1]['uuid'] != self.uuid])
+        srs = util.get_linstor_srs_uuid(self.session)
+        try:
+            srs.pop(self.uuid)
+        except KeyError:
+            # We cannot guarantee that the new SR key will be there even it should be the case.
+            pass
 
-        for sr in srs.values():
-            for pbd in sr['PBDs']:
-                device_config = xenapi.PBD.get_device_config(pbd)
-                group_name = device_config.get('group-name')
-                if group_name and group_name == self._group_name:
-                    raise xs_errors.XenError(
-                        'LinstorSRCreate',
-                        opterr='group name must be unique, already used by PBD {}'.format(
-                            xenapi.PBD.get_uuid(pbd)
-                        )
-                    )
+        pbd_ref = util.find_pbd_ref_from_dconf_value(
+            self.session, srs, "group-name", self._group_name, LinstorVolumeManager.build_group_name
+        )
+        if pbd_ref:
+            raise xs_errors.XenError(
+                'LinstorSRCreate',
+                opterr=f"group name must be unique, already used by PBD {self.session.xenapi.PBD.get_uuid(pbd_ref)}"
+            )
 
         if srs:
             raise xs_errors.XenError(
@@ -820,6 +816,24 @@ class LinstorSR(SR.SR):
                 self._is_master = self.dconf['SRmaster'] == 'true'
 
         return self._is_master
+
+    @override
+    def check_sr(self, sr_uuid) -> None:
+        # Note: check_sr is called on all hosts by the health check mechanism
+        # not by regular xapi calls such as scans.
+        # Applied only on the Linstor Controller, for reasons -> listed below.
+        if not LinstorVolumeManager.is_controller():
+            return
+        # Validate and clean previous backups if necessary.
+        # -> Needs access to backup files, available only on the Controller.
+        LinstorVolumeManager.database_backup_validate_and_prune()
+        # check_sr is launched on *all* hosts, but it turns out that
+        # we do not want all of them to blindly generate concurrencing backups.
+        # Hence we must choose one, either one is good, but there must be only one.
+        # Apply throttling: only backup if last one is >1h old.
+        # -> Needs access to backup files, available only on the Controller.
+        if LinstorVolumeManager.get_database_backup_age() > LINSTOR_AUTO_BACKUP_DELAY:
+            self.database_backup("auto")
 
     @override
     @_locked_load
@@ -1093,7 +1107,7 @@ class LinstorSR(SR.SR):
 
         # Try to introduce VDIs only during scan/attach.
         if self.cmd == 'sr_scan' or self.cmd == 'sr_attach':
-            has_clone_entries = list(self._journaler.get_all(
+            has_clone_entries = list(self._get_journaler().get_all(
                 LinstorJournaler.CLONE
             ).items())
 
@@ -1304,6 +1318,15 @@ class LinstorSR(SR.SR):
     # Journals.
     # --------------------------------------------------------------------------
 
+    def _get_journaler(self):
+        if not self._journaler:
+            self._journaler = LinstorJournaler(
+                self._group_name,
+                native_client=self._linstor.native_client,
+                logger=util.SMlog
+            )
+        return self._journaler
+
     def _get_vdi_path_and_parent(self, vdi_uuid, volume_name):
         try:
             device_path = self._linstor.build_device_path(volume_name)
@@ -1335,23 +1358,25 @@ class LinstorSR(SR.SR):
         util.SMlog('Undoing all journal transactions...')
         self.lock.acquire()
         try:
-            self._handle_interrupted_inflate_ops()
-            self._handle_interrupted_clone_ops()
-            pass
+            # Ensure journaler cache is clean. We MUST not rollback from invalid cache.
+            self._journaler = None
+            journaler = self._get_journaler()
+            self._handle_interrupted_inflate_ops(journaler)
+            self._handle_interrupted_clone_ops(journaler)
         finally:
             self.lock.release()
 
-    def _handle_interrupted_inflate_ops(self):
-        transactions = self._journaler.get_all(LinstorJournaler.INFLATE)
+    def _handle_interrupted_inflate_ops(self, journaler):
+        transactions = journaler.get_all(LinstorJournaler.INFLATE)
         for vdi_uuid, old_size in transactions.items():
             self._handle_interrupted_inflate(vdi_uuid, old_size)
-            self._journaler.remove(LinstorJournaler.INFLATE, vdi_uuid)
+            journaler.remove(LinstorJournaler.INFLATE, vdi_uuid)
 
-    def _handle_interrupted_clone_ops(self):
-        transactions = self._journaler.get_all(LinstorJournaler.CLONE)
+    def _handle_interrupted_clone_ops(self, journaler):
+        transactions = journaler.get_all(LinstorJournaler.CLONE)
         for vdi_uuid, old_size in transactions.items():
             self._handle_interrupted_clone(vdi_uuid, old_size)
-            self._journaler.remove(LinstorJournaler.CLONE, vdi_uuid)
+            journaler.remove(LinstorJournaler.CLONE, vdi_uuid)
 
     def _handle_interrupted_inflate(self, vdi_uuid, old_size):
         util.SMlog(
@@ -1485,7 +1510,7 @@ class LinstorSR(SR.SR):
             linstorcowutil = LinstorCowUtil(self.session, self._linstor, vdi.vdi_type)
             volume_size = linstorcowutil.compute_volume_size(vdi.size)
             linstorcowutil.inflate(
-                self._journaler, vdi_uuid, vdi.path,
+                self._get_journaler(), vdi_uuid, vdi.path,
                 volume_size, vdi.capacity
             )
             self.vdis[vdi_uuid] = vdi
@@ -1533,10 +1558,6 @@ class LinstorSR(SR.SR):
     def _reconnect(self):
         controller_uri = get_controller_uri()
 
-        self._journaler = LinstorJournaler(
-            controller_uri, self._group_name, logger=util.SMlog
-        )
-
         # Try to open SR if exists.
         # We can repair only if we are on the master AND if
         # we are trying to execute an exclusive operation.
@@ -1566,6 +1587,23 @@ class LinstorSR(SR.SR):
     def _kick_gc(self):
         util.SMlog('Kicking GC')
         cleanup.start_gc_service(self.uuid)
+
+    def database_backup(self, name: Literal["auto", "create", "delete", "snapshot"]):
+        """
+        Generate a new database backup file.
+        This operation should not prevent the underlying action to be successful.
+        Hence all Exceptions are caught and logged.
+        """
+        if not self._linstor:
+            self._reconnect()
+        try:
+            assert self._linstor
+            self._linstor.database_backup(name)
+        except Exception as e:
+            util.SMlog(
+                f"[database_backup] Error during creation: {e}",
+                priority=util.LOG_ERR,
+            )
 
 # ==============================================================================
 # LinstorSr VDI
@@ -1750,6 +1788,8 @@ class LinstorVDI(VDI.VDI):
         self.ref = self._db_introduce()
         self.sr._update_stats(self.size)
 
+        self.sr.database_backup("create")
+
         return VDI.VDI.get_params(self)
 
     @override
@@ -1797,7 +1837,8 @@ class LinstorVDI(VDI.VDI):
         # TODO: Check size after delete.
         self.sr._update_stats(-self.size)
         self.sr._kick_gc()
-        return super(LinstorVDI, self).delete(sr_uuid, vdi_uuid, data_only)
+        super(LinstorVDI, self).delete(sr_uuid, vdi_uuid, data_only)
+        self.sr.database_backup("delete")
 
     @override
     def attach(self, sr_uuid, vdi_uuid) -> str:
@@ -1806,7 +1847,7 @@ class LinstorVDI(VDI.VDI):
         if (
             not attach_from_config or
             self.sr.srcmd.params['vdi_uuid'] != self.uuid
-        ) and self.sr._journaler.has_entries(self.uuid):
+        ) and self.sr._get_journaler().has_entries(self.uuid):
             raise xs_errors.XenError(
                 'VDIUnavailable',
                 opterr='Interrupted operation detected on this VDI, '
@@ -1850,7 +1891,12 @@ class LinstorVDI(VDI.VDI):
             return self._attach_using_http_nbd()
 
         # Ensure we have a path...
-        self.linstorcowutil.create_chain_paths(self.uuid, readonly=not writable)
+        chain = self.linstorcowutil.create_chain_paths(
+            self.uuid,
+            readonly=not writable,
+            cb_openers=cleanup.LinstorSR.abort_gc_from_openers_vdi
+        )
+        chain.close()
 
         self.attached = True
         return VDI.VDI.attach(self, self.sr.uuid, self.uuid)
@@ -1970,7 +2016,7 @@ class LinstorVDI(VDI.VDI):
         else:
             if new_volume_size != old_volume_size:
                 self.linstorcowutil.inflate(
-                    self.sr._journaler, self.uuid, self.path,
+                    self.sr._get_journaler(), self.uuid, self.path,
                     new_volume_size, old_volume_size
                 )
             self.linstorcowutil.set_size_virt_fast(self.path, size)
@@ -2198,7 +2244,7 @@ class LinstorVDI(VDI.VDI):
         if self.sr.is_master():
             if attach:
                 attach_thin(
-                    self.session, self.sr._journaler, self._linstor,
+                    self.session, self.sr._get_journaler(), self._linstor,
                     self.sr.uuid, self.uuid
                 )
             else:
@@ -2374,6 +2420,7 @@ class LinstorVDI(VDI.VDI):
         finally:
             self.disable_leaf_on_secondary(vdi_uuid, secondary=secondary)
             blktap2.VDI.tap_unpause(self.session, sr_uuid, vdi_uuid, secondary)
+            self.sr.database_backup("snapshot")
 
     def _snapshot(self, snap_type, cbtlog=None, cbt_consistency=None):
         util.SMlog(
@@ -2397,7 +2444,12 @@ class LinstorVDI(VDI.VDI):
             raise xs_errors.XenError('SnapshotChainTooLong')
 
         # Ensure we have a valid path if we don't have a local diskful.
-        self.linstorcowutil.create_chain_paths(self.uuid, readonly=True)
+        chain = self.linstorcowutil.create_chain_paths(
+            self.uuid,
+            readonly=True,
+            cb_openers=cleanup.LinstorSR.abort_gc_from_openers_vdi
+        )
+        chain.close()
 
         volume_path = self.path
         if not util.pathexists(volume_path):
@@ -2416,7 +2468,9 @@ class LinstorVDI(VDI.VDI):
         clone_info = '{}_{}'.format(base_uuid, snap_uuid)
 
         active_uuid = self.uuid
-        self.sr._journaler.create(
+
+        journaler = self.sr._get_journaler()
+        journaler.create(
             LinstorJournaler.CLONE, active_uuid, clone_info
         )
 
@@ -2543,7 +2597,7 @@ class LinstorVDI(VDI.VDI):
                 self.sr._handle_interrupted_clone(
                     active_uuid, clone_info, force_undo=True
                 )
-                self.sr._journaler.remove(LinstorJournaler.CLONE, active_uuid)
+                journaler.remove(LinstorJournaler.CLONE, active_uuid)
             except Exception as clean_error:
                 util.SMlog(
                     'WARNING: Failed to clean up failed snapshot: {}'
@@ -2551,7 +2605,7 @@ class LinstorVDI(VDI.VDI):
                 )
             raise xs_errors.XenError('VDIClone', opterr=str(e))
 
-        self.sr._journaler.remove(LinstorJournaler.CLONE, active_uuid)
+        journaler.remove(LinstorJournaler.CLONE, active_uuid)
 
         return ret_vdi.get_params()
 
@@ -2570,7 +2624,8 @@ class LinstorVDI(VDI.VDI):
                 # Use a timeout call because XAPI may be unusable on startup
                 # or if the host has been ejected. So in this case the call can
                 # block indefinitely.
-                session = util.timeout_call(5, util.get_localAPI_session)
+                api_session = util.timeout(5, util.ApiSession, "SM-ha-linstor-http-server")
+                session = api_session.session
                 host_ip = util.get_this_host_address(session)
             except:
                 # Fallback using the XHA file if session not available.
@@ -2579,6 +2634,8 @@ class LinstorVDI(VDI.VDI):
                     raise Exception(
                         'Cannot start persistent HTTP server: no XAPI session, nor XHA config file'
                     )
+            finally:
+                api_session.logout()
 
             arguments = [
                 'http-disk-server',
@@ -2613,7 +2670,7 @@ class LinstorVDI(VDI.VDI):
                         return True
                 return False
             try:
-                if not util.timeout_call(10, is_ready):
+                if not util.timeout(10, is_ready):
                     raise Exception('Failed to wait HTTP server startup, bad output')
             except util.TimeoutException:
                 raise Exception('Failed to wait for HTTP server startup during given delay')
@@ -2654,7 +2711,8 @@ class LinstorVDI(VDI.VDI):
                 device_size = 256 * 1024 * 1024
 
             try:
-                session = util.timeout_call(5, util.get_localAPI_session)
+                api_session = util.timeout(5, util.ApiSession, "SM-ha-linstor-nbd-server")
+                session = api_session.session
                 ips = util.get_host_addresses(session)
             except Exception as e:
                 _, ips = get_ips_from_xha_config_file()
@@ -2663,6 +2721,8 @@ class LinstorVDI(VDI.VDI):
                         'Cannot start persistent NBD server: no XAPI session, nor XHA config file ({})'.format(e)
                     )
                 ips = ips.values()
+            finally:
+                api_session.logout()
 
             arguments = [
                 'nbd-http-server',
@@ -2700,7 +2760,7 @@ class LinstorVDI(VDI.VDI):
                         return match.group(1)
             # Use a timeout to never block the smapi if there is a problem.
             try:
-                nbd_path = util.timeout_call(10, get_nbd_path)
+                nbd_path = util.timeout(10, get_nbd_path)
                 if nbd_path is None:
                     raise Exception('Empty NBD path (NBD server is probably dead)')
             except util.TimeoutException:

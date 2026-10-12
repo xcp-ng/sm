@@ -14,13 +14,14 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-from sm_typing import List, override
+from sm_typing import Any, Callable, Dict, IO, List, Optional, override
 
 from linstorjournaler import LinstorJournaler
-from linstorvolumemanager import LinstorVolumeManager
+from linstorvolumemanager import LinstorVolumeManager, LinstorVolumeOpeners
 
 from concurrent.futures import ThreadPoolExecutor
 import base64
+import contextlib
 import errno
 import json
 import socket
@@ -67,8 +68,13 @@ class ErofsLinstorCallException(LinstorCallException):
     pass
 
 
+class NoDataLinstorCallException(LinstorCallException):
+    pass
+
+
 class NoPathLinstorCallException(LinstorCallException):
     pass
+
 
 def log_successful_call(target_host, device_path, vdi_uuid, remote_method, response):
     util.SMlog('Successful access on {} for device {} ({}): `{}` => {}'.format(
@@ -162,7 +168,21 @@ def linstormodifier():
     return decorated
 
 
-class LinstorCowUtil(object):
+class LinstorCowUtil:
+    class Chain(object):
+        def __init__(self, files: List[IO], leaf_path: str):
+            self._files = files
+            self._leaf_path = leaf_path
+
+        @property
+        def leaf_path(self) -> str:
+            return self._leaf_path
+
+        def close(self) -> None:
+            for file in self._files:
+                with contextlib.suppress(Exception):
+                    file.close()
+
     def __init__(self, session, linstor, vdi_type: str):
         self._session = session
         self._linstor = linstor
@@ -173,43 +193,54 @@ class LinstorCowUtil(object):
     def cowutil(self) -> CowUtil:
         return self._cowutil
 
-    def create_chain_paths(self, vdi_uuid, readonly=False):
+    def create_chain_paths(
+        self,
+        vdi_uuid: str,
+        readonly=False,
+        cb_openers: Optional[Callable[[str, LinstorVolumeOpeners], Any]] = None
+    ) -> Chain:
         # OPTIMIZE: Add a limit_to_first_allocated_block param to limit cowutil calls.
         # Useful for the snapshot code algorithm.
 
-        leaf_vdi_path = self._linstor.get_device_path(vdi_uuid)
-        path = leaf_vdi_path
-        while True:
-            if not util.pathexists(path):
-                raise xs_errors.XenError(
-                    'VDIUnavailable', opterr='Could not find: {}'.format(path)
-                )
+        files: List[IO] = []
 
-            # Diskless path can be created on the fly, ensure we can open it.
-            def check_volume_usable():
-                while True:
-                    try:
-                        with open(path, 'r' if readonly else 'r+'):
-                            pass
-                    except IOError as e:
-                        if e.errno == errno.ENODATA:
-                            time.sleep(2)
-                            continue
-                        if e.errno == errno.EROFS or e.errno == errno.EMEDIUMTYPE:
-                            util.SMlog('Volume not attachable because used. Openers: {}'.format(
-                                self._linstor.get_volume_openers(vdi_uuid)
-                            ))
-                        raise
+        leaf_path = self._linstor.get_device_path(vdi_uuid)
+        path = leaf_path
+        try:
+            while True:
+                if not util.pathexists(path):
+                    raise xs_errors.XenError(
+                        'VDIUnavailable', opterr='Could not find: {}'.format(path)
+                    )
+
+                # Diskless path can be created on the fly, ensure we can open it.
+                def check_volume_usable():
+                    while True:
+                        try:
+                            files.append(open(path, 'r' if readonly else 'r+'))
+                        except (IOError, OSError) as e:
+                            if e.errno == errno.ENODATA:
+                                time.sleep(2)
+                                continue
+                            if e.errno in (errno.EROFS, errno.EMEDIUMTYPE):
+                                openers = self._linstor.get_volume_openers(vdi_uuid)
+                                util.SMlog(f'Volume not attachable because used. Openers: {openers}')
+                                if cb_openers:
+                                    cb_openers(vdi_uuid, openers)
+                            raise
+                        break
+                util.retry(check_volume_usable, 15, 2)
+
+                vdi_uuid = self.get_info(vdi_uuid).parentUuid
+                if not vdi_uuid:
                     break
-            util.retry(check_volume_usable, 15, 2)
+                path = self._linstor.get_device_path(vdi_uuid)
+                readonly = True  # Non-leaf is always readonly.
+        except Exception as e:
+            self.Chain(files, leaf_path).close()
+            raise e
 
-            vdi_uuid = self.get_info(vdi_uuid).parentUuid
-            if not vdi_uuid:
-                break
-            path = self._linstor.get_device_path(vdi_uuid)
-            readonly = True  # Non-leaf is always readonly.
-
-        return leaf_vdi_path
+        return self.Chain(files, leaf_path)
 
     # --------------------------------------------------------------------------
     # Getters: read locally and try on another host in case of failure.
@@ -449,7 +480,7 @@ class LinstorCowUtil(object):
             )
             bitmap_overhead = self._cowutil.calcOverheadBitmap(virtual_size)
             volume_size += meta_overhead + bitmap_overhead
-        else:
+        elif self._vdi_type != VdiType.RAW:
             raise Exception('Invalid image type: {}'.format(self._vdi_type))
 
         return LinstorVolumeManager.round_up_volume_size(volume_size)
@@ -511,8 +542,10 @@ class LinstorCowUtil(object):
                 try:
                     return local_method(device_path, *args, **kwargs)
                 except util.CommandException as e:
-                    if e.code == errno.EROFS or e.code == errno.EMEDIUMTYPE:
+                    if e.code in (errno.EROFS, errno.EMEDIUMTYPE):
                         raise ErofsLinstorCallException(e)  # Break retry calls.
+                    if e.code == errno.ENODATA:
+                        raise NoDataLinstorCallException(e)
                     if e.code == errno.ENOENT:
                         raise NoPathLinstorCallException(e)
                     raise e
@@ -570,7 +603,7 @@ class LinstorCowUtil(object):
         # B.3. Call!
         def remote_call():
             try:
-                all_openers = self._linstor.get_volume_openers(openers_uuid)
+                openers = self._linstor.get_volume_openers(openers_uuid)
             except Exception as e:
                 raise xs_errors.XenError(
                     'VDIUnavailable',
@@ -579,8 +612,8 @@ class LinstorCowUtil(object):
                 )
 
             no_host_found = True
-            for hostname, openers in all_openers.items():
-                if not openers:
+            for hostname, host_openers in openers.items():
+                if not host_openers:
                     continue
 
                 host_ref = self._find_host_ref_from_hostname(hosts, hostname)
@@ -623,19 +656,10 @@ class MultiLinstorCowUtil:
             self.linstor = None
             self.vdi_type_to_cowutil = {}
 
-    class Load:
-        def __init__(self, session):
-            self.session = session
-
-        def cleanup(self):
-            if self.session:
-                self.session.xenapi.session.logout()
-                self.session = None
-
     def __init__(self, uri, group_name) -> None:
         self._uri = uri
         self._group_name = group_name
-        self._loads: List[MultiLinstorCowUtil.Load] = []
+        self._loads: List[util.ApiSession] = []
         self._executor_data = self.ExecutorData()
 
     def __del__(self):
@@ -662,8 +686,7 @@ class MultiLinstorCowUtil:
         return instance
 
     def _init_executor_thread(self):
-        session = util.get_localAPI_session()
-        load = self.Load(session)
+        api_session = util.ApiSession("SM-linstor-multi-cow-util")
         try:
             linstor = LinstorVolumeManager(
                 self._uri,
@@ -672,18 +695,16 @@ class MultiLinstorCowUtil:
                 logger=util.SMlog
             )
             self._executor_data.linstor = linstor
-            self._executor_data.session = session
+            self._executor_data.session = api_session.session
         except:
             self._executor_data.clear()
-            load.cleanup()
             raise
-
-        self._loads.append(load)
+        self._loads.append(api_session)
 
     def _cleanup(self):
         for load in self._loads:
             try:
-                load.cleanup()
+                load.logout()
             except Exception as e:
                 util.SMlog(f"Failed to clean load executor: {e}")
         self._loads.clear()

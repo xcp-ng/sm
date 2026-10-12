@@ -33,13 +33,7 @@ def main():
     """
     For all locally plugged SRs check that they are healthy
     """
-    try:
-        session = util.get_localAPI_session()
-    except xs_errors.SROSError:
-        util.SMlog("Unable to open local XAPI session", priority=util.LOG_ERR)
-        return
-
-    try:
+    with util.ApiSession("SM-sr-health-check") as session:
         localhost = util.get_localhost_ref(session)
         if not check_xapi_is_enabled(session, localhost):
             # Xapi not enabled, skip and let the next timer trigger this
@@ -63,8 +57,6 @@ def main():
                 sr_uuid = srs[sr]['uuid']
                 sr_obj = SR.SR.from_uuid(session, sr_uuid)
                 sr_obj.check_sr(sr_uuid)
-    finally:
-        session.xenapi.session.logout()
 
 
 if __name__ == "__main__":

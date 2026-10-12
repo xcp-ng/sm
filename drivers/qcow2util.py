@@ -14,7 +14,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-from sm_typing import Any, Callable, Dict, Final, List, Optional, Tuple, cast, override
+from sm_typing import Any, Callable, Dict, Final, Optional, Tuple, cast, override
 from typing import BinaryIO
 
 import errno
@@ -30,8 +30,6 @@ import util
 import xs_errors
 from blktap2 import TapCtl
 from cowutil import CowUtil, CowImageInfo
-from lvmcache import LVMCache
-from constants import NS_PREFIX_LVM, VG_PREFIX
 
 # ------------------------------------------------------------------------------
 
@@ -58,84 +56,12 @@ class QCowUtil(CowUtil):
 
     QCOW2_MAGIC = 0x514649FB  # b"QFI\xfb": Magic number for QCOW2 files
     QCOW2_HEADER_SIZE = 104  # In fact the last information we need is at offset 40-47
-    QCOW2_L2_SIZE = QCOW2_DEFAULT_CLUSTER_SIZE
     QCOW2_BACKING_FILE_OFFSET = 8
 
-    ALLOCATED_ENTRY_BIT = (
-        0x8000_0000_0000_0000  # Bit 63 is the allocated bit for standard cluster
-    )
-    CLUSTER_TYPE_BIT = 0x4000_0000_0000_0000  # 0 for standard, 1 for compressed cluster
-    L2_OFFSET_MASK = 0x00FF_FFFF_FFFF_FF00  # Bits 9-55 are offset of L2 table.
-    CLUSTER_DESCRIPTION_MASK = 0x3FFF_FFFF_FFFF_FFFF  # Bit 0-61 is cluster description
-    STANDARD_CLUSTER_OFFSET_MASK = (
-        0x00FF_FFFF_FFFF_FF00  # Bits 9-55 are offset of standard cluster
-    )
-
-    def __init__(self):
-        self.qcow_read = False
-
-    def _read_qcow2(self, path: str, read_clusters: bool = False):
-        phys_disk_size = self.getSizePhys(path)
+    def _read_qcow2(self, path: str):
         with open(path, "rb") as qcow2_file:
             self.filename = path  # Keep the filename if clean is called
             self.header = self._read_qcow2_header(qcow2_file)
-            if read_clusters: #TODO(XCPNG-3502): We want to remove this code completely and have everything that need to read allocation table be done in qcow2_helper
-                self.l1 = self._get_l1_entries(qcow2_file)
-                # The l1_to_l2 allows to get L2 entries for a given L1. If L1 entry
-                # is not allocated we store an empty list.
-                self.l1_to_l2: Dict[int, List[int]] = {}
-
-                for l1_entry in self.l1:
-                    l2_offset = l1_entry & self.L2_OFFSET_MASK
-                    if l2_offset == 0:
-                        self.l1_to_l2[l1_entry] = []
-                    elif l2_offset > phys_disk_size:
-                        raise xs_errors.XenError("VDISize", "L2 Offset is bigger than physical disk {}".format(path))
-                    else:
-                        self.l1_to_l2[l1_entry] = self._get_l2_entries(
-                            qcow2_file, l2_offset
-                        )
-        self.qcow_read = True
-
-    def _get_l1_entries(self, file: BinaryIO) -> List[int]:
-        """Returns the list of all L1 entries.
-
-        Args:
-            file: The qcow2 file object.
-
-        Returns:
-            list: List of all L1 entries
-        """
-        l1_table_offset = self.header["l1_table_offset"]
-        file.seek(l1_table_offset)
-
-        l1_table_size = self.header["l1_size"] * 8  # Each L1 entry is 8 bytes
-        l1_table = file.read(l1_table_size)
-
-        return [
-            struct.unpack(">Q", l1_table[i : i + 8])[0]
-            for i in range(0, len(l1_table), 8)
-        ]
-
-    @staticmethod
-    def _get_l2_entries(file: BinaryIO, l2_offset: int) -> List[int]:
-        """Returns the list of all L2 entries at a given L2 offset.
-
-        Args:
-            file: The qcow2 file.
-            l2_offset: the L2 offset where to look for entries
-
-        Returns:
-            list: List of all L2 entries
-        """
-        # The size of L2 is 65536 bytes and each entry is 8 bytes.
-        file.seek(l2_offset)
-        l2_table = file.read(QCowUtil.QCOW2_L2_SIZE)
-
-        return [
-            struct.unpack(">Q", l2_table[i : i + 8])[0]
-            for i in range(0, len(l2_table), 8)
-        ]
 
     @staticmethod
     def _read_qcow2_backingfile(file: BinaryIO, backing_file_offset: int , backing_file_size: int) -> str:
@@ -212,78 +138,6 @@ class QCowUtil(CowUtil):
         }
 
     @staticmethod
-    def _is_l1_allocated(entry: int) -> bool:
-        """Checks if the given L1 entry is allocated.
-
-        If the offset is 0 then the L2 table and all clusters described
-        by this L2 table are unallocated.
-
-        Args:
-            entry: L1 entry
-
-        Returns:
-            bool: True if the L1 entry is allocated (ie has a valid offset).
-                  False otherwise.
-        """
-        return (entry & QCowUtil.L2_OFFSET_MASK) != 0
-
-    @staticmethod
-    def _is_l2_allocated(entry: int) -> bool:
-        """Checks if a given entry is allocated.
-
-        Currently we only support standard clusters. And for standard clusters
-        the bit 63 is set to 1 for allocated ones or offset is not 0.
-
-        Args:
-            entry: L2 entry
-
-        Returns:
-            bool: Returns True if the L2 entry is allocated, False otherwise
-
-        Raises:
-            raise an exception if the cluster is not a standard one.
-        """
-        assert entry & QCowUtil.CLUSTER_TYPE_BIT == 0
-        return (entry & QCowUtil.ALLOCATED_ENTRY_BIT != 0) or (
-            entry & QCowUtil.STANDARD_CLUSTER_OFFSET_MASK != 0
-        )
-
-    @staticmethod
-    def _get_allocated_clusters(l2_entries: List[int]) -> List[int]:
-        """Get all allocated clusters in a given list of L2 entries.
-
-        Args:
-            l2_entries: A list of L2 entries.
-
-        Returns:
-            A list of all allocated entries
-        """
-        return [entry for entry in l2_entries if QCowUtil._is_l2_allocated(entry)]
-
-    @staticmethod
-    def _get_cluster_to_byte(clusters: int, cluster_bits: int) -> int:
-        # (1 << cluster_bits) give cluster size in byte
-        return clusters * (1 << cluster_bits)
-
-    def _get_number_of_allocated_clusters(self) -> int:
-        """Get the number of allocated clusters.
-
-        Args:
-            self: A QcowInfo object.
-
-        Returns:
-            An integer that is the list of allocated clusters.
-        """
-        assert(self.qcow_read)
-
-        allocated_clusters = 0
-
-        for l2_entries in self.l1_to_l2.values():
-            allocated_clusters += len(self._get_allocated_clusters(l2_entries))
-
-        return allocated_clusters
-
-    @staticmethod
     def _move_backing_file(
         f: BinaryIO, old_offset: int, new_offset: int, data_size: int
     ) -> None:
@@ -325,8 +179,6 @@ class QCowUtil(CowUtil):
             If data offset is 0 something weird happens.
             The qcow2 file in self.filename can be modified.
         """
-        assert self.qcow_read
-
         header_length = 72  # This is the default value for version 2 images
 
         custom_header_type = 0x76617465  # vate: it is easy to recognize with hexdump -C
@@ -393,39 +245,6 @@ class QCowUtil(CowUtil):
                 qcow2_file.seek(ext_len, 1)
 
             return custom_data_offset
-
-    def _set_l1_zero(self):
-        zero = int(0).to_bytes(1, "little")
-        nb_of_entries_per_cluster  = QCOW2_DEFAULT_CLUSTER_SIZE/8
-        return list(zero * int(nb_of_entries_per_cluster/8))
-
-    def _set_l2_zero(self, b, i):
-        return b & ~(1 << i)
-
-    def _set_l2_one(self, b, i):
-        return b | (1 << i)
-
-    def _create_bitmap(self) -> bytes:
-        idx: int = 0
-        bitmap = list()
-        b = 0
-        for l1_entry in self.l1:
-            if not self._is_l1_allocated(l1_entry):
-                bitmap.extend(self._set_l1_zero())
-                continue
-
-            l2_table = self.l1_to_l2[l1_entry] #L2 is cluster_size/8 entries of cluster_size page
-            for l2_entry in l2_table:
-                if self._is_l2_allocated(l2_entry):
-                    b = self._set_l2_one(b, idx)
-                else:
-                    b = self._set_l2_zero(b, idx)
-                idx += 1
-                if idx == 8:
-                    bitmap.append(b)
-                    b = 0
-                    idx = 0
-        return struct.pack("B"*len(bitmap), *bitmap)
 
     # ----
     # Implementation of CowUtil
@@ -495,7 +314,6 @@ class QCowUtil(CowUtil):
         cowinfo.sizeVirt = self.header["virtual_disk_size"]
         cowinfo.sizePhys = self.getSizePhys(path)
         cowinfo.hidden = self.getHidden(path)
-        cowinfo.sizeAllocated = self.getAllocatedSize(path)
         if includeParent:
             parent_path = self.header["parent"]
             if parent_path != "":
@@ -508,28 +326,8 @@ class QCowUtil(CowUtil):
     def getInfoFromLVM(
         self, lvName: str, extractUuidFunction: Callable[[str], str], vgName: str
     ) -> Optional[CowImageInfo]:
-        lvcache = LVMCache(vgName)
-        return self._getInfoLV(lvcache, extractUuidFunction, vgName, lvName)
-
-    def _getInfoLV(
-        self, lvcache: LVMCache, extractUuidFunction: Callable[[str], str], vgName: str, lvName: str
-    ) -> Optional[CowImageInfo]:
-        lvPath = "/dev/{}/{}".format(vgName, lvName)
-        lvcache.refresh()
-        if lvName not in lvcache.lvs:
-            util.SMlog("{} does not exist anymore".format(lvName))
-            return None
-
-        vdiUuid = extractUuidFunction(lvPath)
-        srUuid = vgName.replace(VG_PREFIX, "")
-
-        ns = NS_PREFIX_LVM + srUuid
-        lvcache.activate(ns, vdiUuid, lvName, False)
-        try:
-            cowinfo = self.getInfo(lvPath, extractUuidFunction)
-        finally:
-            lvcache.deactivate(ns, vdiUuid, lvName, False)
-        return cowinfo
+        ret = cast(str, self._ioretry([QCOW2_HELPER, "scan", "-l", vgName, "-m", lvName]))
+        return self._parseQCOW2Info(ret, extractUuidFunction)
 
     @override
     def getAllInfoFromVG(
@@ -540,45 +338,53 @@ class QCowUtil(CowUtil):
         parents: bool = False,
         exitOnError: bool = False
     ) -> Dict[str, CowImageInfo]:
-        result: Dict[str, CowImageInfo] = dict()
-        #TODO: handle exitOnError
         if vgName:
-            reg = re.compile(pattern)
-            lvcache = LVMCache(vgName)
-            lvcache.refresh()
-            # We get size in lvcache.lvs[lvName].size (in bytes)
-            # We could read the header from the PV directly
-            lvList = list(lvcache.lvs.keys())
-            for lvName in lvList:
-                # lvinfo = lvcache.lvs[lvName]
-                if reg.match(lvName):
-                    cowinfo = self._getInfoLV(lvcache, extractUuidFunction, vgName, lvName)
-                    if cowinfo is None: #We get None if the LV stopped existing in the meanwhile
-                        continue
-                    cowinfo.path = lvName # Function CowUtil.getParentChain expect lvName here, otherwise blktap.{_activate,_deactivate} crashes
-                    result[cowinfo.uuid] = cowinfo
-                    if parents:
-                        parentUuid = cowinfo.parentUuid
-                        parentPath = cowinfo.parentPath
-                        while parentUuid != "":
-                            parentLvName = parentPath.split("/")[-1]
-                            parent_cowinfo = self._getInfoLV(lvcache, extractUuidFunction, vgName, parentLvName)
-                            if parent_cowinfo is None: #Parent disappeared while scanning
-                                raise util.SMException("Parent of {} wasn't found during scan".format(lvName))
-                            parentUuid = parent_cowinfo.parentUuid
-                            parentPath = parent_cowinfo.parentPath
-                            parent_cowinfo.path = parentLvName #Same reason as above, some users expect LvName here instead of path
-                            result[parent_cowinfo.uuid] = parent_cowinfo
-
-            return result
+            return self._getAllInfoFromLVM(pattern, extractUuidFunction, vgName, parents, exitOnError)
         else:
-            pattern_p: Path = Path(pattern)
-            list_qcow = list(pattern_p.parent.glob(pattern_p.name))
-            for qcow in list_qcow:
-                qcow_str = str(qcow)
-                info = self.getInfo(qcow_str, extractUuidFunction)
+            return self._getAllInfoFromPath(pattern, extractUuidFunction, exitOnError)
+
+    def _getAllInfoFromLVM(
+        self,
+        pattern: str,
+        extractUuidFunction: Callable[[str], str],
+        vgName: str,
+        parents: bool = False,
+        exitOnError: bool = False
+    ) -> Dict[str, CowImageInfo]:
+        result: Dict[str, CowImageInfo] = dict()
+        cmd = [QCOW2_HELPER, "scan", "-l", vgName, "-m", pattern]
+        if parents:
+            cmd.append("-a")
+        ret = cast(str, self._ioretry(cmd))
+        
+        for line in ret.split("\n"):
+            if not line.strip():
+                continue
+            info = self._parseQCOW2Info(line, extractUuidFunction)
+            if info:
+                if info.error != 0 and exitOnError:
+                    #TODO: this is a workaround in vhdutil, don't know why
+                    return dict()
                 result[info.uuid] = info
-            return result
+            else:
+                util.SMlog(f"WARN: QCOW2 info line doesn't parse correctly: {line}")
+        return result
+
+    def _getAllInfoFromPath(
+        self,
+        pattern: str,
+        extractUuidFunction: Callable[[str], str],
+        exitOnError: bool = False
+    ) -> Dict[str, CowImageInfo]:
+        result: Dict[str, CowImageInfo] = dict()
+        #TODO(XCPNG-3504): Use qcow2_helper for scan of FileSR and add handling of exitOnError
+        pattern_p: Path = Path(pattern)
+        list_qcow = list(pattern_p.parent.glob(pattern_p.name))
+        for qcow in list_qcow:
+            qcow_str = str(qcow)
+            info = self.getInfo(qcow_str, extractUuidFunction)
+            result[info.uuid] = info
+        return result
 
     @override
     def getParent(self, path: str, extractUuidFunction: Callable[[str], str]) -> Optional[str]:
@@ -610,7 +416,7 @@ class QCowUtil(CowUtil):
         parentType = QCOW2_TYPE
         if parentRaw:
             parentType = RAW_TYPE
-        cmd = [QEMU_IMG, "rebase", "-u", "-f", QCOW2_TYPE, "-F", parentType, "-b", parentPath, path]
+        cmd = [QEMU_IMG, "rebase", "-q", "-u", "-f", QCOW2_TYPE, "-F", parentType, "-b", parentPath, path]
         self._ioretry(cmd)
 
     @override
@@ -668,7 +474,7 @@ class QCowUtil(CowUtil):
         size: byte
         jFile: a journal file used for resizing with VHD, not useful for QCOW2
         """
-        cmd = [QEMU_IMG, "resize", path, str(size)]
+        cmd = [QEMU_IMG, "resize", "-q", path, str(size)]
         self._ioretry(cmd)
 
     @override
@@ -692,7 +498,7 @@ class QCowUtil(CowUtil):
 
     @override
     def getAllocatedSize(self, path: str) -> int:
-        cmd = [QCOW2_HELPER, "allocated", path]
+        cmd = [QCOW2_HELPER, "allocated", "-f", path]
         return int(self._ioretry(cmd))
 
     @override
@@ -709,7 +515,7 @@ class QCowUtil(CowUtil):
         Returns:
             nothing.
         """
-        self._read_qcow2(path, read_clusters=True)
+        self._read_qcow2(path)
         # We need to reset L1 entries and then just truncate the file right
         # after L1 entries
         with open(self.filename, "r+b") as file:
@@ -732,7 +538,7 @@ class QCowUtil(CowUtil):
 
     @override
     def getBlockBitmap(self, path: str) -> bytes:
-        cmd = [QCOW2_HELPER, "bitmap", path]
+        cmd = [QCOW2_HELPER, "bitmap", "-f", path]
         text = cast(bytes, self._ioretry(cmd, text=False))
         return zlib.compress(text)
 
@@ -767,15 +573,20 @@ class QCowUtil(CowUtil):
             raise
 
         try:
-            status, nb, _ = TapCtl.query(pid, minor)
+            status, nb, total = TapCtl.query(pid, minor)
             if status == "undefined":
                 util.SMlog("Tapdisk {} (m: {}) coalesce status undefined for {}".format(pid, minor, path))
                 return 0
 
-            while status !=  "concluded":
+            while status != "concluded":
                 time.sleep(1)
-                status, nb, _ = TapCtl.query(pid, minor, quiet=True)
+                status, nb, total = TapCtl.query(pid, minor, quiet=True)
                 logger.log("Got status {} for tapdisk {} (m: {})".format(status, pid, minor))
+
+            if nb < total:
+                # The coalesce didn't finish because we might have been aborted.
+                raise xs_errors.XenError("TapdiskFailed",
+                    f"Online coalesce incomplete on tapdisk {pid} (m: {minor}) for {path}: {nb}/{total} bytes")
             return nb
         except TapCtl.CommandFailure:
             util.SMlog(f"Query command failed on tapdisk instance {pid} (m: {minor}). Raising...")
@@ -810,7 +621,7 @@ class QCowUtil(CowUtil):
 
     @override
     def create(self, path: str, size: int, static: bool, msize: int = 0, block_size: Optional[int] = None) -> None:
-        cmd = [QEMU_IMG, "create", "-f", QCOW2_TYPE, path, str(size)]
+        cmd = [QEMU_IMG, "create", "-q", "-f", QCOW2_TYPE, path, str(size)]
         if static:
             cmd.extend(["-o", "preallocation=full"])
         if block_size:
@@ -832,7 +643,7 @@ class QCowUtil(CowUtil):
         # TODO: checkEmpty? If it is False, then the parent could be empty and should still be used for snapshot
         # But if True, if the parent is empty, we do what? vhd would just use the parent of parent as base, should we emulate this behavior?
 
-        cmd = [QEMU_IMG, "create"]
+        cmd = [QEMU_IMG, "create", "-q"]
 
         if parentRaw:
             parent_type = RAW_TYPE
@@ -862,7 +673,7 @@ class QCowUtil(CowUtil):
 
     @override
     def canSnapshotRaw(self, size: int) -> bool:
-        return True
+        return size <= MAX_QCOW_SIZE
 
     @override
     def check(
@@ -871,7 +682,7 @@ class QCowUtil(CowUtil):
         ignoreMissingFooter: bool = False,
         fast: bool = False
     ) -> CowUtil.CheckResult:
-        cmd = [QEMU_IMG, "check", path]
+        cmd = [QEMU_IMG, "check", "-q", path]
         try:
             self._ioretry(cmd)
             return CowUtil.CheckResult.Success
@@ -890,7 +701,7 @@ class QCowUtil(CowUtil):
 
     @override
     def repair(self, path: str) -> None:
-        cmd = [QEMU_IMG, "check", "-f", QCOW2_TYPE, "-r", "all", path]
+        cmd = [QEMU_IMG, "check", "-q", "-f", QCOW2_TYPE, "-r", "all", path]
         self._ioretry(cmd)
 
     @override
@@ -914,3 +725,40 @@ class QCowUtil(CowUtil):
     @override
     def isCoalesceableOnRemote(self) -> bool:
         return True
+
+    @staticmethod
+    def _parseQCOW2Info(line: str, extractUuidFunction: Callable[[str], str]) -> Optional[CowImageInfo]:
+        vhdInfo = None
+        valueMap = line.split()
+
+        try:
+            (key, val) = valueMap[0].split("=")
+        except:
+            return None
+
+        if key != "qcow2":
+            return None
+
+        uuid = extractUuidFunction(val)
+        if not uuid:
+            util.SMlog(f"***** malformed output, no UUID: {valueMap}")
+            return None
+        vhdInfo = CowImageInfo(uuid)
+        vhdInfo.path = val
+
+        for keyval in valueMap:
+            (key, val) = keyval.split("=")
+            if key == "scan-error": #TODO(XCPNG-3503): need to add this to scan from qcow2_helper
+                vhdInfo.error = line
+                util.SMlog(f"***** QCOW2 scan error: {line}")
+                break
+            elif key == "capacity":
+                vhdInfo.sizeVirt = int(val)
+            elif key == "size":
+                vhdInfo.sizePhys = int(val)
+            elif key == "hidden":
+                vhdInfo.hidden = bool(int(val))
+            elif key == "parent" and val != "none":
+                vhdInfo.parentPath = val #TODO: Do I expect the full path for parent in the code?
+                vhdInfo.parentUuid = extractUuidFunction(val)
+        return vhdInfo
