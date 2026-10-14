@@ -654,9 +654,14 @@ class ScanRecord:
         """Mark XenAPI records missing for old disks"""
         for location in self.gone:
             vdi = self.get_xenapi_vdi(location)
-            util.SMlog("Marking VDI as missing: location=%s uuid=%s" %
-                       (util.to_plain_string(vdi['location']), vdi['uuid']))
             try:
+                if not vdi.get('managed', True):
+                    util.SMlog("Forgetting VDI with location=%s uuid=%s" %
+                               (util.to_plain_string(vdi['location']), vdi['uuid']))
+                    self.sr.forget_vdi(vdi['uuid'])
+                    continue
+                util.SMlog("Marking VDI as missing: location=%s uuid=%s" %
+                           (util.to_plain_string(vdi['location']), vdi['uuid']))
                 self.sr.session.xenapi.VDI.set_missing(self.sr.session.xenapi.VDI.get_by_uuid(vdi['uuid']), True)
             except XenAPI.Failure as e:
                 if util.isInvalidVDI(e):

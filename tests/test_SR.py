@@ -102,12 +102,32 @@ class TestSR(unittest.TestCase):
         record.get_xenapi_vdi.return_value = {
             'location': 'gone-location',
             'uuid': 'vdi-uuid',
+            'managed': True,
         }
 
         SR.ScanRecord.synchronise_gone(record)
 
         session.xenapi.VDI.set_missing.assert_called_once_with(vdi_ref, True)
         sr.forget_vdi.assert_not_called()
+
+    def test_synchronise_gone_forgets_unmanaged(self):
+        # Hidden leaf base copy skipped by the scan while waiting for the GC
+        sr = mock.MagicMock()
+        session = sr.session
+
+        record = mock.Mock()
+        record.sr = sr
+        record.gone = {'base-copy-location'}
+        record.get_xenapi_vdi.return_value = {
+            'location': 'base-copy-location',
+            'uuid': 'base-copy-uuid',
+            'managed': False,
+        }
+
+        SR.ScanRecord.synchronise_gone(record)
+
+        sr.forget_vdi.assert_called_once_with('base-copy-uuid')
+        session.xenapi.VDI.set_missing.assert_not_called()
 
     def test_clear_missing_vdi_when_present(self):
         sr = mock.MagicMock()
