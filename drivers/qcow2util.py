@@ -36,6 +36,7 @@ from constants import NS_PREFIX_LVM, VG_PREFIX
 # ------------------------------------------------------------------------------
 
 MAX_QCOW_CHAIN_LENGTH: Final = 30
+MAX_UNDEFINED_NUMBERS: Final = 10 # Max number of undefined accepted during an onlineCoalesce before raising an error
 
 QCOW2_DEFAULT_CLUSTER_SIZE: Final = 64 * 1024 # 64 KiB
 
@@ -576,6 +577,7 @@ class QCowUtil(CowUtil):
     def coalesceOnline(self, path: str) -> int:
         pid, minor = self._getTapdisk(path)
         logger = util.LoggerCounter(10)
+        undefined_number = 0
 
         try:
             TapCtl.commit(pid, minor, QCOW2_TYPE, path)
@@ -588,11 +590,13 @@ class QCowUtil(CowUtil):
 
         try:
             status, nb, total = TapCtl.query(pid, minor)
-            if status == "undefined":
-                util.SMlog("Tapdisk {} (m: {}) coalesce status undefined for {}".format(pid, minor, path))
-                return 0
-
             while status != "concluded":
+                if status == "undefined":
+                    util.SMlog("Tapdisk {} (m: {}) coalesce status undefined for {}".format(pid, minor, path))
+                    undefined_number += 1
+                    if undefined_number >= MAX_UNDEFINED_NUMBERS:
+                        raise xs_errors.XenError("TapdiskFailed", f"We had {undefined_number} undefined while waiting for online coalesce of {path} on tapdisk {pid} (m: {minor})")
+
                 time.sleep(1)
                 status, nb, total = TapCtl.query(pid, minor, quiet=True)
                 logger.log("Got status {} for tapdisk {} (m: {})".format(status, pid, minor))
