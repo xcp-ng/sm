@@ -16,38 +16,36 @@
 # 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 #
 # FileSR: local-file storage repository
-from pathlib import Path
 import contextlib
-
-from sm_typing import Dict, Optional, List, override, Tuple, Collection, Union, Any
-
-import SR
-import VDI
-import cbtutil
-import SRCommand
-import contextlib
-import util
-import scsiutil
-import lock
-import os
 import errno
-import xs_errors
-import cleanup
-import blktap2
-import time
 import glob
-import fjournaler
-from jutils import BaseLogEntry
+import os
+import time
+import xmlrpc.client
+from pathlib import Path
 from uuid import uuid4
+
+import blktap2
+import cleanup
+import fjournaler
+import lock
+import scsiutil
+import SR
+import SRCommand
+import util
+import VDI
+import XenAPI  # pylint: disable=import-error
+import xs_errors
+from constants import CBTLOG_TAG
 from cowutil import (
     getCowUtil,
     getImageStringFromVdiType,
     getVdiTypeFromImageFormat,
 )
-from vditype import VdiType, VdiTypeExtension, VDI_COW_TYPES, VDI_TYPE_TO_EXTENSION
-import xmlrpc.client
-import XenAPI # pylint: disable=import-error
-from constants import CBTLOG_TAG
+from jutils import BaseLogEntry
+from vditype import VDI_COW_TYPES, VDI_TYPE_TO_EXTENSION, VdiType, VdiTypeExtension
+
+from sm_typing import Collection, Dict, List, Optional, Tuple, Union, override
 
 geneology: Dict[str, List[str]] = {}
 CAPABILITIES = ["SR_PROBE", "SR_UPDATE",
@@ -239,6 +237,13 @@ class FileSR(SR.SR):
         self._undo_all_journals()
 
     @property
+    def is_master(self):
+        if hasattr(self, "_is_master"):
+            return self._is_master
+        self._is_master = 'SRmaster' in self.dconf and self.dconf['SRmaster'] == 'true'
+        return self._is_master
+
+    @property
     def _has_journals(self) -> bool:
         for key in self.JRN_KEYS:
             try:
@@ -257,11 +262,7 @@ class FileSR(SR.SR):
         if not self._has_journals:
             return
 
-        is_master = False
-        if 'SRmaster' in self.dconf and self.dconf['SRmaster'] == 'true':
-            is_master = True
-
-        if not is_master:
+        if not self.is_master:
             raise xs_errors.XenError(
                 "SRUnavailable", opterr="Critical journals are pending. A scan is required."
             )
@@ -986,17 +987,22 @@ class FileVDI(VDI.VDI):
     ):
         # Sanity checks
         if not self._checkpath(self.path):
-            raise xs_errors.XenError(f"Could not find {self.path}")
+            raise xs_errors.XenError("VDIUnavailable", opterr=f"Could not find {self.path}")
 
         if not dest._checkpath(dest.path):
-            raise xs_errors.XenError(f"Could not find {dest.path}")
+            raise xs_errors.XenError("VDIUnavailable", opterr=f"Could not find {dest.path}")
 
-        with self.tap_pause(), dest.tap_pause():
-            self._revert(
-                dest,
-                dest_cbtlog,
-                src_cbtlog,
-            )
+        if blktap2.VDI.tap_status(self.session, self.uuid):
+            raise xs_errors.XenError("VDIInUse", opterr=f"VDI {self.uuid} is in use")
+
+        if blktap2.VDI.tap_status(dest.session, dest.uuid):
+            raise xs_errors.XenError("VDIInUse", opterr=f"VDI {dest.uuid} is in use")
+
+        self._revert(
+            dest,
+            dest_cbtlog,
+            src_cbtlog,
+        )
 
 
     def _revert(

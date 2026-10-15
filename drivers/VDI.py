@@ -263,7 +263,7 @@ class VDI(object):
         dest = self.sr.vdi(target_uuid)
 
         if not dest.managed:
-            raise util.SMException(f"Destination {self.uuid} is a base copy.")
+            raise util.SMException(f"Destination {dest.uuid} is a base copy.")
 
         if self.vdi_type != dest.vdi_type:
             raise util.SMException(f"{self.uuid} and {dest.uuid} has incompatible types {self.vdi_type} != {dest.vdi_type}")
@@ -278,7 +278,7 @@ class VDI(object):
         dest_cbtlog = dest._get_cbt_logpath(dest.uuid) if dest._get_blocktracking_status() else None
 
         dest.sm_config = dest.session.xenapi.VDI.get_sm_config(dest.session.xenapi.VDI.get_by_uuid(dest.uuid))
-        self.sm_config = dest.session.xenapi.VDI.get_sm_config(dest.session.xenapi.VDI.get_by_uuid(dest.uuid))
+        self.sm_config = self.session.xenapi.VDI.get_sm_config(dest.session.xenapi.VDI.get_by_uuid(dest.uuid))
 
         self._do_revert(dest, src_cbtlog=src_cbtlog, dest_cbtlog=dest_cbtlog)
 
@@ -475,19 +475,6 @@ class VDI(object):
                 self._deactivate_cbt_log(logname)
             finally:
                 lock.release()
-
-    @contextmanager
-    def tap_pause(self, secondary=None):
-        start = time.monotonic()
-        if not blktap2.VDI.tap_pause(self.session, self.sr.uuid, self.uuid):
-            raise util.SMException(f"Could not pause disk {self.uuid} on sr {self.sr.uuid}")
-        try:
-            yield
-        finally:
-            blktap2.VDI.tap_unpause(self.session, self.sr.uuid, self.uuid, secondary)
-            pause_time = time.monotonic() - start
-            if pause_time > LONG_PAUSE_TIME:
-                util.SMlog(f"WARNING: vdi {self.uuid} was paused for {pause_time} seconds")
 
     def get_params(self) -> str:
         """
