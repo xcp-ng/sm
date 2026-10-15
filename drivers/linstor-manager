@@ -1110,8 +1110,8 @@ def health_check(session, args):
         all_resources = linstor.get_resources_info()
         result['resources'] = all_resources
 
-        for resource_name, resource_by_node in all_resources.items():
-            for node_name, resource in resource_by_node.items():
+        for resource_name, resource_info in all_resources.items():
+            for node_name, resource in resource_info['nodes'].items():
                 for volume_index, volume in enumerate(resource['volumes']):
                     disk_state = volume['disk-state']
                     if disk_state in ['UpToDate', 'Created', 'Attached']:
