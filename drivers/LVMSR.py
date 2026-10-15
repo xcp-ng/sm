@@ -18,46 +18,59 @@
 # LVMSR: VHD and QCOW2 on LVM storage repository
 #
 import contextlib
-from contextlib import contextmanager
-
-from sm_typing import Dict, List, override, Optional, Tuple, Union, Collection, Any
-
-import SR
-from SR import deviceCheck
-import VDI
-import SRCommand
-import util
-import lvutil
-import lvmcache
-import scsiutil
-import lock
+import errno
+import glob
 import os
+import re
 import sys
 import time
-import errno
-import xs_errors
-import cleanup
+from contextlib import contextmanager
+from xmlrpc.client import DateTime
+
 import blktap2
+import cleanup
+import lock
+import lvmcache
+import lvutil
+import scsiutil
+import SR
+import SRCommand
+import util
+import VDI
+import XenAPI  # pylint: disable=import-error
+import xs_errors
+from constants import CBT_BLOCK_SIZE, CBTLOG_TAG, NS_PREFIX_LVM, VG_LOCATION, VG_PREFIX
+from cowutil import CowUtil, getCowUtil, getImageStringFromVdiType
+from fairlock import Fairlock
+from ipc import IPCFlag
 from journaler import Journaler
 from jutils import BaseLogEntry
-from refcounter import RefCounter
-from ipc import IPCFlag
-from constants import NS_PREFIX_LVM, VG_LOCATION, VG_PREFIX, CBT_BLOCK_SIZE
-from cowutil import CowUtil, getCowUtil, getImageStringFromVdiType
-from lvmcowutil import LV_PREFIX, LvmCowUtil
 from lvmanager import LVActivator
+from lvmcowutil import LV_PREFIX, LvmCowUtil
+from refcounter import RefCounter
+from SR import deviceCheck
+from srmetadata import (
+    ALLOCATION_TAG,
+    IS_A_SNAPSHOT_TAG,
+    MANAGED_TAG,
+    METADATA_OBJECT_TYPE_SR,
+    METADATA_OBJECT_TYPE_VDI,
+    METADATA_OF_POOL_TAG,
+    METADATA_UPDATE_OBJECT_TYPE_TAG,
+    NAME_DESCRIPTION_TAG,
+    NAME_LABEL_TAG,
+    READ_ONLY_TAG,
+    SNAPSHOT_OF_TAG,
+    SNAPSHOT_TIME_TAG,
+    TYPE_TAG,
+    UUID_TAG,
+    VDI_TYPE_TAG,
+    LVMMetadataHandler,
+)
 from vditype import VdiType
-import XenAPI # pylint: disable=import-error
-import re
-from srmetadata import ALLOCATION_TAG, NAME_LABEL_TAG, NAME_DESCRIPTION_TAG, \
-    UUID_TAG, IS_A_SNAPSHOT_TAG, SNAPSHOT_OF_TAG, TYPE_TAG, VDI_TYPE_TAG, \
-    READ_ONLY_TAG, MANAGED_TAG, SNAPSHOT_TIME_TAG, METADATA_OF_POOL_TAG, \
-    LVMMetadataHandler, METADATA_OBJECT_TYPE_VDI, \
-    METADATA_OBJECT_TYPE_SR, METADATA_UPDATE_OBJECT_TYPE_TAG
-from xmlrpc.client import DateTime
-import glob
-from constants import CBTLOG_TAG
-from fairlock import Fairlock
+
+from sm_typing import Collection, Dict, List, Optional, Tuple, Union, override
+
 DEV_MAPPER_ROOT = os.path.join('/dev/mapper', VG_PREFIX)
 
 geneology: Dict[str, List[str]] = {}
@@ -1949,10 +1962,14 @@ class LVMVDI(VDI.VDI):
                     "VDIUnavailable", opterr=f"VDI unavailable: {self.path}"
                 )
 
+        if blktap2.VDI.tap_status(self.session, self.uuid):
+            raise xs_errors.XenError("VDIInUse", opterr=f"VDI {self.uuid} is in use")
+
+        if blktap2.VDI.tap_status(dest.session, dest.uuid):
+            raise xs_errors.XenError("VDIInUse", opterr=f"VDI {dest.uuid} is in use")
+
         # We need to activate the whole vdi chain to check if everything exists
-        with self.tap_pause(), dest.tap_pause(), self._activated_chain(
-            False
-        ), dest._activated_chain(False):
+        with self._activated_chain( False ), dest._activated_chain(False):
             self._revert(dest, src_cbtlog, dest_cbtlog)
 
     def _revert(
