@@ -5,7 +5,7 @@ DEBUGDIR ?= /opt/xensource/debug
 
 OPTS := -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGEFILE64_SOURCE -Wall -fopenmp -Ofast
 
-SRC := qcow2_helper.c
+SRC := qcow2_helper.c lvm-util.c
 
 BIN := qcow2_helper
 
