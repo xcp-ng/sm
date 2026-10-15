@@ -17,33 +17,28 @@
 # Utilities for journal based operations
 
 import json
+from abc import ABC, abstractmethod
+
 import util
-from sm_typing import Dict, override, Tuple, Collection, Any, TypeVar, Type
 import xs_errors
 
-import abc
+from sm_typing import Any, ClassVar, Collection, Dict, Tuple, Type, TypeVar, override
 
 LogEntry = TypeVar("LogEntry", bound="BaseLogEntry")
 
 
-class BaseLogEntry(abc.ABC):
+class BaseLogEntry(ABC):
     """Base class for serializing journal based entries intended to rollback failed operations"""
 
-    @property  # type: ignore # Only way to simulate an abstract class variable
-    @classmethod
-    @abc.abstractmethod
-    def CURRENT_VERSION(cls) -> str: ...
+    CURRENT_VERSION: ClassVar[str]
 
-    @property  # type: ignore # Only way to simulate an abstract class variable
-    @classmethod
-    @abc.abstractmethod
-    def JRN_KEY(cls) -> str: ...
+    JRN_KEY: ClassVar[str]
 
     @classmethod
-    @abc.abstractmethod
+    @abstractmethod
     def from_dict(cls: Type[LogEntry], data: Dict[str, Any]) -> LogEntry: ...
 
-    @abc.abstractmethod
+    @abstractmethod
     def to_dict(self) -> Dict[str, Collection[Any]]: ...
 
     @staticmethod
