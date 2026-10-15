@@ -2620,22 +2620,19 @@ class LinstorVDI(VDI.VDI):
             else:
                 port = '8077'
 
+            # Use a timeout call because XAPI may be unusable on startup
+            # or if the host has been ejected. So in this case the call can
+            # block indefinitely.
             try:
-                # Use a timeout call because XAPI may be unusable on startup
-                # or if the host has been ejected. So in this case the call can
-                # block indefinitely.
-                api_session = util.timeout(5, util.ApiSession, "SM-ha-linstor-http-server")
-                session = api_session.session
-                host_ip = util.get_this_host_address(session)
-            except:
+                with util.timeout(5), util.ApiSession("SM-ha-linstor-http-server") as session:
+                    host_ip = util.get_this_host_address(session)
+            except Exception as e:
                 # Fallback using the XHA file if session not available.
                 host_ip, _ = get_ips_from_xha_config_file()
                 if not host_ip:
                     raise Exception(
                         'Cannot start persistent HTTP server: no XAPI session, nor XHA config file'
-                    )
-            finally:
-                api_session.logout()
+                    ) from e
 
             arguments = [
                 'http-disk-server',
@@ -2672,7 +2669,7 @@ class LinstorVDI(VDI.VDI):
             try:
                 if not util.timeout(10, is_ready):
                     raise Exception('Failed to wait HTTP server startup, bad output')
-            except util.TimeoutException:
+            except TimeoutError:
                 raise Exception('Failed to wait for HTTP server startup during given delay')
         except Exception as e:
             if pid_path:
@@ -2711,18 +2708,15 @@ class LinstorVDI(VDI.VDI):
                 device_size = 256 * 1024 * 1024
 
             try:
-                api_session = util.timeout(5, util.ApiSession, "SM-ha-linstor-nbd-server")
-                session = api_session.session
-                ips = util.get_host_addresses(session)
+                with util.timeout(5), util.ApiSession("SM-ha-linstor-nbd-server") as session:
+                    ips = util.get_host_addresses(session)
             except Exception as e:
                 _, ips = get_ips_from_xha_config_file()
                 if not ips:
                     raise Exception(
-                        'Cannot start persistent NBD server: no XAPI session, nor XHA config file ({})'.format(e)
-                    )
+                        'Cannot start persistent NBD server: no XAPI session, nor XHA config file'
+                    ) from e
                 ips = ips.values()
-            finally:
-                api_session.logout()
 
             arguments = [
                 'nbd-http-server',
@@ -2763,7 +2757,7 @@ class LinstorVDI(VDI.VDI):
                 nbd_path = util.timeout(10, get_nbd_path)
                 if nbd_path is None:
                     raise Exception('Empty NBD path (NBD server is probably dead)')
-            except util.TimeoutException:
+            except TimeoutError:
                 raise Exception('Unable to read NBD path')
 
             util.SMlog('Create symlink: {} -> {}'.format(self.path, nbd_path))
