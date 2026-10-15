@@ -2611,8 +2611,13 @@ class LinstorVDI(VDI.VDI):
             vdi.linstorcowutil.create_chain_paths(vdi.uuid, readonly=True)
             vdi._load_this()
 
-        with self.tap_pause(), dest.tap_pause():
-            self._revert(dest)
+        if blktap2.VDI.tap_status(self.session, self.uuid):
+            raise xs_errors.XenError("VDIInUse", opterr=f"VDI {self.uuid} is in use")
+
+        if blktap2.VDI.tap_status(dest.session, dest.uuid):
+            raise xs_errors.XenError("VDIInUse", opterr=f"VDI {dest.uuid} is in use")
+
+        self._revert(dest)
 
     def _revert(self, dest: "LinstorVDI"):
         self._ensure_not_max_depth()
