@@ -2566,14 +2566,14 @@ class SR(object):
 
             self.journaler.create(vdi.JRN_COALESCE, vdi.uuid, "1")
             host_refs = self.hasLeavesAttachedOn(vdi)
-            # This check of multiple host_refs was done earlier in `isCoalesceable` but
-            # we recheck here to be sure another leaf wasn't activated in the meantime.
-            if vdi.cowutil.isCoalesceableOnRemote() and len(host_refs) > 1:
-                Util.log("Not coalesceable, chain activated more than once")
-                Util.log(f"VDI '{vdi.uuid}' has leaves attached on {host_refs}")
-                raise Exception("Not coalesceable, chain activated more than once")
-
             try:
+                # This check of multiple host_refs was done earlier in `isCoalesceable` but
+                # we recheck here to be sure another leaf wasn't activated in the meantime.
+                if vdi.cowutil.isCoalesceableOnRemote() and len(host_refs) > 1:
+                    Util.log("Not coalesceable, chain activated more than once")
+                    Util.log(f"VDI '{vdi.uuid}' has leaves attached on {host_refs}")
+                    raise Exception("Not coalesceable, chain activated more than once")
+
                 if host_refs and vdi.cowutil.isCoalesceableOnRemote():
                     #Leaf opened on another host, we need to call online coalesce
                     Util.log("Remote coalesce for {}".format(vdi.path))
