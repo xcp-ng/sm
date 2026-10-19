@@ -153,7 +153,7 @@ def round_down(value, divisor):
 def _get_controller_addresses() -> List[str]:
     try:
         (ret, stdout, stderr) = util.doexec([
-            "/usr/sbin/ss", "-tnpH", "state", "established", f"( sport = :{LINSTOR_SATELLITE_PORT} )"
+            "/usr/sbin/ss", "-tnH", "state", "established", f"( sport = :{LINSTOR_SATELLITE_PORT} )"
         ])
         if ret == 0:
             return [
