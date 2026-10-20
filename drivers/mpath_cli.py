@@ -20,7 +20,7 @@ from sm_typing import override
 import util
 import re
 import time
-from fairlock import Fairlock
+from fairlock import FairlockRead, FairlockWrite
 
 
 class MPathCLIFail(Exception):
@@ -36,7 +36,7 @@ mpathcmd = ["/usr/sbin/multipathd", "-k"]
 
 def mpexec(cmd):
     util.SMlog("mpath cmd: %s" % cmd)
-    with Fairlock("devicemapper"):
+    with FairlockWrite("devicemapper"):
         (rc, stdout, stderr) = util.doexec(mpathcmd, cmd)
     if stdout != "multipathd> ok\nmultipathd> " \
             and stdout != "multipathd> " + cmd + "\nok\nmultipathd> ":
@@ -82,7 +82,7 @@ def is_working():
 
 def do_get_topology(cmd):
     util.SMlog("mpath cmd: %s" % cmd)
-    with Fairlock("devicemapper"):
+    with FairlockRead("devicemapper"):
         (rc, stdout, stderr) = util.doexec(mpathcmd, cmd)
     util.SMlog("mpath output: %s" % stdout)
     lines = stdout.split('\n')[:-1]
@@ -115,7 +115,7 @@ def list_paths(scsi_id):
 def list_maps():
     cmd = "list maps"
     util.SMlog("mpath cmd: %s" % cmd)
-    with Fairlock("devicemapper"):
+    with FairlockRead("devicemapper"):
         (rc, stdout, stderr) = util.doexec(mpathcmd, cmd)
     util.SMlog("mpath output: %s" % stdout)
     return [x.split(' ')[0] for x in stdout.split('\n')[2:-1]]

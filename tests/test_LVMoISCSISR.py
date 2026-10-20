@@ -158,7 +158,7 @@ class TestLVMoISCSISR(ISCSITestCase):
 
         lock_patcher = mock.patch('LVMSR.lock.Lock')
         self.mock_lock = lock_patcher.start()
-        lvlock_patcher = mock.patch('LVMSR.lvutil.Fairlock')
+        lvlock_patcher = mock.patch('LVMSR.lvutil.FairlockRead')
         self.mock_lvlock = lvlock_patcher.start()
 
         pv_check_patcher = mock.patch('LVMoISCSISR.lvutil.checkPVScsiIds', autospec=True)

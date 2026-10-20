@@ -63,7 +63,7 @@ class TestLVMSR(unittest.TestCase, Stubs):
             sr_uuid = str(uuid.uuid4())
         return LVMSR.LVMSR(srcmd, sr_uuid)
 
-    @mock.patch('lvutil.Fairlock', autospec=True)
+    @mock.patch('lvutil.FairlockRead', autospec=True)
     @mock.patch('lvmcowutil.LvmCowUtil.getVDIInfo')
     @mock.patch('LVMSR.lock.Lock', autospec=True)
     @mock.patch('SR.XenAPI')
@@ -99,6 +99,7 @@ class TestLVMSR(unittest.TestCase, Stubs):
         self.stubout('lvmcowutil.LvmCowUtil.deflate')
         self.stubout('util.SMlog', new_callable=SMLog)
         self.stubout('lvmcache.LVMCache')
+        self.stubout('lvutil.FairlockRead')
 
         vdi_uuid = 'some VDI UUID'
         vdi_info = lvmcowutil.VDIInfo(vdi_uuid)
@@ -208,7 +209,7 @@ class TestLVMSR(unittest.TestCase, Stubs):
                                 sr_uuid=sr_uuid)
 
         # Arrange for detach
-        self.stubout('LVMSR.Fairlock')
+        self.stubout('LVMSR.FairlockRead')
         mock_remove_device = self.stubout(
             'LVMSR.lvutil.removeDevMapperEntry')
         mock_glob = self.stubout('glob.glob')
