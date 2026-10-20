@@ -572,6 +572,7 @@ class LVMSR(SR.SR):
                             "for details.")
 
         lvutil.removeVG(self.dconf['device'], self.vgname)
+        lvutil.LVM_METADATA_BACKUP.remove_vg_backups(self.vgname)
         self._cleanup()
 
     @override
