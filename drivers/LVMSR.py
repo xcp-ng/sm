@@ -55,7 +55,7 @@ from metadata import retrieveXMLfromFile, _parseXML
 from xmlrpc.client import DateTime
 import glob
 from constants import CBTLOG_TAG
-from fairlock import Fairlock
+from fairlock import FairlockRead
 DEV_MAPPER_ROOT = os.path.join('/dev/mapper', VG_PREFIX)
 
 geneology: Dict[str, List[str]] = {}
@@ -625,7 +625,7 @@ class LVMSR(SR.SR):
             if util.extractSRFromDevMapper(fileName) != self.uuid:
                 continue
 
-            with Fairlock('devicemapper'):
+            with FairlockRead('devicemapper'):
                 # check if any file has open handles
                 if util.doesFileHaveOpenHandles(fileName):
                     # if yes, log this and signal failure
