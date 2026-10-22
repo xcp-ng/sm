@@ -57,6 +57,7 @@ REG_DRBDADM_PRIMARY = re.compile("([^\\s]+)\\s+role:Primary")
 REG_DRBDSETUP_IP = re.compile('[^\\s]+\\s+(.*):.*$')
 
 DRBD_BY_RES_PATH = '/dev/drbd/by-res/'
+DRBD_OPENERS_PATH = '/sys/kernel/debug/drbd/resources/{}/volumes/{}/openers'
 
 PLUGIN = 'linstor-manager'
 
@@ -65,13 +66,29 @@ LinstorVolumeOpeners = Dict[str, LinstorLocalVolumeOpeners]
 
 # ==============================================================================
 
+def has_local_volume_openers(resource_name, volume) -> bool:
+    if not resource_name or volume is None:
+        raise Exception('Cannot get DRBD openers without resource name and/or volume.')
+
+    path = DRBD_OPENERS_PATH.format(resource_name, volume)
+    openers_char = ''
+
+    try:
+        with open(path, 'r') as openers:
+            # Read a single character to check if there is any opener listed.
+            # If we get nothing back, then the file is empty meaning there are
+            # no openers.
+            openers_char = openers.read(1)
+    except FileNotFoundError:
+        return False
+
+    return openers_char != ''
+
 def get_local_volume_openers(resource_name, volume) -> LinstorLocalVolumeOpeners:
     if not resource_name or volume is None:
         raise Exception('Cannot get DRBD openers without resource name and/or volume.')
 
-    path = '/sys/kernel/debug/drbd/resources/{}/volumes/{}/openers'.format(
-        resource_name, volume
-    )
+    path = DRBD_OPENERS_PATH.format(resource_name, volume)
 
     with open(path, 'r') as openers:
         # Not a big cost, so read all lines directly.
@@ -815,6 +832,9 @@ class LinstorVolumeManager(object):
 
         volume_properties = self._get_volume_properties(volume_uuid)
         volume_name = volume_properties.get(self.PROP_VOLUME_NAME)
+
+        if has_local_volume_openers(volume_name, 0):
+            return
 
         node_name = socket.gethostname()
 
