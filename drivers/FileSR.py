@@ -631,6 +631,10 @@ class FileVDI(VDI.VDI):
         if self.attached:
             raise xs_errors.XenError('VDIInUse')
 
+        # cbt_metadata: keep the .cbtlog for VDI.delete() to relink the CBT chain
+        if self.vdi_type == VdiType.CBTLOG and not data_only:
+            return super(FileVDI, self).delete(sr_uuid, vdi_uuid, data_only)
+
         try:
             util.force_unlink(self.path)
         except Exception as e:
