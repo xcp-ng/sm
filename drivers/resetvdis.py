@@ -77,7 +77,7 @@ def reset_vdi(session, vdi_uuid, force, term_output=True, writable=True):
     sm_config = vdi_rec["sm_config"]
     host_ref = None
     clean = True
-    for key, val in sm_config.items():
+    for key, val in list(sm_config.items()):
         if key.startswith("host_"):
             host_ref = key[len("host_"):]
             host_uuid = None
