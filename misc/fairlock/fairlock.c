@@ -45,6 +45,9 @@ struct ServerState {
 
     int reader_count;
     bool has_writer;
+
+    int64_t watchdog_interval; // In milliseconds, 0 if disabled.
+    int64_t watchdog_next_ping;
 };
 
 // -----------------------------------------------------------------------------
@@ -185,7 +188,7 @@ static void server_sync (struct ServerState *state) {
 // -----------------------------------------------------------------------------
 
 static int server_get_next_poll_timeout (const struct ServerState *state) {
-    int64_t deadline = -1;
+    int64_t deadline = state->watchdog_interval ? state->watchdog_next_ping : -1;
     for (int i = 0; i < state->client_count; ++i) {
         const struct Client *client = &state->clients[i];
         if (client->mode)
@@ -213,6 +216,18 @@ static void server_close_expired_clients (struct ServerState *state) {
             server_remove_client(state, i);
         }
     }
+}
+
+static void server_ping_watchdog (struct ServerState *state) {
+    if (!state->watchdog_interval)
+        return;
+
+    const int64_t current_time = get_current_time();
+    if (current_time < state->watchdog_next_ping)
+        return;
+
+    sd_notify(0, "WATCHDOG=1");
+    state->watchdog_next_ping = current_time + state->watchdog_interval;
 }
 
 // -----------------------------------------------------------------------------
@@ -282,6 +297,14 @@ int main (int argc, char *argv[]) {
         if (server_bind(&state))
             exit(1);
     }
+
+    uint64_t watchdog_usec;
+    if (sd_watchdog_enabled(1, &watchdog_usec) > 0) {
+        // Ping twice per period, as recommended by sd_watchdog_enabled(3).
+        state.watchdog_interval = (int64_t)(watchdog_usec / 2000);
+        state.watchdog_next_ping = get_current_time();
+    }
+
     sd_notify(0, "READY=1");
     server_sync(&state);
 
@@ -310,6 +333,8 @@ int main (int argc, char *argv[]) {
             fprintf(stderr, "poll() failed on socket %s: %s\n", state.lock_path, strerror(errno));
             exit(1);
         }
+
+        server_ping_watchdog(&state);
 
         // 2. Handle client socket events.
         // Note: `server_remove_client` can shift data, so we must process from end array to start.
