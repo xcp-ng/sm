@@ -255,7 +255,7 @@ class LinstorCowUtil:
 
     @linstorhostcall('check')
     def _check(self, vdi_uuid, response):
-        return CowUtil.CheckResult(response)
+        return CowUtil.CheckResult(int(response))
 
     def get_info(self, vdi_uuid, include_parent=True):
         kwargs = {
@@ -303,7 +303,9 @@ class LinstorCowUtil:
 
     @linstorhostcall('getParent')
     def _get_parent(self, vdi_uuid, response):
-        return response
+        # response will be an empty string for a remote call, it would be `None` for a local
+        # call so we transform it back to `None` here.
+        return response or None
 
     @linstorhostcall('getSizeVirt')
     def get_size_virt(self, vdi_uuid, response):
