@@ -19,7 +19,7 @@ import XenAPI # pylint: disable=import-error
 import time
 from contextlib import contextmanager
 
-from sm_typing import Dict, Optional
+from sm_typing import Dict, List, Optional
 
 import blktap2
 import cleanup
@@ -222,6 +222,9 @@ class VDI(object):
         raise xs_errors.XenError('Unimplemented')
 
     def _rename(self, old, new) -> None:
+        raise xs_errors.XenError('Unimplemented')
+
+    def _copy(self, src, dst) -> None:
         raise xs_errors.XenError('Unimplemented')
 
     def _cbt_log_exists(self, logpath) -> bool:
@@ -702,6 +705,7 @@ class VDI(object):
                 self._get_blocktracking_status(vdi_to)):
             merged_bitmap = None
             curr_vdi = vdi_from
+            visited = [vdi_from]
             vdi_size = 0
             logpath = self._get_cbt_logpath(curr_vdi)
 
@@ -713,11 +717,15 @@ class VDI(object):
                 # Check if we have reached end of CBT chain
                 next_vdi = self._cbt_op(curr_vdi, cbtutil.get_cbt_child,
                                         logpath)
+                if next_vdi in visited:
+                    util.SMlog("CBT chain loop detected at %s" % next_vdi)
+                    break
                 if not self._cbt_log_exists(self._get_cbt_logpath(next_vdi)):
                     # VDIs are not part of the same metadata chain
                     break
                 else:
                     curr_vdi = next_vdi
+                    visited.append(curr_vdi)
 
                 logpath = self._get_cbt_logpath(curr_vdi)
                 curr_vdi_size = self._cbt_op(curr_vdi,
@@ -957,25 +965,54 @@ class VDI(object):
         self._cbt_op(self.uuid, cbtutil.set_cbt_consistency, log_path, True)
         return log_path
 
-    def _reset_cbt_log(self) -> None:
-        """Delete and recreate a fresh CBT log for this VDI"""
-        self._delete_cbt_log()
-        self._ensure_cbt_space()
-        self._create_cbt_log_with_size(self.size)
+    def _cbt_chain_between(self, vdi_from: str, vdi_to: str) -> Optional[List[str]]:
+        chain = [vdi_from]
+        while chain[-1] != vdi_to:
+            child = self._cbt_op(chain[-1], cbtutil.get_cbt_child,
+                                 self._get_cbt_logpath(chain[-1]))
+            if child in chain or not self._cbt_log_exists(self._get_cbt_logpath(child)):
+                return None
+            chain.append(child)
+        return chain
 
-    def _revert_cbt(self, dest: "VDI") -> None:
-        """Update the CBT log chain after a vdi_revert"""
-        util.SMlog(f"CBT revert: wiring chain for src={self.uuid} dest={dest.uuid}")
-        
-        self._reset_cbt_log()
-        dest._reset_cbt_log()
+    def _revert_cbt(self, dest: "VDI", src_cbtlog: Optional[str],
+                    dest_cbtlog: Optional[str], backup_path: str) -> None:
+        """Rebuild dest's CBT log, the previous one is kept at backup_path"""
+        if not dest_cbtlog:
+            return
 
-        for vdi in [self, dest]:
-            vdi.session.xenapi.VDI.set_cbt_enabled(
-                vdi.session.xenapi.VDI.get_by_uuid(vdi.uuid), True
-            )
+        dest_logpath = dest._get_cbt_logpath(dest.uuid)
+        chain = None
+        if src_cbtlog:
+            # dest.size already holds the new size: use the size of its log
+            log_size = dest._cbt_op(dest.uuid, cbtutil.get_cbt_size, dest_logpath)
+            if log_size == self.size:
+                chain = self._cbt_chain_between(self.uuid, dest.uuid)
+        old_parent = dest._cbt_op(dest.uuid, cbtutil.get_cbt_parent, dest_logpath)
 
-        util.SMlog("CBT revert: chain wired successfully")
+        dest._copy(dest_logpath, backup_path)
+        if not chain:
+            old_parent_path = dest._get_cbt_logpath(old_parent)
+            if dest._cbt_log_exists(old_parent_path):
+                dest._cbt_op(old_parent, cbtutil.set_cbt_child,
+                             old_parent_path, uuid.UUID(int=0))
+            if not src_cbtlog:
+                # CBT is disabled on dest once the revert is committed
+                return
+
+        dest._delete_cbt_log()
+        dest._ensure_cbt_space()
+        dest._create_cbt_log_with_size(dest.size)
+        if chain:
+            dest._cbt_op(dest.uuid, cbtutil.set_cbt_parent, dest_logpath, chain[-2])
+            for vdi_uuid in chain[1:-1]:
+                dest._cbt_op(dest.uuid, cbtutil.coalesce_bitmap,
+                             self._get_cbt_logpath(vdi_uuid), dest_logpath)
+            util.SMlog(f"CBT revert: rebuilt {dest.uuid} bitmap from "
+                       f"{len(chain) - 2} bitmap(s) since {self.uuid}")
+        else:
+            util.SMlog(f"CBT revert: {self.uuid} is not a CBT ancestor of "
+                       f"{dest.uuid} with the same size, restarting its CBT chain")
 
     def disable_leaf_on_secondary(self, vdi_uuid, secondary=None):
         vdi_ref = self.session.xenapi.VDI.get_by_uuid(vdi_uuid)
