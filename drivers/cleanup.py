@@ -1091,12 +1091,15 @@ class VDI(object):
 
         # only leaves can be attached
         if len(self.children) == 0:
-            try:
-                self.delConfig(VDI.DB_VDI_RELINKING)
-            except XenAPI.Failure as e:
-                if not util.isInvalidVDI(e):
-                    raise
+            self._untagRelinking()
             self.refresh()
+
+    def _untagRelinking(self):
+        try:
+            self.delConfig(VDI.DB_VDI_RELINKING)
+        except XenAPI.Failure as e:
+            if not util.isInvalidVDI(e):
+                raise
 
     def _needRelink(self, list_not_to_relink):
         """
@@ -1109,7 +1112,7 @@ class VDI(object):
         else:
             return True
 
-    def _tagChildrenForRelink(self, list_not_to_relink=None):
+    def _tagChildrenForRelink(self, tagged, list_not_to_relink=None):
         if len(self.children) == 0:
             retries = 0
             try:
@@ -1121,6 +1124,7 @@ class VDI(object):
                     else:
                         if self._needRelink(list_not_to_relink):
                             self.setConfig(VDI.DB_VDI_RELINKING, "True")
+                            tagged.append(self)
 
                             if self.getConfig(VDI.DB_VDI_ACTIVATING):
                                 self.delConfig(VDI.DB_VDI_RELINKING)
@@ -1139,7 +1143,7 @@ class VDI(object):
                     raise
 
         for child in self.children:
-            child._tagChildrenForRelink(list_not_to_relink)
+            child._tagChildrenForRelink(tagged, list_not_to_relink)
 
     def _loadInfoParent(self):
         ret = self.cowutil.getParent(self.path, LvmCowUtil.extractUuid)
@@ -2608,15 +2612,21 @@ class SR(object):
             # scan
             self.journaler.create(vdi.JRN_RELINK, vdi.uuid, "1")
 
+        tagged = []
         self.lock()
         try:
-            vdi.parent._tagChildrenForRelink(list_not_to_relink)
+            vdi.parent._tagChildrenForRelink(tagged, list_not_to_relink)
             self.scan()
             vdi._relinkSkip()
         finally:
             self.unlock()
-            # Reload the children to leave things consistent
-            vdi.parent._reloadChildren(vdi)
+            try:
+                # Reload the children to leave things consistent
+                vdi.parent._reloadChildren(vdi)
+            finally:
+                # Untag leaves the reload can't reach anymore
+                for leaf in tagged:
+                    leaf._untagRelinking()
         self.journaler.remove(vdi.JRN_RELINK, vdi.uuid)
 
         self.deleteVDI(vdi)
