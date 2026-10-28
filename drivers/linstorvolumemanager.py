@@ -1629,7 +1629,7 @@ class LinstorVolumeManager(object):
             if nodes:
                 properties = nodes[0].props
                 return properties.get('PrefNic', 'default')
-            return nodes
+            raise LinstorVolumeManagerError('Node `{}` not found'.format(node_name))
         except Exception as e:
             raise LinstorVolumeManagerError(
                 'Failed to get preferred interface: `{}`'.format(e)
