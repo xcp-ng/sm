@@ -20,12 +20,14 @@ import contextlib
 import errno
 import glob
 import os
+import shutil
 import time
 import xmlrpc.client
 from pathlib import Path
 from uuid import uuid4
 
 import blktap2
+import cbtutil
 import cleanup
 import fjournaler
 import lock
@@ -87,28 +89,28 @@ class RevertLogDestinationVDI:
         uuid: str,
         path: str,
         backup_path: str,
-        is_cbt_enabled: bool,
+        cbtlog_backup_path: str = "",
     ):
         self.uuid = uuid
         self.path = path
         self.backup_path = backup_path
-        self.is_cbt_enabled = is_cbt_enabled
+        self.cbtlog_backup_path = cbtlog_backup_path
 
-    def to_dict(self) -> Dict[str, Union[str, bool]]:
+    def to_dict(self) -> Dict[str, str]:
         return {
             "uuid": self.uuid,
             "path": self.path,
             "backup_path": self.backup_path,
-            "is_cbt_enabled": self.is_cbt_enabled,
+            "cbtlog_backup_path": self.cbtlog_backup_path,
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Union[str, bool]]) -> "RevertLogDestinationVDI":
+    def from_dict(cls, data: Dict[str, str]) -> "RevertLogDestinationVDI":
         return cls(
             uuid=str(data["uuid"]),
             path=str(data["path"]),
             backup_path=str(data["backup_path"]),
-            is_cbt_enabled=bool(data["is_cbt_enabled"]),
+            cbtlog_backup_path=str(data.get("cbtlog_backup_path", "")),
         )
 
 
@@ -118,28 +120,24 @@ class RevertLogSourceVDI:
         uuid: str,
         path: str,
         vdi_type: str,
-        is_cbt_enabled: bool,
     ):
         self.uuid = uuid
         self.path = path
         self.vdi_type = vdi_type
-        self.is_cbt_enabled = is_cbt_enabled
 
-    def to_dict(self) -> Dict[str, Union[str, bool]]:
+    def to_dict(self) -> Dict[str, str]:
         return {
             "uuid": self.uuid,
             "path": self.path,
             "vdi_type": self.vdi_type,
-            "is_cbt_enabled": self.is_cbt_enabled,
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Union[str, bool]]) -> "RevertLogSourceVDI":
+    def from_dict(cls, data: Dict[str, str]) -> "RevertLogSourceVDI":
         return cls(
             uuid=str(data["uuid"]),
             path=str(data["path"]),
             vdi_type=str(data["vdi_type"]),
-            is_cbt_enabled=bool(data["is_cbt_enabled"]),
         )
 
 class RevertLogInsertedVDI:
@@ -525,9 +523,17 @@ class FileSR(SR.SR):
                 del self.vdis[uuid]
 
     def _rollback_revert_vdi(self, entry: RevertLogEntry):
+        if entry.dest.cbtlog_backup_path:
+            self._unlink_paths(
+                entry.dest.cbtlog_backup_path + ".tmp",
+                os.path.join(self.path, f"{entry.dest.uuid}.{CBTLOG_TAG}.tmp"),
+            )
+
         util.SMlog(f"Reverting vdi {entry.dest.uuid} from backup {entry.dest.backup_path}")
         if not util.ioretry(lambda: util.pathexists(entry.dest.backup_path)):
             util.SMlog(f"Tried reverting {entry.dest.uuid} but backup {entry.dest.backup_path} not found, skpping")
+            if entry.dest.cbtlog_backup_path:
+                self._unlink_paths(entry.dest.cbtlog_backup_path)
             return
 
         src_cowutil = getCowUtil(entry.src.vdi_type)
@@ -547,12 +553,6 @@ class FileSR(SR.SR):
 
         self.added_vdi(src)
 
-        # CBT cannot be added by accident on src, we can skip checking if it exists
-        util.SMlog(f"CBT rollback: restoring cbtlog for src {entry.src.uuid}")
-        if entry.src.is_cbt_enabled:
-            src._reset_cbt_log()
-            src.session.xenapi.VDI.set_cbt_enabled(src_ref, True)
-
         # Remove any existing vdi to allow renaming the backup with this name 
         self._unlink_paths(entry.dest.path)
 
@@ -564,12 +564,29 @@ class FileSR(SR.SR):
             inserted.session.xenapi.VDI.set_managed(inserted_ref, False)
             inserted.disable_leaf_on_secondary(inserted.uuid)
 
+        # Must be done before moving the backup back, which ends the rollback
+        cbtlog_backup = entry.dest.cbtlog_backup_path
+        if cbtlog_backup:
+            logpath = src._get_cbt_logpath(entry.dest.uuid)
+            if util.ioretry(lambda: util.pathexists(cbtlog_backup)):
+                util.SMlog(f"CBT rollback: restoring cbtlog of {entry.dest.uuid} from {cbtlog_backup}")
+                src._copy(cbtlog_backup, logpath)
+            if src._cbt_log_exists(logpath):
+                parent = src._cbt_op(entry.dest.uuid, cbtutil.get_cbt_parent, logpath)
+                parent_path = src._get_cbt_logpath(parent)
+                if src._cbt_log_exists(parent_path):
+                    util.SMlog(f"CBT rollback: relinking cbtlog of {parent} to its child {entry.dest.uuid}")
+                    src._cbt_op(parent, cbtutil.set_cbt_child, parent_path, entry.dest.uuid)
+        util.fistpoint.activate("FileSR_revert_rollback_after_cbt", self.uuid)
+
         # Once we move the backup to it's old name, the journal can't be run again
         # If something fails from now, we might lose some info, most of them
         # will be back from a simple scan
         # Worst case scenario, CBT is disabled or incoherent (which will be solved by tapdisk)
         util.ioretry(lambda: os.rename(entry.dest.backup_path, entry.dest.path),
                      errlist=[errno.EIO, errno.EACCES])
+        if cbtlog_backup:
+            self._unlink_paths(cbtlog_backup)
 
         dest: "FileVDI" = self.vdi(entry.dest.uuid) # type: ignore[assignment]
         dest_ref = dest.session.xenapi.VDI.get_by_uuid(dest.uuid)
@@ -578,17 +595,6 @@ class FileSR(SR.SR):
         dest.load_from_file(dest.path)
         dest._db_update()
         self.added_vdi(dest)
-
-        # CBT might have been added when not needed or removed when needed
-        util.SMlog(f"CBT rollback: restoring cbtlog for dest {entry.dest.uuid}")
-        if entry.dest.is_cbt_enabled:
-            dest._reset_cbt_log()
-            dest.session.xenapi.VDI.set_cbt_enabled(dest_ref, True)
-        else:
-            dest._delete_cbt_log()
-            dest.session.xenapi.VDI.set_cbt_enabled(dest_ref, False)
-
-
 
     def _unlink_paths(self, *files: Union[Path, str]):
         for path in files:
@@ -1017,9 +1023,10 @@ class FileVDI(VDI.VDI):
 
         # We create a valid backup VDI so that it properly protect
         # it's parent chain in case of a coalesce
+        backup_uuid = util.gen_uuid()
         dest_backup_path = os.path.join(
             dest.sr.path,
-            f"{util.gen_uuid()}{VDI_TYPE_TO_EXTENSION[dest.vdi_type]}",
+            f"{backup_uuid}{VDI_TYPE_TO_EXTENSION[dest.vdi_type]}",
         )
 
         inserted_uuid = util.gen_uuid()
@@ -1027,18 +1034,23 @@ class FileVDI(VDI.VDI):
             dest.sr.path, f"{inserted_uuid}{VDI_TYPE_TO_EXTENSION[dest.vdi_type]}"
         )
 
+        # Must not end with CBTLOG_TAG, the scan would load it as a VDI
+        dest_cbtlog_backup = (
+            os.path.join(dest.sr.path, f"{backup_uuid}.{CBTLOG_TAG}.bak")
+            if dest_cbtlog else ""
+        )
+
         log_entry = RevertLogEntry(
             dest=RevertLogDestinationVDI(
                 dest.uuid,
                 dest.path,
                 dest_backup_path,
-                bool(dest_cbtlog),
+                dest_cbtlog_backup,
             ),
             src=RevertLogSourceVDI(
                 self.uuid,
                 self.path,
                 self.vdi_type,
-                bool(src_cbtlog),
             ),
             inserted=RevertLogInsertedVDI(inserted_uuid, inserted_path),
         )
@@ -1119,20 +1131,22 @@ class FileVDI(VDI.VDI):
         inserted._db_update()
         inserted.disable_leaf_on_secondary(inserted.uuid, None)
 
-        if src_cbtlog:
-            self._revert_cbt(dest)
-        elif dest_cbtlog:
-            util.SMlog(
-                f"Reverting {dest.uuid} to non-CBT snapshot, disabling CBT on dest"
-            )
+        self._revert_cbt(dest, src_cbtlog, dest_cbtlog, dest_cbtlog_backup)
+        util.fistpoint.activate("FileSR_revert_after_cbt", self.sr.uuid)
+
+        if dest_cbtlog and not src_cbtlog:
             self._disable_cbt_on_vdi(
                 dest,
                 "VDI_CBT_REVERT_DISABLE",
                 f"CBT disabled on {dest.uuid}: reverted to non-CBT snapshot",
             )
+        util.fistpoint.activate("FileSR_revert_before_commit", self.sr.uuid)
 
-        # Cleanup
+        # The rollback drops the cbtlog backup when dest_backup_path is missing
         self.sr._unlink_paths(dest_backup_path)
+        util.fistpoint.activate("FileSR_revert_committed", self.sr.uuid)
+        if dest_cbtlog_backup:
+            self.sr._unlink_paths(dest_cbtlog_backup)
         self.sr.journaler.remove(log_entry.JRN_KEY, journal_id)
 
     def load_from_file(self, path: Union[str, Path]):
@@ -1201,6 +1215,13 @@ class FileVDI(VDI.VDI):
     def _rename(self, src, dst) -> None:
         util.SMlog("FileVDI._rename %s to %s" % (src, dst))
         util.ioretry(lambda: os.rename(src, dst))
+
+    @override
+    def _copy(self, src, dst) -> None:
+        util.SMlog("FileVDI._copy %s to %s" % (src, dst))
+        tmp = dst + ".tmp"
+        util.ioretry(lambda: shutil.copyfile(src, tmp))
+        util.ioretry(lambda: os.rename(tmp, dst))
 
     def _link(self, src, dst):
         util.SMlog("FileVDI._link %s to %s" % (src, dst))
