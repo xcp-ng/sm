@@ -744,9 +744,39 @@ def _deactivate(path):
     text = cmd_lvm([CMD_LVCHANGE, "-an", path])
 
 
-def _checkActive(path):
-    if util.pathexists(path):
+def _isDevMapperNodeValid(path, mapperDevice):
+    cmd = [CMD_DMSETUP, "info", "-c", "--noheadings", "--separator", ":",
+           "-o", "major,minor", mapperDevice]
+    try:
+        with Fairlock("devicemapper"):
+            major, minor = util.pread2(cmd).strip().split(":")
+        expected = os.makedev(int(major), int(minor))
+        rdev = os.stat(path).st_rdev
+    except (util.CommandException, OSError, ValueError) as e:
+        util.SMlog("_isDevMapperNodeValid: cannot check node %s: %s" % (path, e))
+        return False
+
+    if rdev != expected:
+        util.SMlog("_isDevMapperNodeValid: %s is device %d:%d, expected %s:%s" % \
+                (path, os.major(rdev), os.minor(rdev), major, minor))
+        return False
+    return True
+
+
+def _checkDevMapperNode(path, mapperDevice):
+    # A stale node can point to the device number of another LV, see _fixDevMapperNodes()
+    if _isDevMapperNodeValid(path, mapperDevice):
         return True
+
+    util.SMlog("_checkDevMapperNode: fixing node of %s" % mapperDevice)
+    _fixDevMapperNodes(mapperDevice)
+    return _isDevMapperNodeValid(path, mapperDevice)
+
+
+def _checkActive(path):
+    mapperDevice = path[5:].replace("-", "--").replace("/", "-")
+    if util.pathexists(path):
+        return _checkDevMapperNode(path, mapperDevice)
 
     util.SMlog("_checkActive: %s does not exist!" % path)
     symlinkExists = os.path.lexists(path)
@@ -755,7 +785,6 @@ def _checkActive(path):
     util.SMlog(f"LVM says {listLv(path=path)}")
 
     mapperDeviceExists = False
-    mapperDevice = path[5:].replace("-", "--").replace("/", "-")
     cmd = [CMD_DMSETUP, "status", mapperDevice]
     try:
         with Fairlock("devicemapper"):
@@ -781,7 +810,7 @@ def _checkActive(path):
                 raise
         if util.pathexists(path):
             util.SMlog("_checkActive: created the symlink manually")
-            return True
+            return _checkDevMapperNode(path, mapperDevice)
 
     return False
 

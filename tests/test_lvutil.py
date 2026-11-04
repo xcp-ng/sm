@@ -230,6 +230,9 @@ class TestActivate(unittest.TestCase):
         self.mock_lock = lock_patcher.start()
         pathexists_patcher = mock.patch('lvutil.util.pathexists', autospec=True)
         self.mock_exists = pathexists_patcher.start()
+        node_valid_patcher = mock.patch('lvutil._isDevMapperNodeValid', autospec=True)
+        self.mock_node_valid = node_valid_patcher.start()
+        self.mock_node_valid.return_value = True
 
         log_patcher = mock.patch('lvutil.util.SMlog', autospec=True)
         mock_log = log_patcher.start()
@@ -353,6 +356,71 @@ class TestActivate(unittest.TestCase):
 
         # Assert
         self.assertEqual(2, mock_pread.call_count)
+
+    @mock.patch('util.pread', autospec=True)
+    def test_activate_stale_node_is_fixed(self, mock_pread):
+        # Arrange
+        self.mock_exists.return_value = True
+        self.mock_node_valid.side_effect = [False, True]
+
+        # Act
+        lvutil.activateNoRefcount(TEST_VOL, False)
+
+        # Assert
+        mapper_device = TEST_VOL[5:].replace("-", "--").replace("/", "-")
+        commands = [c[0][0] for c in mock_pread.call_args_list]
+        self.assertEqual([lvutil.CMD_DMSETUP, "mknodes", mapper_device], commands[-1])
+
+    @mock.patch('util.pread', autospec=True)
+    def test_activate_stale_node_not_fixed(self, mock_pread):
+        # Arrange
+        self.mock_exists.return_value = True
+        self.mock_node_valid.return_value = False
+
+        # Act
+        with self.assertRaises(util.CommandException) as ce:
+            lvutil.activateNoRefcount(TEST_VOL, False)
+
+        # Assert
+        self.assertIn('LV not activated', ce.exception.reason)
+
+
+@mock.patch('lvutil.util.SMlog', autospec=True)
+@mock.patch('lvutil.Fairlock', autospec=True)
+@mock.patch('lvutil.os.stat', autospec=True)
+@mock.patch('util.pread', autospec=True)
+class TestIsDevMapperNodeValid(unittest.TestCase):
+    PATH = "/dev/%s" % TEST_VOL
+    MAPPER_DEVICE = TEST_VOL.replace("-", "--").replace("/", "-")
+
+    def test_node_matches_device(self, mock_pread, mock_stat, _1, _2):
+        mock_pread.return_value = "253:5\n"
+        mock_stat.return_value.st_rdev = os.makedev(253, 5)
+
+        self.assertTrue(lvutil._isDevMapperNodeValid(self.PATH, self.MAPPER_DEVICE))
+        mock_pread.assert_called_once_with(
+            [lvutil.CMD_DMSETUP, "info", "-c", "--noheadings", "--separator", ":",
+             "-o", "major,minor", self.MAPPER_DEVICE],
+            quiet=False, text=True)
+        mock_stat.assert_called_once_with(self.PATH)
+
+    def test_node_points_to_another_device(self, mock_pread, mock_stat, _1, _2):
+        mock_pread.return_value = "253:5\n"
+        mock_stat.return_value.st_rdev = os.makedev(253, 12)
+
+        self.assertFalse(lvutil._isDevMapperNodeValid(self.PATH, self.MAPPER_DEVICE))
+
+    def test_device_does_not_exist(self, mock_pread, mock_stat, _1, _2):
+        mock_pread.side_effect = util.CommandException(
+            1, "dmsetup", "Device does not exist.")
+
+        self.assertFalse(lvutil._isDevMapperNodeValid(self.PATH, self.MAPPER_DEVICE))
+
+    def test_node_cannot_be_read(self, mock_pread, mock_stat, _1, _2):
+        mock_pread.return_value = "253:5\n"
+        mock_stat.side_effect = FileNotFoundError()
+
+        self.assertFalse(lvutil._isDevMapperNodeValid(self.PATH, self.MAPPER_DEVICE))
 
 
 @mock.patch('util.pread', autospec=True) # m_pread
