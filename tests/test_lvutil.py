@@ -97,8 +97,17 @@ class TestCreate(unittest.TestCase):
         lvutil.create('volume', ONE_MEGABYTE, 'VG_XenStorage-b3b18d06-b2ba-5b67-f098-3cdd5087a2a7',
                       size_in_percentage="10%F")
 
-        self.assertEqual(1, mock_pread.call_count)
+        # dmsetup mknodes, then lvcreate
+        self.assertEqual(2, mock_pread.call_count)
         self.assertIn("10%F", mock_pread.call_args[0][0])
+
+    @mock.patch('util.pread', autospec=True)
+    def test_create_fixes_stale_nodes_first(self, mock_pread):
+        lvutil.create('volume', ONE_MEGABYTE, TEST_VG)
+
+        commands = [c[0][0] for c in mock_pread.call_args_list]
+        self.assertEqual([lvutil.CMD_DMSETUP, "mknodes"], commands[0])
+        self.assertIn(lvutil.CMD_LVCREATE, commands[1][0])
 
 
 class TestRemove(unittest.TestCase):
@@ -315,6 +324,35 @@ class TestActivate(unittest.TestCase):
             lvutil.activateNoRefcount(TEST_VOL, False)
 
         self.assertIn('LV not activated', ce.exception.reason)
+
+    @mock.patch('util.pread', autospec=True)
+    def test_activate_fixes_stale_nodes_first(self, mock_pread):
+        # Arrange
+        self.mock_exists.return_value = True
+
+        # Act
+        lvutil.activateNoRefcount(TEST_VOL, False)
+
+        # Assert
+        commands = [c[0][0] for c in mock_pread.call_args_list]
+        self.assertEqual([lvutil.CMD_DMSETUP, "mknodes"], commands[0])
+        self.assertIn(lvutil.CMD_LVCHANGE, commands[1][0])
+        self.assertIn("-ay", commands[1])
+
+    @mock.patch('util.pread', autospec=True)
+    def test_activate_mknodes_failure_is_not_fatal(self, mock_pread):
+        # Arrange
+        self.mock_exists.return_value = True
+        mock_pread.side_effect = [
+            util.CommandException(1, 'dmsetup', 'mknodes failed'),
+            ''
+        ]
+
+        # Act
+        lvutil.activateNoRefcount(TEST_VOL, False)
+
+        # Assert
+        self.assertEqual(2, mock_pread.call_count)
 
 
 @mock.patch('util.pread', autospec=True) # m_pread
