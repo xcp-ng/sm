@@ -27,7 +27,6 @@ from pathlib import Path
 from uuid import uuid4
 
 import blktap2
-import cbtutil
 import cleanup
 import fjournaler
 import lock
@@ -566,20 +565,11 @@ class FileSR(SR.SR):
 
         # Must be done before moving the backup back, which ends the rollback
         cbtlog_backup = entry.dest.cbtlog_backup_path
-        logpath = src._get_cbt_logpath(entry.dest.uuid)
         if cbtlog_backup:
-            if util.ioretry(lambda: util.pathexists(cbtlog_backup)):
-                util.SMlog(f"CBT rollback: restoring cbtlog of {entry.dest.uuid} from {cbtlog_backup}")
-                src._copy(cbtlog_backup, logpath)
-            if src._cbt_log_exists(logpath):
-                parent = src._cbt_op(entry.dest.uuid, cbtutil.get_cbt_parent, logpath)
-                parent_path = src._get_cbt_logpath(parent)
-                if src._cbt_log_exists(parent_path):
-                    util.SMlog(f"CBT rollback: relinking cbtlog of {parent} to its child {entry.dest.uuid}")
-                    src._cbt_op(parent, cbtutil.set_cbt_child, parent_path, entry.dest.uuid)
+            src._rollback_revert_cbt(entry.dest.uuid, cbtlog_backup)
         else:
             # dest had no CBT before the revert, any cbtlog comes from it
-            self._unlink_paths(logpath)
+            self._unlink_paths(src._get_cbt_logpath(entry.dest.uuid))
         util.fistpoint.activate("FileSR_revert_rollback_after_cbt", self.uuid)
 
         # Once we move the backup to it's old name, the journal can't be run again
