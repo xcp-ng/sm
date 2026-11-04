@@ -29,7 +29,6 @@ from contextlib import contextmanager
 from xmlrpc.client import DateTime
 
 import blktap2
-import cbtutil
 import cleanup
 import lock
 import lvmcache
@@ -1401,26 +1400,17 @@ class LVMSR(SR.SR):
             inserted.disable_leaf_on_secondary(inserted.uuid)
 
         # Must be done before moving the backup back, which ends the rollback
-        logname = src._get_cbt_logname(entry.dest.uuid)
-        logpath = src._get_cbt_logpath(entry.dest.uuid)
         cbt_lock = lock.Lock("cbtlog", entry.dest.uuid)
         cbt_lock.acquire()
         try:
             if cbtlog_backup:
+                # _copy doesn't overwrite, drop the log recreated by _revert_cbt
                 if self.lvmCache.checkLV(cbtlog_backup):
-                    # _copy doesn't overwrite, drop the log recreated by _revert_cbt
-                    self._remove_lvs(logname)
-                    util.SMlog(f"CBT rollback: restoring cbtlog of {entry.dest.uuid} from {cbtlog_backup}")
-                    src._copy(os.path.join(self.path, cbtlog_backup), logpath)
-                if src._cbt_log_exists(logpath):
-                    parent = src._cbt_op(entry.dest.uuid, cbtutil.get_cbt_parent, logpath)
-                    parent_path = src._get_cbt_logpath(parent)
-                    if src._cbt_log_exists(parent_path):
-                        util.SMlog(f"CBT rollback: relinking cbtlog of {parent} to its child {entry.dest.uuid}")
-                        src._cbt_op(parent, cbtutil.set_cbt_child, parent_path, entry.dest.uuid)
+                    self._remove_lvs(src._get_cbt_logname(entry.dest.uuid))
+                src._rollback_revert_cbt(entry.dest.uuid, os.path.join(self.path, cbtlog_backup))
             else:
                 # dest had no CBT before the revert, any cbtlog comes from it
-                self._remove_lvs(logname)
+                self._remove_lvs(src._get_cbt_logname(entry.dest.uuid))
         finally:
             cbt_lock.release()
         util.fistpoint.activate("LVM_revert_rollback_after_cbt", self.uuid)
@@ -2833,13 +2823,17 @@ class LVMVDI(VDI.VDI):
         # We need virtual_size to compute the size in case of a bigger VDI
         self.sr.ensureCBTSpace(self.size)
 
-    @override
-    def _create_cbt_log(self) -> str:
+    def _create_cbt_lv(self, size: int) -> str:
         logname = self._get_cbt_logname(self.uuid)
-        logsize = max(util.roundup(CBT_BLOCK_SIZE, self.size//CBT_BLOCK_SIZE), self.sr.journaler.LV_SIZE)
+        logsize = max(util.roundup(CBT_BLOCK_SIZE, size//CBT_BLOCK_SIZE), self.sr.journaler.LV_SIZE)
         # We choose 4MiB as the minimum for the log size to maintain the old behavior and compute the correct amount
         # if we need a bigger LV for the CBT (can happen with big QCOW2)
         self.sr.lvmCache.create(logname, logsize, CBTLOG_TAG)
+        return logname
+
+    @override
+    def _create_cbt_log(self) -> str:
+        logname = self._create_cbt_lv(self.size)
         logpath = super(LVMVDI, self)._create_cbt_log()
         self.sr.lvmCache.deactivateNoRefcount(logname)
         return logpath
@@ -2946,11 +2940,7 @@ class LVMVDI(VDI.VDI):
 
     @override
     def _create_cbt_log_with_size(self, size: int) -> str:
-        logname = self._get_cbt_logname(self.uuid)
-        logsize = max(util.roundup(CBT_BLOCK_SIZE, size//CBT_BLOCK_SIZE), self.sr.journaler.LV_SIZE)
-        # We choose 4MiB as the minimum for the log size to maintain the old behavior and compute the correct amount
-        # if we need a bigger LV for the CBT (can happen with big QCOW2)
-        self.sr.lvmCache.create(logname, logsize, CBTLOG_TAG)
+        logname = self._create_cbt_lv(size)
         log_path = super()._create_cbt_log_with_size(size)
         self.sr.lvmCache.deactivateNoRefcount(logname)
         return log_path
