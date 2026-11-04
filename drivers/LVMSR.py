@@ -22,12 +22,14 @@ import errno
 import glob
 import os
 import re
+import shutil
 import sys
 import time
 from contextlib import contextmanager
 from xmlrpc.client import DateTime
 
 import blktap2
+import cbtutil
 import cleanup
 import lock
 import lvmcache
@@ -108,29 +110,28 @@ class RevertLogDestinationVDI:
         uuid: str,
         lvname: str,
         backup_lvname: str,
-        *,
-        is_cbt_enabled: bool,
+        cbtlog_backup_lvname: str = "",
     ):
         self.uuid = uuid
         self.lvname = lvname
         self.backup_lvname = backup_lvname
-        self.is_cbt_enabled = is_cbt_enabled
+        self.cbtlog_backup_lvname = cbtlog_backup_lvname
 
-    def to_dict(self) -> Dict[str, Union[str, bool]]:
+    def to_dict(self) -> Dict[str, str]:
         return {
             "uuid": self.uuid,
             "lvname": self.lvname,
             "backup_lvname": self.backup_lvname,
-            "is_cbt_enabled": self.is_cbt_enabled,
+            "cbtlog_backup_lvname": self.cbtlog_backup_lvname,
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Union[str, bool]]) -> "RevertLogDestinationVDI":
+    def from_dict(cls, data: Dict[str, str]) -> "RevertLogDestinationVDI":
         return cls(
             uuid=str(data["uuid"]),
             lvname=str(data["lvname"]),
             backup_lvname=str(data["backup_lvname"]),
-            is_cbt_enabled=bool(data["is_cbt_enabled"]),
+            cbtlog_backup_lvname=str(data["cbtlog_backup_lvname"]),
         )
 
 
@@ -139,26 +140,21 @@ class RevertLogSourceVDI:
         self,
         uuid: str,
         lvname: str,
-        *,
-        is_cbt_enabled: bool,
     ):
         self.uuid = uuid
         self.lvname = lvname
-        self.is_cbt_enabled = is_cbt_enabled
 
-    def to_dict(self) -> Dict[str, Union[str, bool]]:
+    def to_dict(self) -> Dict[str, str]:
         return {
             "uuid": self.uuid,
             "lvname": self.lvname,
-            "is_cbt_enabled": self.is_cbt_enabled,
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Union[str, bool]]) -> "RevertLogSourceVDI":
+    def from_dict(cls, data: Dict[str, str]) -> "RevertLogSourceVDI":
         return cls(
             uuid=str(data["uuid"]),
             lvname=str(data["lvname"]),
-            is_cbt_enabled=bool(data["is_cbt_enabled"]),
         )
 
 
@@ -1327,12 +1323,21 @@ class LVMSR(SR.SR):
         try:
             self._undoAllInflateJournals()
             self._undoAllCowJournals()
+            # The revert rollback copies to the same <dst>.tmp LVs: a copy journal
+            # left by a crash would make its _copy fail on the existing journal
+            self._undo_copy_journals()
             self._undo_revert_journals()
             self._handleInterruptedCloneOps()
             self._handleInterruptedCoalesceLeaf()
         finally:
             self.lock.release()
             self.cleanup()
+
+    def _undo_copy_journals(self):
+        for tmp_name in self.journaler.getAll(LVMVDI.JRN_COPY):
+            util.SMlog(f"Removing {tmp_name} of an interrupted copy")
+            self._remove_lvs(tmp_name)
+            self.journaler.remove(LVMVDI.JRN_COPY, tmp_name)
 
     def _undo_revert_journals(self):
         for journal_id, content in self.journaler.getAll(RevertLogEntry.JRN_KEY).items():
@@ -1344,11 +1349,15 @@ class LVMSR(SR.SR):
             self.journaler.remove(RevertLogEntry.JRN_KEY, journal_id)
 
     def _rollback_revert_vdi(self, entry: RevertLogEntry):
+        cbtlog_backup = entry.dest.cbtlog_backup_lvname
+
         util.SMlog(
             f"Reverting vdi {entry.dest.uuid} from backup {entry.dest.backup_lvname}"
         )
         if not self.lvmCache.checkLV(entry.dest.backup_lvname):
             util.SMlog(f"Could not find backup {entry.dest.backup_lvname}, skipping.")
+            if cbtlog_backup:
+                self._remove_lvs(cbtlog_backup)
             return
 
         util.SMlog(f"Restoring src vdi {entry.src.uuid}")
@@ -1370,12 +1379,6 @@ class LVMSR(SR.SR):
             src._db_update()
         src.disable_leaf_on_secondary(src.uuid)
 
-        # CBT cannot be added by accident on src, we can skip checking if it exists
-        util.SMlog(f"CBT rollback: restoring cbtlog for src {entry.src.uuid}")
-        if entry.src.is_cbt_enabled:
-            src._reset_cbt_log()
-            src.session.xenapi.VDI.set_cbt_enabled(src_ref, True)
-
         self.vdis[src.uuid] = src
 
         # Remove any existing vdi to allow renaming the backup with this name
@@ -1385,19 +1388,50 @@ class LVMSR(SR.SR):
         # Ensure that inserted node is hidden so that it doesn't leak
         if self.lvmCache.checkLV(entry.inserted.lvname):
             inserted: "LVMVDI" = self.vdi(entry.inserted.uuid) # type: ignore[assignment]
+            # The revert sets it read-only after hiding it
+            self.lvmCache.setReadonly(entry.inserted.lvname, False)
             with inserted.activated(False):
                 inserted.cowutil.setHidden(str(inserted.path), True)
                 inserted.update_from_disk()
-                inserted_ref = inserted._db_update_or_introduce()
+            self.lvmCache.setReadonly(entry.inserted.lvname, True)
+            inserted.read_only = True
+            inserted_ref = inserted._db_update_or_introduce()
 
             inserted.session.xenapi.VDI.set_managed(inserted_ref, False)
             inserted.disable_leaf_on_secondary(inserted.uuid)
+
+        # Must be done before moving the backup back, which ends the rollback
+        logname = src._get_cbt_logname(entry.dest.uuid)
+        logpath = src._get_cbt_logpath(entry.dest.uuid)
+        cbt_lock = lock.Lock("cbtlog", entry.dest.uuid)
+        cbt_lock.acquire()
+        try:
+            if cbtlog_backup:
+                if self.lvmCache.checkLV(cbtlog_backup):
+                    # _copy doesn't overwrite, drop the log recreated by _revert_cbt
+                    self._remove_lvs(logname)
+                    util.SMlog(f"CBT rollback: restoring cbtlog of {entry.dest.uuid} from {cbtlog_backup}")
+                    src._copy(os.path.join(self.path, cbtlog_backup), logpath)
+                if src._cbt_log_exists(logpath):
+                    parent = src._cbt_op(entry.dest.uuid, cbtutil.get_cbt_parent, logpath)
+                    parent_path = src._get_cbt_logpath(parent)
+                    if src._cbt_log_exists(parent_path):
+                        util.SMlog(f"CBT rollback: relinking cbtlog of {parent} to its child {entry.dest.uuid}")
+                        src._cbt_op(parent, cbtutil.set_cbt_child, parent_path, entry.dest.uuid)
+            else:
+                # dest had no CBT before the revert, any cbtlog comes from it
+                self._remove_lvs(logname)
+        finally:
+            cbt_lock.release()
+        util.fistpoint.activate("LVM_revert_rollback_after_cbt", self.uuid)
 
         # Once we move the backup to it's old name, the journal can't be run again
         # If something fails from now, we might lose some info, most of them
         # will be back from a simple scan
         # Worst case scenario, CBT is disabled or incoherent (which will be solved by tapdisk)
         self.lvmCache.rename(entry.dest.backup_lvname, entry.dest.lvname)
+        if cbtlog_backup:
+            self._remove_lvs(cbtlog_backup)
 
         dest: "LVMVDI" = self.vdi(entry.dest.uuid)  # type: ignore[assignment]
         dest_ref = dest.session.xenapi.VDI.get_by_uuid(dest.uuid)
@@ -1409,15 +1443,10 @@ class LVMSR(SR.SR):
 
         self.vdis[dest.uuid] = dest
 
-        # CBT might have been added when not needed or removed when needed
-        util.SMlog(f"CBT rollback: restoring cbtlog for dest {entry.dest.uuid}")
-        if entry.dest.is_cbt_enabled:
-            dest._reset_cbt_log()
-            dest.session.xenapi.VDI.set_cbt_enabled(dest_ref, True)
-        else:
-            dest._delete_cbt_log()
-            dest.session.xenapi.VDI.set_cbt_enabled(dest_ref, False)
-
+    def _remove_lvs(self, *lvnames: str):
+        for lvname in lvnames:
+            if self.lvmCache.checkLV(lvname):
+                self.lvmCache.remove(lvname)
 
     def _undoAllInflateJournals(self):
         entries = self.journaler.getAll(LvmCowUtil.JOURNAL_INFLATE)
@@ -1574,6 +1603,7 @@ class LVMSR(SR.SR):
 class LVMVDI(VDI.VDI):
 
     JRN_CLONE = "clone"  # journal entry type for the clone operation
+    JRN_COPY = "copy"
 
     @override
     def load(self, vdi_uuid) -> None:
@@ -1997,6 +2027,10 @@ class LVMVDI(VDI.VDI):
         ## It will also include a newly created destination disk and an inserted base copy
         ## source image used for the revert
         size_req = self.sr.journaler.LV_SIZE + destination_size + inserted_size
+        if dest_cbtlog:
+            # cbtlog backup and the journal of its copy
+            size_req += self.sr.lvmCache.getSize(dest._get_cbt_logname(dest.uuid))
+            size_req += self.sr.journaler.LV_SIZE
 
         inserted_uuid = util.gen_uuid()
         inserted_lvname = LV_PREFIX[self.vdi_type] + inserted_uuid
@@ -2005,7 +2039,11 @@ class LVMVDI(VDI.VDI):
 
         # We create a valid backup VDI so that it properly protect
         # it's parent chain in case of a coalesce
-        dest_backup_name = LV_PREFIX[self.vdi_type] + util.gen_uuid()
+        backup_uuid = util.gen_uuid()
+        dest_backup_name = LV_PREFIX[self.vdi_type] + backup_uuid
+
+        # Must not carry CBTLOG_TAG, the scan would load it as a VDI
+        dest_cbtlog_backup = f"{backup_uuid}.{CBTLOG_TAG}.bak" if dest_cbtlog else ""
 
         # Create journal
 
@@ -2014,12 +2052,11 @@ class LVMVDI(VDI.VDI):
                 dest.uuid,
                 dest.lvname,
                 dest_backup_name,
-                is_cbt_enabled=bool(dest_cbtlog),
+                dest_cbtlog_backup,
             ),
             src=RevertLogSourceVDI(
                 self.uuid,
                 self.lvname,
-                is_cbt_enabled=bool(src_cbtlog),
             ),
             inserted=RevertLogInsertedVDI(inserted_uuid, inserted_lvname),
         ).to_journal()
@@ -2091,21 +2128,27 @@ class LVMVDI(VDI.VDI):
         inserted.sr.lvmCache.setReadonly(inserted.lvname, True)
         self.session.xenapi.VDI.set_managed(inserted_ref, False)
 
-        if src_cbtlog:
-            self._revert_cbt(dest)
-        elif dest_cbtlog:
-            util.SMlog(
-                f"Reverting {dest.uuid} to non-CBT snapshot, disabling CBT on dest"
-            )
+        self._revert_cbt(
+            dest,
+            src_cbtlog,
+            dest_cbtlog,
+            os.path.join(self.sr.path, dest_cbtlog_backup) if dest_cbtlog_backup else "",
+        )
+        util.fistpoint.activate("LVM_revert_after_cbt", self.sr.uuid)
+
+        if dest_cbtlog and not src_cbtlog:
             self._disable_cbt_on_vdi(
                 dest,
                 "VDI_CBT_REVERT_DISABLE",
                 f"CBT disabled on {dest.uuid}: reverted to non-CBT snapshot",
             )
+        util.fistpoint.activate("LVM_revert_before_commit", self.sr.uuid)
 
-        # Cleanup
-        ## Remove backup and journal
+        # The rollback drops the cbtlog backup when dest_backup_name is missing
         dest.sr.lvmCache.remove(dest_backup_name)
+        util.fistpoint.activate("LVM_revert_committed", self.sr.uuid)
+        if dest_cbtlog_backup:
+            self.sr._remove_lvs(dest_cbtlog_backup)
         self.sr.journaler.remove(RevertLogEntry.JRN_KEY, journal_id)
 
     def update_from_disk(self):
@@ -2832,6 +2875,37 @@ class LVMVDI(VDI.VDI):
         self.sr.lvmCache.rename(oldname, newname)
 
     @override
+    def _copy(self, src, dst) -> None:
+        util.SMlog(f"LVMVDI._copy {src} to {dst}")
+        src_name = os.path.basename(src)
+        dst_name = os.path.basename(dst)
+        tmp_name = f"{dst_name}.tmp"
+        tag = CBTLOG_TAG if dst_name.endswith(f".{CBTLOG_TAG}") else None
+
+        if self.sr.lvmCache.checkLV(dst_name):
+            raise util.SMException(f"Copy destination {dst_name} already exists")
+        if self.sr.lvmCache.checkLV(tmp_name):
+            raise util.SMException(f"Copy tmp {tmp_name} already exists")
+        self.sr.journaler.create(self.JRN_COPY, tmp_name, "1")
+        self.sr.lvmCache.create(tmp_name, self.sr.lvmCache.getSize(src_name), tag)
+        # Same lock as _cbt_op, readers like list_changed_blocks don't hold the SR lock
+        cbt_lock = lock.Lock("cbtlog", src_name.split(".")[0])
+        cbt_lock.acquire()
+        try:
+            activated = self._activate_cbt_log(src_name)
+            with open(src, "rb") as fsrc, open(f"{dst}.tmp", "r+b") as fdst:
+                shutil.copyfileobj(fsrc, fdst)
+                os.fsync(fdst.fileno())
+            if activated:
+                self._deactivate_cbt_log(src_name)
+        finally:
+            cbt_lock.release()
+        self.sr.lvmCache.deactivateNoRefcount(tmp_name)
+
+        self.sr.lvmCache.rename(tmp_name, dst_name)
+        self.sr.journaler.remove(self.JRN_COPY, tmp_name)
+
+    @override
     def update_slaves_on_cbt_disable(self, cbtlog) -> None:
         args = {
             "vgName": self.sr.vgname,
@@ -2872,12 +2946,14 @@ class LVMVDI(VDI.VDI):
 
     @override
     def _create_cbt_log_with_size(self, size: int) -> str:
-        log_path = self._get_cbt_logpath(self.uuid)
-        logsize = max(util.roundup(CBT_BLOCK_SIZE, self.size//CBT_BLOCK_SIZE), self.sr.journaler.LV_SIZE)
+        logname = self._get_cbt_logname(self.uuid)
+        logsize = max(util.roundup(CBT_BLOCK_SIZE, size//CBT_BLOCK_SIZE), self.sr.journaler.LV_SIZE)
         # We choose 4MiB as the minimum for the log size to maintain the old behavior and compute the correct amount
         # if we need a bigger LV for the CBT (can happen with big QCOW2)
-        self.sr.lvmCache.create(log_path, logsize, CBTLOG_TAG)
-        return super()._create_cbt_log_with_size(size)
+        self.sr.lvmCache.create(logname, logsize, CBTLOG_TAG)
+        log_path = super()._create_cbt_log_with_size(size)
+        self.sr.lvmCache.deactivateNoRefcount(logname)
+        return log_path
 
 if __name__ == '__main__':
     SRCommand.run(LVMSR, DRIVER_INFO)

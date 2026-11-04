@@ -1006,9 +1006,14 @@ class VDI(object):
         dest._create_cbt_log_with_size(dest.size)
         if chain:
             dest._cbt_op(dest.uuid, cbtutil.set_cbt_parent, dest_logpath, chain[-2])
+            # Both logs must be active on block-based SRs
+            dest_logname = dest._get_cbt_logname(dest.uuid)
+            activated = dest._activate_cbt_log(dest_logname)
             for vdi_uuid in chain[1:-1]:
-                dest._cbt_op(dest.uuid, cbtutil.coalesce_bitmap,
+                self._cbt_op(vdi_uuid, cbtutil.coalesce_bitmap,
                              self._get_cbt_logpath(vdi_uuid), dest_logpath)
+            if activated:
+                dest._deactivate_cbt_log(dest_logname)
             util.SMlog(f"CBT revert: rebuilt {dest.uuid} bitmap from "
                        f"{len(chain) - 2} bitmap(s) since {self.uuid}")
         else:
