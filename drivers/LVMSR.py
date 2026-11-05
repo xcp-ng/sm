@@ -216,7 +216,7 @@ class LVMSR(SR.SR):
 
         if lvutil._checkVG(self.vgname):
             if self.isMaster and not self.cmd in ["vdi_attach", "vdi_detach",
-                    "vdi_activate", "vdi_deactivate"]:
+                    "vdi_activate", "vdi_deactivate", "nop"]:
                 self._undoAllJournals()
             if not self.cmd in ["sr_attach", "sr_probe"]:
                 self._checkMetadataVolume()
