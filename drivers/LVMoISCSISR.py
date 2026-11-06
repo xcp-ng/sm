@@ -482,9 +482,12 @@ class LVMoISCSISR(LVMSR.LVMSR):
                 raise stored_exception
 
             if 'multiSession' in self.dconf:
-                # Force a manual bus refresh
+                # Force a manual bus refresh. Channels already exist once the
+                # sessions are logged in, so refresh them with REPORT LUNS
+                # rather than a full host scan (which sleeps 2s per adapter).
+                # refresh_HostID falls back to a full scan if this fails.
                 for a in self.iscsi.adapter:
-                    scsiutil.rescan([self.iscsi.adapter[a]])
+                    scsiutil.rescan([self.iscsi.adapter[a]], fullrescan=False)
 
             self._pathrefresh(LVMoISCSISR)
 
