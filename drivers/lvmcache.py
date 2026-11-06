@@ -148,7 +148,19 @@ class LVMCache:
             count = RefCounter.get(ref, binary, ns)
             if count == 1:
                 try:
-                    self.activateNoRefcount(lvName, True)
+                    refresh = True
+                    path = self._getPath(lvName)
+                    mapper = "/dev/mapper/" + path[5:].replace("-", "--").replace("/", "-")
+                    info = self.lvs.get(lvName)
+                    if 'P2' in getattr(lvutil, 'STUN_FLAGS', ()) and info is not None \
+                            and not info.active and not util.pathexists(path) \
+                            and not os.path.exists(mapper):
+                        # no dm device before: lvs (which finds dm devices by LV uuid, so also one
+                        # left under an old name by a GC rename, CA-413899) says inactive, and neither
+                        # the link nor the mapper node exists -> lvchange -ay builds a fresh table.
+                        # Any doubt keeps the stock --refresh.
+                        refresh = False
+                    self.activateNoRefcount(lvName, refresh)
                 except util.CommandException:
                     RefCounter.put(ref, binary, ns)
                     raise

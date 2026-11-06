@@ -214,7 +214,7 @@ class LVMSR(SR.SR):
         if self.sm_config.get(self.FLAG_USE_VHD) == "true":
             self.legacyMode = False
 
-        if lvutil._checkVG(self.vgname):
+        if self._stun_check_vg():
             if self.isMaster and not self.cmd in ["vdi_attach", "vdi_detach",
                     "vdi_activate", "vdi_deactivate"]:
                 self._undoAllJournals()
@@ -367,6 +367,18 @@ class LVMSR(SR.SR):
         except Exception as e:
             raise xs_errors.XenError('MetadataError', \
                 opterr='Error synching SR Metadata and XAPI: %s' % str(e))
+
+    def _stun_check_vg(self):
+        if 'P2' in getattr(lvutil, 'STUN_FLAGS', ()) and self.cmd not in ["sr_create", "sr_probe"]:
+            # one 'lvs' (needed by _checkMetadataVolume anyway) instead of vgs + lvs
+            try:
+                self.lvmCache.refresh()
+                return True
+            except Exception as e:
+                # keep stock semantics on any failure: only the success path drops the vgs
+                util.SMlog("P2: lvs refresh failed (%s), falling back to vgs check" % e)
+                return lvutil._checkVG(self.vgname)
+        return lvutil._checkVG(self.vgname)
 
     def _checkMetadataVolume(self):
         util.SMlog("Entering _checkMetadataVolume")
