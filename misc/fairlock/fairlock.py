@@ -1,5 +1,6 @@
 from sm_typing import Any, Callable, Dict, Optional, override
 
+import contextlib
 import os
 import socket
 import inspect
@@ -34,11 +35,15 @@ class FairlockDeadlock(Exception):
 class FairlockServiceTimeout(Exception):
     pass
 
-class Fairlock(metaclass=SingletonWithArgs):
-    def __init__(self, name):
+class _FairlockImpl(metaclass=SingletonWithArgs):
+    # Names currently held by this process, whatever the mode: re-entering a
+    # lock is a deadlock even for readers.
+    _held: Dict[str, "_FairlockImpl"] = {}
+
+    def __init__(self, name, shared=False):
         self.name = name
+        self.shared = shared
         self.sockname = os.path.join(SOCKDIR, name)
-        self.connected = False
         self.sock = None
 
     def _ensure_service(self):
@@ -51,37 +56,73 @@ class Fairlock(metaclass=SingletonWithArgs):
             if time.time() > timeout:
                 raise FairlockServiceTimeout(f"Timed out starting service {service}")
 
+    def _close_socket(self):
+        if self.sock is None:
+            return
+
+        sock = self.sock
+        self.sock = None
+        with contextlib.suppress(Exception):
+            sock.close()
+
     def _connect_and_recv(self):
         while True:
+            self._close_socket()
+            self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self.sock.setblocking(True)
             self.sock.connect(self.sockname)
-            # Merely being connected is not enough. Read a small blob of data.
-            b = self.sock.recv(10)
-            if len(b) > 0:
-                return True
-            # If we got a zero-length return, it means the service exited while we
-            # were waiting. Any timeout we put here would be a max wait time to acquire
-            # the lock, which is dangerous.
+            try:
+                self.sock.sendall(b'R' if self.shared else b'W')
+                # Merely being connected is not enough. Read a small blob of data.
+                # If we got a zero-length return: it means the fairlock service exited while we
+                # were waiting.
+                if self.sock.recv(10):
+                    self.sock.sendall(f'{os.getpid()} - {time.monotonic()}'.encode())
+                    return True
+            except (BrokenPipeError, ConnectionResetError):
+                pass
             self._ensure_service()
+
+    def _release(self):
+        try:
+            self._close_socket()
+        finally:
+            if _FairlockImpl._held.get(self.name) is self:
+                del _FairlockImpl._held[self.name]
 
     def __enter__(self):
-        if self.connected:
+        holder = _FairlockImpl._held.get(self.name)
+        if holder is not None and holder.sock is not None:
             raise FairlockDeadlock(f"Deadlock on Fairlock resource '{self.name}'")
 
-        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.sock.setblocking(True)
+        _FairlockImpl._held[self.name] = self
         try:
-            self._connect_and_recv()
-        except (FileNotFoundError, ConnectionRefusedError):
-            self._ensure_service()
-            self._connect_and_recv()
-
-        self.sock.send(f'{os.getpid()} - {time.monotonic()}'.encode())
-        self.connected = True
-        return self
+            try:
+                self._connect_and_recv()
+            except (FileNotFoundError, ConnectionRefusedError):
+                self._ensure_service()
+                self._connect_and_recv()
+            return self
+        except:
+            self._release()
+            raise
 
     def __exit__(self, type, value, traceback):
-        self.sock.close()
-        self.sock = None
-        self.connected = False
+        self._release()
         return False
 
+class FairlockRead(_FairlockImpl):
+    """
+    Shared lock: readers run together, queued FIFO behind any waiting writer.
+    """
+
+    def __init__(self, name):
+        super().__init__(name, shared=True)
+
+class FairlockWrite(_FairlockImpl):
+    """
+    Exclusive lock: nobody else holds the lock, readers included.
+    """
+
+    def __init__(self, name):
+        super().__init__(name, shared=False)
