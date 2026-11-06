@@ -36,6 +36,7 @@ from vditype import VdiType
 
 MANAGER_PLUGIN = 'linstor-manager'
 
+MULTI_MAX_WORKERS = 4
 
 def call_remote_method(session, host_ref, method, args):
     try:
@@ -672,7 +673,7 @@ class MultiLinstorCowUtil:
                 self._init_executor_thread()
             return func(user_data, self)
 
-        with ThreadPoolExecutor(thread_name_prefix="CowUtil") as executor:
+        with ThreadPoolExecutor(max_workers=MULTI_MAX_WORKERS, thread_name_prefix="CowUtil") as executor:
             return executor.map(lambda user_data: wrapper(func, user_data), user_data_list)
 
     def get_local_cowutil(self, vdi_type):
