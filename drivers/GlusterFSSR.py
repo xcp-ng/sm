@@ -40,7 +40,7 @@ import xs_errors
 CAPABILITIES = ["SR_PROBE", "SR_UPDATE",
                 "VDI_CREATE", "VDI_DELETE", "VDI_ATTACH", "VDI_DETACH",
                 "VDI_UPDATE", "VDI_CLONE", "VDI_SNAPSHOT", "VDI_RESIZE", "VDI_MIRROR",
-                "VDI_GENERATE_CONFIG",
+                "VDI_GENERATE_CONFIG", "VDI_REVERT",
                 "VDI_RESET_ON_BOOT/2", "ATOMIC_PAUSE"]
 
 CONFIGURATION = [['server', 'Full path to share on gluster server (required, ex: "192.168.0.12:/gv0")'],
@@ -109,6 +109,7 @@ class GlusterFSSR(FileSR.FileSR):
         self.linkpath = os.path.join(self.mountpoint, sr_uuid or "")
         self.path = os.path.join(SR.MOUNT_BASE, sr_uuid)
         self._check_o_direct()
+        self._undo_all_journals()
 
     def checkmount(self):
         return util.ioretry(lambda: ((util.pathexists(self.mountpoint) and
