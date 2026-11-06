@@ -142,6 +142,131 @@ def lvmretry(func):
     return decorated
 
 
+# --- stun-lab experiment flags (io-lab, 2026-11-05). No flag file = original behaviour. ---
+def _stun_flags():
+    try:
+        with open('/etc/stun-sm-variants') as f:
+            return set(f.read().split())
+    except Exception:
+        return set()
+STUN_FLAGS = _stun_flags()
+
+
+_STUN_SCOPE_REALS = set()
+
+
+def _stun_scope_config():
+    """P1: --config restricting LVM's device scan to the SR's own PV (LVM_DEVICE)."""
+    dev = os.environ.get('LVM_DEVICE')
+    if not dev or not os.path.exists(dev):
+        return []
+    targets = []
+    if os.path.isdir(dev):
+        mp = os.path.join(dev, 'mapper')
+        if os.path.exists(mp):
+            entries = [mp]
+        else:
+            # red-team P1#1: mapper link missing (udev lag) on a multipath host -> use the dm device on top of
+            # the paths. Hidden entries are ignored, and an entry that already resolves to a dm device counts as
+            # that device (its own holders are the active LVs, not a multipath map). Ambiguous -> no scope.
+            entries = [os.path.join(dev, e) for e in os.listdir(dev) if not e.startswith('.')]
+            holders = set()
+            for e in entries:
+                blk = os.path.basename(os.path.realpath(e))
+                if blk.startswith('dm-'):
+                    holders.add(blk)
+                    continue
+                try:
+                    holders.update(h for h in os.listdir('/sys/block/%s/holders' % blk) if h.startswith('dm-'))
+                except OSError:
+                    pass
+            if len(holders) == 1:
+                entries = ['/dev/' + holders.pop()]
+            elif holders:
+                return []
+    else:
+        entries = [dev]
+    reals = set(os.path.realpath(e) for e in entries)
+    _STUN_SCOPE_REALS.clear()
+    _STUN_SCOPE_REALS.update(reals)
+    accept = set(entries)
+    try:
+        for e in os.listdir('/dev/disk/by-id'):
+            p = os.path.join('/dev/disk/by-id', e)
+            if os.path.realpath(p) in reals:
+                accept.add(p)
+    except OSError:
+        pass
+    pats = ['"a|^%s$|"' % re.escape(a) for a in sorted(accept)] + ['"r|.*|"']
+    return ['--config', 'devices { global_filter = [ %s ] }' % ', '.join(pats)]
+
+
+def _stun_vg_of(lvm_args):
+    for a in lvm_args:
+        m = re.search(r'(VG_XenStorage-[0-9a-f-]{36})', a)
+        if m:
+            return m.group(1)
+    return None
+
+
+def _stun_dev_id(real):
+    """Stable identity of a block device, independent of its kernel name: the dm uuid
+    (mpath-<SCSIid>) for a dm device, the wwid for a SCSI disk, '-' if neither is known."""
+    blk = os.path.basename(real)
+    for attr in ('dm/uuid', 'device/wwid'):
+        try:
+            with open('/sys/block/%s/%s' % (blk, attr)) as f:
+                val = f.read().strip()
+            if val:
+                return val.replace(' ', '_')
+        except Exception:
+            pass
+    return '-'
+
+
+def _stun_single_pv(vg):
+    """P1 safety: return the real device of the VG's PV if the VG has exactly one PV,
+    else None. Learned with an unscoped query, cached in /run (dropped on scoped failure,
+    or when the cached device no longer has the identity it had when learned)."""
+    cache = '/run/stun-p1/%s.pv' % vg
+    try:
+        with open(cache) as f:
+            fields = f.read().split()
+        if not fields:
+            return None
+        # A multipath map flushed and recreated (PBD unplug/plug, path loss) can come back
+        # under another dm-N, and dm-N can be reused by another map: a name-only cache would
+        # then never match LVM_DEVICE again and P1 would stay off for this SR until reboot.
+        # Old one-field entries have no identity and are relearned once.
+        if len(fields) == 2 and os.path.exists(fields[0]) and \
+                (fields[1] == '-' or _stun_dev_id(fields[0]) == fields[1]):
+            return fields[0]
+        util.SMlog("P1: cached PV %s of %s is stale, relearning" % (fields[0], vg))
+        _stun_drop_pv_cache(vg)
+    except Exception:
+        pass
+    try:
+        with Fairlock("devicemapper"):
+            out = util.pread2([os.path.join(LVM_BIN, CMD_VGS), '--readonly', '--noheadings',
+                               '-o', 'pv_name', vg]).split()
+        val = os.path.realpath(out[0]) if len(out) == 1 else ''
+        os.makedirs('/run/stun-p1', exist_ok=True)
+        tmp = '%s.%d.tmp' % (cache, os.getpid())
+        with open(tmp, 'w') as f:
+            f.write('%s %s' % (val, _stun_dev_id(val)) if val else '')
+        os.rename(tmp, cache)
+        return val or None
+    except Exception:
+        return None
+
+
+def _stun_drop_pv_cache(vg):
+    try:
+        os.unlink('/run/stun-p1/%s.pv' % vg)
+    except OSError:
+        pass
+
+
 def cmd_lvm(cmd, pread_func=util.pread2, *args):
     """ Construct and run the appropriate lvm command.
 
@@ -184,10 +309,32 @@ def cmd_lvm(cmd, pread_func=util.pread2, *args):
             util.SMlog("CMD_LVM: Not all lvm arguments are of type 'str'")
             return None
 
-    with Fairlock("devicemapper"):
-        start_time = time.time()
-        stdout = pread_func([os.path.join(LVM_BIN, lvm_cmd)] + lvm_args, * args)
-        end_time = time.time()
+    scoped = False
+    unscoped_args = lvm_args
+    activation_only = lvm_cmd != CMD_LVCHANGE or any(a in ('-ay', '-an', '--refresh') for a in lvm_args)
+    if 'P1' in STUN_FLAGS and lvm_cmd in (CMD_VGS, CMD_LVS, CMD_LVCHANGE) and activation_only:
+        vg = _stun_vg_of(lvm_args)
+        pv = _stun_single_pv(vg) if vg else None
+        if pv:
+            scope = _stun_scope_config()
+            if scope and pv in _STUN_SCOPE_REALS:
+                lvm_args = scope + lvm_args
+                scoped = True
+    try:
+        with Fairlock("devicemapper"):
+            start_time = time.time()
+            stdout = pread_func([os.path.join(LVM_BIN, lvm_cmd)] + lvm_args, * args)
+            end_time = time.time()
+    except Exception:
+        if not scoped:
+            raise
+        # red-team P1#2/#4: a scoped failure never decides; drop the cache and retry unscoped
+        util.SMlog("P1: scoped %s failed, retrying unscoped" % lvm_cmd)
+        _stun_drop_pv_cache(_stun_vg_of(unscoped_args))
+        with Fairlock("devicemapper"):
+            start_time = time.time()
+            stdout = pread_func([os.path.join(LVM_BIN, lvm_cmd)] + unscoped_args, * args)
+            end_time = time.time()
 
     if (end_time - start_time > MAX_OPERATION_DURATION):
         util.SMlog("***** Long LVM call of '%s' took %s" % (lvm_cmd, (end_time - start_time)))
