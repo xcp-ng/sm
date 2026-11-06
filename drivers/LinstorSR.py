@@ -824,16 +824,8 @@ class LinstorSR(SR.SR):
         # Applied only on the Linstor Controller, for reasons -> listed below.
         if not LinstorVolumeManager.is_controller():
             return
-        # Validate and clean previous backups if necessary.
-        # -> Needs access to backup files, available only on the Controller.
-        LinstorVolumeManager.database_backup_validate_and_prune()
-        # check_sr is launched on *all* hosts, but it turns out that
-        # we do not want all of them to blindly generate concurrencing backups.
-        # Hence we must choose one, either one is good, but there must be only one.
-        # Apply throttling: only backup if last one is >1h old.
-        # -> Needs access to backup files, available only on the Controller.
-        if LinstorVolumeManager.get_database_backup_age() > LINSTOR_AUTO_BACKUP_DELAY:
-            self.database_backup("auto")
+
+        self.database_backup("auto")
 
     @override
     @_locked_load
@@ -1598,6 +1590,19 @@ class LinstorSR(SR.SR):
             self._reconnect()
         try:
             assert self._linstor
+
+            if name == "auto":
+                # Validate and clean previous backups if necessary.
+                # -> Needs access to backup files, available only on the Controller.
+                self._linstor.database_backup_validate_and_prune()
+                # check_sr is launched on *all* hosts, but it turns out that
+                # we do not want all of them to blindly generate concurrencing backups.
+                # Hence we must choose one, either one is good, but there must be only one.
+                # Apply throttling: only backup if last one is >1h old.
+                # -> Needs access to backup files, available only on the Controller.
+                if self._linstor.get_database_backup_age() < LINSTOR_AUTO_BACKUP_DELAY:
+                    return
+
             self._linstor.database_backup(name)
         except Exception as e:
             util.SMlog(
