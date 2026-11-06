@@ -455,6 +455,22 @@ class LVMoISCSISR(LVMSR.LVMSR):
         for i in self.iscsiSRs:
             i.detach(sr_uuid)
 
+    def _all_paths_present(self):
+        """
+        True if the LUN is already visible through every iSCSI adapter we
+        would rescan (and, with multipath, the map exists), in which case a
+        bus rescan cannot discover anything new for this SR.
+        """
+        if self.mpath == "true" and \
+                not util.pathexists(os.path.join('/dev/mapper', self.SCSIid)):
+            return False
+        for host in self.iscsi.adapter.values():
+            if not glob.glob('/dev/disk/by-scsibus/%s-%s:*' % (self.SCSIid, host)):
+                util.SMlog("No path for %s on host adapter %s" % (self.SCSIid, host))
+                return False
+        util.SMlog("All paths present for %s, skipping bus rescan" % self.SCSIid)
+        return True
+
     @override
     def attach(self, sr_uuid) -> None:
         try:
@@ -481,7 +497,7 @@ class LVMoISCSISR(LVMSR.LVMSR):
                 # pylint: disable=raising-bad-type
                 raise stored_exception
 
-            if 'multiSession' in self.dconf:
+            if 'multiSession' in self.dconf and not self._all_paths_present():
                 # Force a manual bus refresh. Channels already exist once the
                 # sessions are logged in, so refresh them with REPORT LUNS
                 # rather than a full host scan (which sleeps 2s per adapter).
