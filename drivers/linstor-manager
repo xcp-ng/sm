@@ -431,7 +431,7 @@ def check(session, args):
             args['ignoreMissingFooter']
         )
         fast = util.strtobool(args['fast'])
-        return cowutil.check(device_path, ignore_missing_footer, fast)
+        return str(cowutil.check(device_path, ignore_missing_footer, fast))
     except Exception as e:
         util.SMlog('linstor-manager:check error: {}'.format(e))
         raise
@@ -481,7 +481,9 @@ def get_parent(session, args):
             logger=util.SMlog
         )
 
-        return cowutil.getParent(device_path, partial(extract_uuid, linstor))
+        # We transform a `None` result to an empty string since we need to return a str through the plugin,
+        # it will be transformed to `None` on the caller side.
+        return cowutil.getParent(device_path, partial(extract_uuid, linstor)) or ''
     except Exception as e:
         util.SMlog('linstor-manager:get_parent error: {}'.format(e))
         raise
