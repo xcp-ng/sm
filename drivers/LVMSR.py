@@ -1400,9 +1400,7 @@ class LVMSR(SR.SR):
             inserted.disable_leaf_on_secondary(inserted.uuid)
 
         # Must be done before moving the backup back, which ends the rollback
-        cbt_lock = lock.Lock("cbtlog", entry.dest.uuid)
-        cbt_lock.acquire()
-        try:
+        with lock.Lock("cbtlog", entry.dest.uuid):
             if cbtlog_backup:
                 # _copy doesn't overwrite, drop the log recreated by _revert_cbt
                 if self.lvmCache.checkLV(cbtlog_backup):
@@ -1411,8 +1409,7 @@ class LVMSR(SR.SR):
             else:
                 # dest had no CBT before the revert, any cbtlog comes from it
                 self._remove_lvs(src._get_cbt_logname(entry.dest.uuid))
-        finally:
-            cbt_lock.release()
+
         util.fistpoint.activate("LVM_revert_rollback_after_cbt", self.uuid)
 
         # Once we move the backup to it's old name, the journal can't be run again
@@ -2883,17 +2880,14 @@ class LVMVDI(VDI.VDI):
         self.sr.journaler.create(self.JRN_COPY, tmp_name, "1")
         self.sr.lvmCache.create(tmp_name, self.sr.lvmCache.getSize(src_name), tag)
         # Same lock as _cbt_op, readers like list_changed_blocks don't hold the SR lock
-        cbt_lock = lock.Lock("cbtlog", src_name.split(".")[0])
-        cbt_lock.acquire()
-        try:
+        with lock.Lock("cbtlog", src_name.split(".")[0]):
             activated = self._activate_cbt_log(src_name)
             with open(src, "rb") as fsrc, open(f"{dst}.tmp", "r+b") as fdst:
                 shutil.copyfileobj(fsrc, fdst)
                 os.fsync(fdst.fileno())
             if activated:
                 self._deactivate_cbt_log(src_name)
-        finally:
-            cbt_lock.release()
+
         self.sr.lvmCache.deactivateNoRefcount(tmp_name)
 
         self.sr.lvmCache.rename(tmp_name, dst_name)
