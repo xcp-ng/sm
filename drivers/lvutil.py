@@ -320,11 +320,19 @@ def cmd_lvm(cmd, pread_func=util.pread2, *args):
             if scope and pv in _STUN_SCOPE_REALS:
                 lvm_args = scope + lvm_args
                 scoped = True
+    readonly = (lvm_cmd == CMD_VGS and '--readonly' in lvm_args) or lvm_cmd == CMD_LVS
+    # P3: skip the host-wide lock only for reads scanning just this SR's PV (red-team: unscoped lvs
+    # scans hold every PV open, racing multipath -f / lvchange -an).
     try:
-        with Fairlock("devicemapper"):
+        if 'P3' in STUN_FLAGS and readonly and scoped:
             start_time = time.time()
             stdout = pread_func([os.path.join(LVM_BIN, lvm_cmd)] + lvm_args, * args)
             end_time = time.time()
+        else:
+            with Fairlock("devicemapper"):
+                start_time = time.time()
+                stdout = pread_func([os.path.join(LVM_BIN, lvm_cmd)] + lvm_args, * args)
+                end_time = time.time()
     except Exception:
         if not scoped:
             raise
