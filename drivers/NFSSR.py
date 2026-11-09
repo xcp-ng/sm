@@ -40,7 +40,8 @@ CAPABILITIES = ["SR_PROBE", "SR_UPDATE", "SR_CACHING",
                 "VDI_UPDATE", "VDI_CLONE", "VDI_SNAPSHOT", "VDI_RESIZE",
                 "VDI_GENERATE_CONFIG", "VDI_MIRROR",
                 "VDI_RESET_ON_BOOT/2", "ATOMIC_PAUSE", "VDI_CONFIG_CBT",
-                "VDI_ACTIVATE", "VDI_DEACTIVATE", "THIN_PROVISIONING", "VDI_READ_CACHING"]
+                "VDI_ACTIVATE", "VDI_DEACTIVATE", "THIN_PROVISIONING", "VDI_READ_CACHING",
+                "VDI_REVERT"]
 
 CONFIGURATION = [['server', 'hostname or IP address of NFS server (required)'],
                  ['serverpath', 'path on remote server (required)'],
@@ -107,6 +108,7 @@ class NFSSR(FileSR.SharedFileSR):
             self.options = self.dconf['options']
         else:
             self.options = ''
+        self._undo_all_journals()
 
     def validate_remotepath(self, scan):
         serverpath = self.dconf.get('serverpath')
