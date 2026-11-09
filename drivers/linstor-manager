@@ -25,6 +25,7 @@ import cleanup
 import ipc
 import os
 import socket
+import time
 import XenAPI
 import XenAPIPlugin
 
@@ -412,15 +413,30 @@ def destroy(session, args):
     return str(False)
 
 
-def abort_gc(session, args):
+def abort_gc(_session, args):
     try:
         sr_uuid = args['srUuid']
+        lock_gc_active = cleanup.LockActive(sr_uuid)
+        if lock_gc_active.acquireNoblock():  # GC not active
+            return str(True)
         abort_flag = ipc.IPCFlag(sr_uuid)
-        abort_flag.set(cleanup.FLAG_TYPE_ABORT, soft=False)
-        return str(True)
+        if not abort_flag.set(cleanup.FLAG_TYPE_ABORT, soft=False):
+            return str(False)
+        try:
+            for _ in range(cleanup.SR.LOCK_RETRY_ATTEMPTS):
+                if lock_gc_active.acquireNoblock():  # GC aborted
+                    break
+                time.sleep(cleanup.SR.LOCK_RETRY_INTERVAL)
+            else:  # Timeout
+                raise Exception("Timed out waiting for GC to finish")
+        finally:
+            abort_flag.clear(cleanup.FLAG_TYPE_ABORT)
     except Exception as e:
         util.SMlog('linstor-manager:abort_gc error: {}'.format(e))
-    return str(False)
+        return str(False)
+    finally:
+        lock_gc_active.release()
+    return str(True)
 
 
 def check(session, args):
