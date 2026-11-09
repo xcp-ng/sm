@@ -102,6 +102,14 @@ def open_file(path, write=False):
                 (path, e.errno))
     return file_p
 
+def align_data_to_file(data: bytes) -> bytes:
+    """Add space padding to data to ensure that a complete blocks can be written."""
+    blocksize = METADATA_BLK_SIZE
+    length = len(data)
+    newlength = length
+    if length % blocksize:
+        newlength = length + (blocksize - length % blocksize)
+    return data + b' ' * (newlength - length)
 
 def file_write_wrapper(fd, offset, data):
     """
@@ -109,14 +117,10 @@ def file_write_wrapper(fd, offset, data):
     may be written out after the given data to ensure that complete blocks are
     written.
     """
+    blocksize = METADATA_BLK_SIZE
     try:
-        blocksize = METADATA_BLK_SIZE
-        length = len(data)
-        newlength = length
-        if length % blocksize:
-            newlength = length + (blocksize - length % blocksize)
+        to_write = align_data_to_file(data)
         fd.seek(offset, SEEK_SET)
-        to_write = data + b' ' * (newlength - length)
         return fd.write(to_write)
     except OSError as e:
         raise OSError(
@@ -127,10 +131,16 @@ def file_write_wrapper(fd, offset, data):
 def file_read_wrapper(fd, offset, bytesToRead=METADATA_BLK_SIZE):
     """
     Reads data from a file at a given offset. If not specified, the amount of
-    data to read defaults to one block.
+    data to read defaults to one block. Using -1 reads the whole file.
     """
     try:
         fd.seek(offset, SEEK_SET)
+        if bytesToRead == -1:
+            # The most reliable solution I could find to read the whole file
+            # is to read it to the end to find the size
+            # This isn't super efficient but in most case where this is used, the file
+            # is quite short and that shouldn't be an issue
+            bytesToRead = len(fd.peek())
         return fd.read(bytesToRead)
     except OSError as e:
         raise OSError(

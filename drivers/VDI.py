@@ -1006,9 +1006,14 @@ class VDI(object):
         dest._create_cbt_log_with_size(dest.size)
         if chain:
             dest._cbt_op(dest.uuid, cbtutil.set_cbt_parent, dest_logpath, chain[-2])
+            # Both logs must be active on block-based SRs
+            dest_logname = dest._get_cbt_logname(dest.uuid)
+            activated = dest._activate_cbt_log(dest_logname)
             for vdi_uuid in chain[1:-1]:
-                dest._cbt_op(dest.uuid, cbtutil.coalesce_bitmap,
+                self._cbt_op(vdi_uuid, cbtutil.coalesce_bitmap,
                              self._get_cbt_logpath(vdi_uuid), dest_logpath)
+            if activated:
+                dest._deactivate_cbt_log(dest_logname)
             util.SMlog(f"CBT revert: rebuilt {dest.uuid} bitmap from "
                        f"{len(chain) - 2} bitmap(s) since {self.uuid}")
         else:
@@ -1017,6 +1022,19 @@ class VDI(object):
 
         dest_ref = dest.session.xenapi.VDI.get_by_uuid(dest.uuid)
         dest.session.xenapi.VDI.set_cbt_enabled(dest_ref, True)
+
+    def _rollback_revert_cbt(self, dest_uuid: str, backup_path: str) -> None:
+        """Restore dest's CBT log saved by _revert_cbt and relink its parent"""
+        logpath = self._get_cbt_logpath(dest_uuid)
+        if self._cbt_log_exists(backup_path):
+            util.SMlog(f"CBT rollback: restoring cbtlog of {dest_uuid} from {backup_path}")
+            self._copy(backup_path, logpath)
+        if self._cbt_log_exists(logpath):
+            parent = self._cbt_op(dest_uuid, cbtutil.get_cbt_parent, logpath)
+            parent_path = self._get_cbt_logpath(parent)
+            if self._cbt_log_exists(parent_path):
+                util.SMlog(f"CBT rollback: relinking cbtlog of {parent} to its child {dest_uuid}")
+                self._cbt_op(parent, cbtutil.set_cbt_child, parent_path, dest_uuid)
 
     def disable_leaf_on_secondary(self, vdi_uuid, secondary=None):
         vdi_ref = self.session.xenapi.VDI.get_by_uuid(vdi_uuid)

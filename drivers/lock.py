@@ -55,6 +55,12 @@ class Lock(object):
             instances[name] = LockImplementation(name, ns)
         return instances[name]
 
+    def __enter__(self):
+        raise NotImplementedError("Lock methods implemented in LockImplementation")
+
+    def __exit__(self, *args, **kwargs):
+        raise NotImplementedError("Lock methods implemented in LockImplementation")
+
     def acquire(self):
         raise NotImplementedError("Lock methods implemented in LockImplementation")
 
@@ -221,6 +227,14 @@ class LockImplementation(object):
     #
     # Actual Locking
     #
+
+    def __enter__(self):
+        """Blocking acquire on enter, release on exit"""
+        self.acquire()
+        return self
+
+    def __exit__(self, *args, **kwargs):
+        self.release()
 
     def acquire(self):
         """Blocking lock aquisition, with warnings. We don't expect to lock a
