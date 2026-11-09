@@ -15,6 +15,7 @@
 # along with this program; if not, write to the Free Software Foundation, Inc.,
 # 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 
+import util
 from sm_typing import override
 
 import os
@@ -199,7 +200,6 @@ class CacheFileSR(object):
 
     @classmethod
     def from_session(cls, session):
-        import util
         import SR as sm
 
         host_ref = util.get_localhost_ref(session)
@@ -221,12 +221,8 @@ class CacheFileSR(object):
 
     @classmethod
     def from_cli(cls):
-        import XenAPI # pylint: disable=import-error
-
-        session = XenAPI.xapi_local()
-        session.xenapi.login_with_password('root', '', '', 'SM')
-
-        return cls.from_session(session)
+        with util.ApiSession("SM-local-cache") as session:
+            return cls.from_session(session)
 
     def statvfs(self):
         return os.statvfs(self.sr_path)
@@ -239,8 +235,6 @@ class CacheFileSR(object):
         return list(found)
 
     def xapi_vfs_stats(self):
-        import util
-
         f = self.statvfs()
         if not f.f_frsize:
             raise util.SMException("Cache FS does not report utilization.")

@@ -585,7 +585,7 @@ def refresh_lun_size_by_SCSIid(SCSIid):
         if devicesthatneedrefresh:
             # timing out avoids waiting for min(dev_loss_tmo, fast_io_fail_tmo)
             # if one or multiple devices don't answer
-            util.timeout_call(10, refreshdev, devicesthatneedrefresh)
+            util.timeout(10, refreshdev, devicesthatneedrefresh)
             if get_outdated_size_devices(currentcapacity,
                                          devicesthatneedrefresh):
                 # in this state we shouldn't force resizing the mapper dev

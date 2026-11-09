@@ -28,6 +28,7 @@ import SRCommand
 import util
 import scsiutil
 import lvutil
+import lock
 import time
 import os
 import sys
@@ -37,8 +38,8 @@ import mpath_cli
 import iscsilib
 import glob
 import copy
-import scsiutil
 import xml.dom.minidom
+from iscsilib import iscsi_lock, iscsi_try_lock
 
 CAPABILITIES = ["SR_PROBE", "SR_UPDATE", "SR_METADATA", "SR_TRIM", "SR_CACHING",
                 "VDI_CREATE", "VDI_DELETE", "VDI_ATTACH", "VDI_DETACH",
@@ -547,16 +548,22 @@ class LVMoISCSISR(LVMSR.LVMSR):
     @override
     def check_sr(self, sr_uuid) -> None:
         """Hook to check SR health"""
-        pbdref = util.find_my_pbd(self.session, self.host_ref, self.sr_ref)
-        if pbdref:
-                other_config = self.session.xenapi.PBD.get_other_config(pbdref)
-                if util.sessions_less_than_targets(other_config, self.dconf):
-                    self.create_iscsi_sessions(sr_uuid)
-                    for iscsi in self.iscsiSRs:
-                        try:
-                            iscsi.attach(sr_uuid)
-                        except xs_errors.SROSError:
-                            util.SMlog("Failed to attach iSCSI target")
+        with iscsi_try_lock() as acquired:
+            if not acquired:
+                util.SMlog("check_sr: iSCSI operation in progress, skipping")
+                return
+            pbd_ref = util.find_my_pbd(self.session, self.host_ref, self.sr_ref)
+            if not pbd_ref:
+                return
+            other_config = self.session.xenapi.PBD.get_other_config(pbd_ref)
+            if not util.sessions_less_than_targets(other_config, self.dconf):
+                return
+            self.create_iscsi_sessions(sr_uuid)
+            for iscsi in self.iscsiSRs:
+                try:
+                    iscsi.attach(sr_uuid)
+                except xs_errors.SROSError:
+                    util.SMlog("check_sr: Failed to attach iSCSI target")
 
     @override
     def vdi(self, uuid) -> VDI.VDI:

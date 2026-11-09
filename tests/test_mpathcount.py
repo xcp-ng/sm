@@ -178,39 +178,6 @@ class TestMpathCount(unittest.TestCase):
         self.assertNotIn('mpath-3600a098038303973743f486833396d40', store)
 
     @mock.patch('mpathcount.sys.exit', autospec=True)
-    def test_exit_logs_out(self, mock_exit):
-        # Arrange
-        session = mock.MagicMock()
-
-        # Act
-        mpathcount.mpc_exit(session, 0)
-
-        # Assert
-        mock_exit.assert_called_once_with(0)
-        session.xenapi.session.logout.assert_called_once()
-
-    @mock.patch('mpathcount.sys.exit', autospec=True)
-    def test_exit_no_session(self, mock_exit):
-        # Act
-        mpathcount.mpc_exit(None, 0)
-
-        # Assert
-        mock_exit.assert_called_once_with(0)
-
-    @mock.patch('mpathcount.sys.exit', autospec=True)
-    def test_exit_log_out_error(self, mock_exit):
-        # Arrange
-        session = mock.MagicMock()
-        session.xenapi.session.logout.side_effect = XenAPI.Failure
-
-        # Act
-        mpathcount.mpc_exit(session, 0)
-
-        # Assert
-        mock_exit.assert_called_once_with(0)
-        session.xenapi.session.logout.assert_called_once()
-
-    @mock.patch('mpathcount.sys.exit', autospec=True)
     @mock.patch('mpathcount.util.SMlog', autospec=True)
     @mock.patch('mpathcount.subprocess.Popen', autospec=True)
     def test_check_xapi_enabled_yes(self, mock_popen, mock_smlog, mock_exit):

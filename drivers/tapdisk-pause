@@ -172,9 +172,18 @@ class Tapdisk:
                 logger=util.SMlog
             )
 
+            import cleanup
             from srmetadata import VDI_TYPE_TAG
+
             self.vdi_type = linstor.get_volume_metadata(self.vdi_uuid)[VDI_TYPE_TAG]
-            device_path = LinstorCowUtil(session, linstor, self.vdi_type).create_chain_paths(self.vdi_uuid)
+            chain = LinstorCowUtil(session, linstor, self.vdi_type).create_chain_paths(
+                self.vdi_uuid,
+                readonly=False,
+                cb_openers=cleanup.LinstorSR.abort_gc_from_openers_vdi
+            )
+
+            device_path = chain.leaf_path
+            chain.close()
 
             if realpath != device_path:
                 util.SMlog(

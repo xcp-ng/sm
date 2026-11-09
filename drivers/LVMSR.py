@@ -95,6 +95,7 @@ class LVMSR(SR.SR):
     THIN_PLUGIN = "lvhd-thin"
 
     PLUGIN_ON_SLAVE = "on-slave"
+    PLUGIN_ON_MASTER = "on-master"
 
     FLAG_USE_VHD = "use_vhd"
     MDVOLUME_NAME = "MGT"
@@ -158,8 +159,13 @@ class LVMSR(SR.SR):
         self.ops_exclusive = OPS_EXCLUSIVE
 
         self.isMaster = False
-        if 'SRmaster' in self.dconf and self.dconf['SRmaster'] == 'true':
-            self.isMaster = True
+        if 'SRmaster' in self.dconf:
+            self.isMaster = self.dconf['SRmaster'] == 'true'
+        elif self.sr_ref and self.session:
+            # SR.from_uuid() builds dconf straight from the PBD's stored
+            # device-config, which never carries the synthetic SRmaster key;
+            # XAPI only injects that key into the params of a live SM call.
+            self.isMaster = not self.is_shared() or util.is_master(self.session)
 
         self.lock = lock.Lock(lock.LOCK_TYPE_SR, self.uuid)
         self.sr_vditype = SR.DEFAULT_TAP
@@ -210,7 +216,7 @@ class LVMSR(SR.SR):
 
         if lvutil._checkVG(self.vgname):
             if self.isMaster and not self.cmd in ["vdi_attach", "vdi_detach",
-                    "vdi_activate", "vdi_deactivate"]:
+                    "vdi_activate", "vdi_deactivate", "nop"]:
                 self._undoAllJournals()
             if not self.cmd in ["sr_attach", "sr_probe"]:
                 self._checkMetadataVolume()
@@ -258,6 +264,7 @@ class LVMSR(SR.SR):
             vdi_info = {}
             for vdi in self.session.xenapi.SR.get_VDIs(self.sr_ref):
                 vdi_uuid = self.session.xenapi.VDI.get_uuid(vdi)
+                is_a_snapshot = int(self.session.xenapi.VDI.get_is_a_snapshot(vdi))
 
                 vdi_type = self.session.xenapi.VDI.get_sm_config(vdi).get('vdi_type')
                 if not vdi_type:
@@ -270,9 +277,9 @@ class LVMSR(SR.SR):
                     NAME_LABEL_TAG: util.to_plain_string(self.session.xenapi.VDI.get_name_label(vdi)),
                     NAME_DESCRIPTION_TAG: util.to_plain_string(self.session.xenapi.VDI.get_name_description(vdi)),
                     IS_A_SNAPSHOT_TAG: \
-                        int(self.session.xenapi.VDI.get_is_a_snapshot(vdi)),
+                        is_a_snapshot,
                     SNAPSHOT_OF_TAG: \
-                        self.session.xenapi.VDI.get_snapshot_of(vdi),
+                        self.session.xenapi.VDI.get_uuid(self.session.xenapi.VDI.get_snapshot_of(vdi)) if bool(is_a_snapshot) else '',
                    SNAPSHOT_TIME_TAG: \
                         self.session.xenapi.VDI.get_snapshot_time(vdi),
                     TYPE_TAG: \
@@ -1534,6 +1541,10 @@ class LVMVDI(VDI.VDI):
                 util.logException("attach")
                 raise xs_errors.XenError('LVMProvisionAttach')
 
+        if self.cowutil.isCoalesceableOnRemote():
+            # We make the chain RW before it's used so it can be coalesced online
+            self._make_chain_rw()
+
         try:
             return self._attach()
         finally:
@@ -1860,8 +1871,12 @@ class LVMVDI(VDI.VDI):
             util.fistpoint.activate("LVHDRT_clone_vdi_after_parent_hidden", self.sr.uuid)
 
             # set the base copy to ReadOnly
-            self.sr.lvmCache.setReadonly(self.lvname, True)
-            util.fistpoint.activate("LVHDRT_clone_vdi_after_parent_ro", self.sr.uuid)
+            if not self.cowutil.isCoalesceableOnRemote():
+                # For QCOW2, the whole chain need to be
+                # writable for tapdisk to do the coalesce.
+                # In this case, we don't mark the base copy RO.
+                self.sr.lvmCache.setReadonly(self.lvname, True)
+                util.fistpoint.activate("LVHDRT_clone_vdi_after_parent_ro", self.sr.uuid)
 
             if hostRefs:
                 self.sr._updateSlavesOnClone(hostRefs, origOldLV,
@@ -2259,6 +2274,33 @@ class LVMVDI(VDI.VDI):
             self.session.xenapi.SR.set_physical_utilisation(self.sr.sr_ref,
                     str(sr_utilisation))
 
+    def _make_chain_rw(self):
+        """
+        In the case of QCOW2, we need the chain to be RW for the coalesce to be done by tapdisk.
+        Setting the chain to be RW early avoids having to stop the tapdisk so LVM can acknowledge the chain RW on the slave.
+        And while making the change to RW from the slave works without the refresh, it can cause LVM metadata corruption.
+        """
+        # TODO(XCPNG-3689): We could check if any VDI on the chain is RO before doing the call to master to change this
+        if self.sr.isMaster:
+            lvmcache = self.sr.lvmCache
+            for uuid, lvName in self.cowutil.getParentChain(self.lvname, LvmCowUtil.extractUuid, self.sr.vgname).items():
+                lvmcache.setReadonly(lvName, False)
+        else:
+            master = util.get_master_ref(self.session)
+            response = self.session.xenapi.host.call_plugin(
+                master,
+                self.sr.PLUGIN_ON_SLAVE,
+                "make_chain_rw",
+                {
+                    "vgName": self.sr.vgname,
+                    "lvName": self.lvname,
+                    "vdiType": self.vdi_type
+                }
+            )
+            util.SMlog(f"call-plugin returned: {response}")
+            if not response:
+                raise Exception(f"plugin {self.sr.PLUGIN_ON_SLAVE} failed")
+
     @override
     def update(self, sr_uuid, vdi_uuid) -> None:
         if self.sr.legacyMode:
@@ -2299,9 +2341,26 @@ class LVMVDI(VDI.VDI):
     @override
     def _delete_cbt_log(self) -> None:
         logpath = self._get_cbt_logpath(self.uuid)
-        if self._cbt_log_exists(logpath):
-            logname = self._get_cbt_logname(self.uuid)
-            self.sr.lvmCache.remove(logname)
+        if not self._cbt_log_exists(logpath):
+            return
+        logname = self._get_cbt_logname(self.uuid)
+        if not self.sr.isMaster and self.sr.is_shared():        
+            master = util.get_master_ref(self.session)
+            response = self.session.xenapi.host.call_plugin(
+                master,
+                self.sr.PLUGIN_ON_MASTER,
+                "delete_cbt_log",
+                {
+                    "vgName": self.sr.vgname,
+                    "lvName": logname,
+                }
+            )
+            util.SMlog(f"on-master.delete_cbt_log call-plugin returned: {response}")
+            if not response:
+                raise Exception(f"plugin {self.sr.PLUGIN_ON_MASTER} failed")    
+            lvutil._lvmBugCleanup(logpath)
+            return
+        self.sr.lvmCache.remove(logname)
 
     @override
     def _rename(self, oldpath, newpath) -> None:
