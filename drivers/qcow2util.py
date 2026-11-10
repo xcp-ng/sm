@@ -21,6 +21,7 @@ import errno
 import os
 import re
 import time
+import stat
 import struct
 import zlib
 import json
@@ -565,17 +566,7 @@ class QCowUtil(CowUtil):
             nothing.
         """
         self._read_qcow2(path)
-        # We need to reset L1 entries and then just truncate the file right
-        # after L1 entries
-        with open(self.filename, "r+b") as file:
-            l1_table_offset = self.header["l1_table_offset"]
-            file.seek(l1_table_offset)
-
-            l1_table_size = (
-                self.header["l1_size"] * 8
-            )  # size in bytes, each entry is 8 bytes
-            file.write(b"\x00" * l1_table_size)
-            file.truncate(l1_table_offset + l1_table_size)
+        self.create(path=path, size=0, static=True)
 
     @override
     def getDepth(self, path: str) -> int:
