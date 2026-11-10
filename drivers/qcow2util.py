@@ -21,6 +21,7 @@ import errno
 import os
 import re
 import time
+import stat
 import struct
 import zlib
 import json
@@ -565,17 +566,37 @@ class QCowUtil(CowUtil):
             nothing.
         """
         self._read_qcow2(path)
-        # We need to reset L1 entries and then just truncate the file right
-        # after L1 entries
-        with open(self.filename, "r+b") as file:
-            l1_table_offset = self.header["l1_table_offset"]
-            file.seek(l1_table_offset)
+        parent = self.header["parent"]
+        parentRaw = parent == ""
+        size = self.header["virtual_disk_size"]
+        hidden = self.getHidden(path)
 
-            l1_table_size = (
-                self.header["l1_size"] * 8
-            )  # size in bytes, each entry is 8 bytes
-            file.write(b"\x00" * l1_table_size)
-            file.truncate(l1_table_offset + l1_table_size)
+        if parentRaw:
+            parent_type = RAW_TYPE
+            cluster_size = QCOW2_DEFAULT_CLUSTER_SIZE
+            extended_l2 = False
+        else:
+            parent_type = QCOW2_TYPE
+            cluster_size = self.getBlockSize(path)
+            extended_l2 = self._has_extended_l2(path)
+
+        util.SMlog(f"killData: recreating {path} on top of {parent!r} "
+                f"(cluster_size={cluster_size}, extended_l2={extended_l2})")
+
+        os.remove(path)
+
+        cmd = [QEMU_IMG, "create", "-q", "-u", "-f", QCOW2_TYPE]
+
+        if not parentRaw:
+            cmd.extend(["-F", parent_type, "-b", parent])
+        cmd.extend([
+            "-o", f"cluster_size={cluster_size},extended_l2={self._convert_bool_to_qemu_option_value(extended_l2)}",
+            path,
+            str(size),
+            ])
+        self._ioretry(cmd)
+        # qemu-img create starts from a clean slate, restore the hidden flag
+        self.setHidden(path, hidden)
 
     @override
     def getDepth(self, path: str) -> int:
