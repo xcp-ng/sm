@@ -21,6 +21,7 @@ import errno
 import os
 import re
 import time
+import stat
 import struct
 import zlib
 import json
@@ -541,7 +542,11 @@ class QCowUtil(CowUtil):
                 self.header["l1_size"] * 8
             )  # size in bytes, each entry is 8 bytes
             file.write(b"\x00" * l1_table_size)
-            file.truncate(l1_table_offset + l1_table_size)
+
+            if not stat.S_ISBLK(os.stat(self.filename).st_mode):
+                file.truncate(l1_table_offset + l1_table_size)
+            else:
+                util.SMlog(f"killData: {self.filename} is a block device, skipping truncate")
 
     @override
     def getDepth(self, path: str) -> int:
