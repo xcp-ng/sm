@@ -94,3 +94,68 @@ class TestGetDevicesByScsciId(unittest.TestCase):
         # Assert
         print(paths)
         self.assertListEqual(list(path_map.values()), paths)
+
+    @mock.patch('scsiutil.getSCSIid', autospec=True)
+    @mock.patch('scsiutil.os.path.exists', autospec=True)
+    @mock.patch('scsiutil.glob.glob', autospec=True)
+    def test_lun_present_on_host(self, mock_glob, mock_exists, mock_getid):
+        mock_glob.return_value = ['/dev/disk/by-scsibus/scsiid-13:0:0:214']
+        mock_exists.return_value = True
+        mock_getid.return_value = "scsiid"
+
+        self.assertTrue(scsiutil.lun_present_on_host("scsiid", "13"))
+        mock_glob.assert_called_with('/dev/disk/by-scsibus/scsiid-13:*')
+        mock_getid.assert_called_with('/dev/disk/by-scsibus/scsiid-13:0:0:214')
+
+    @mock.patch('scsiutil.getSCSIid', autospec=True)
+    @mock.patch('scsiutil.os.path.exists', autospec=True)
+    @mock.patch('scsiutil.glob.glob', autospec=True)
+    def test_lun_present_on_host_no_device(self, mock_glob, mock_exists, mock_getid):
+        mock_glob.return_value = []
+
+        self.assertFalse(scsiutil.lun_present_on_host("scsiid", "13"))
+        mock_getid.assert_not_called()
+
+    @mock.patch('scsiutil.getSCSIid', autospec=True)
+    @mock.patch('scsiutil.os.path.exists', autospec=True)
+    @mock.patch('scsiutil.glob.glob', autospec=True)
+    def test_lun_present_on_host_dangling_link(self, mock_glob, mock_exists, mock_getid):
+        mock_glob.return_value = ['/dev/disk/by-scsibus/scsiid-13:0:0:214']
+        mock_exists.return_value = False
+
+        self.assertFalse(scsiutil.lun_present_on_host("scsiid", "13"))
+        mock_getid.assert_not_called()
+
+    @mock.patch('scsiutil.getSCSIid', autospec=True)
+    @mock.patch('scsiutil.os.path.exists', autospec=True)
+    @mock.patch('scsiutil.glob.glob', autospec=True)
+    def test_lun_present_on_host_other_volume(self, mock_glob, mock_exists, mock_getid):
+        """The link is stale: the LUN behind it is another volume now"""
+        mock_glob.return_value = ['/dev/disk/by-scsibus/scsiid-13:0:0:214']
+        mock_exists.return_value = True
+        mock_getid.return_value = "otherid"
+
+        self.assertFalse(scsiutil.lun_present_on_host("scsiid", "13"))
+
+    @mock.patch('scsiutil.getSCSIid', autospec=True)
+    @mock.patch('scsiutil.os.path.exists', autospec=True)
+    @mock.patch('scsiutil.glob.glob', autospec=True)
+    def test_lun_present_on_host_dead_device(self, mock_glob, mock_exists, mock_getid):
+        """The link is stale: the LUN behind it is gone, the query fails"""
+        mock_glob.return_value = ['/dev/disk/by-scsibus/scsiid-13:0:0:214']
+        mock_exists.return_value = True
+        mock_getid.side_effect = scsiutil.util.CommandException(1)
+
+        self.assertFalse(scsiutil.lun_present_on_host("scsiid", "13"))
+
+    @mock.patch('scsiutil.getSCSIid', autospec=True)
+    @mock.patch('scsiutil.os.path.exists', autospec=True)
+    @mock.patch('scsiutil.glob.glob', autospec=True)
+    def test_lun_present_on_host_stale_and_current(self, mock_glob, mock_exists, mock_getid):
+        """A stale link and the LUN's current device: the current one counts"""
+        mock_glob.return_value = ['/dev/disk/by-scsibus/scsiid-13:0:0:214',
+                                  '/dev/disk/by-scsibus/scsiid-13:0:0:215']
+        mock_exists.return_value = True
+        mock_getid.side_effect = ["otherid", "scsiid"]
+
+        self.assertTrue(scsiutil.lun_present_on_host("scsiid", "13"))
