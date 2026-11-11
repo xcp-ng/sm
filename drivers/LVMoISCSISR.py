@@ -482,9 +482,16 @@ class LVMoISCSISR(LVMSR.LVMSR):
                 raise stored_exception
 
             if 'multiSession' in self.dconf:
-                # Force a manual bus refresh
+                # Force a manual bus refresh, but only on the adapters
+                # that do not expose our LUN yet. A full rescan takes
+                # seconds per adapter: when many SRs share the same
+                # sessions, the first attach discovers all the LUNs and
+                # rescanning for each of the next SRs only delays them.
                 for a in self.iscsi.adapter:
-                    scsiutil.rescan([self.iscsi.adapter[a]])
+                    host = self.iscsi.adapter[a]
+                    if scsiutil.lun_present_on_host(self.SCSIid, host):
+                        continue
+                    scsiutil.rescan([host])
 
             self._pathrefresh(LVMoISCSISR)
 

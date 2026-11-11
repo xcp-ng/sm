@@ -363,6 +363,28 @@ def update_XS_SCSIdata(vdi_uuid, data):
     return xenstore_data
 
 
+def lun_present_on_host(SCSIid, HostID):
+    """Tell whether the SCSI host already exposes a device for this SCSIid
+
+    The name of the udev link is not trusted: it dates from the moment the
+    device was added, and the LUN behind it may have been unmapped or
+    replaced since. The device is asked for its SCSI id, and a device that
+    does not answer with the expected one counts as missing.
+    """
+    for path in glob.glob('/dev/disk/by-scsibus/%s-%s:*' % (SCSIid, HostID)):
+        if not os.path.exists(path):
+            continue
+        try:
+            current = getSCSIid(path)
+        except Exception as e:
+            util.SMlog("Cannot query the SCSI id of %s: %s" % (path, e))
+            continue
+        if current == SCSIid:
+            return True
+        util.SMlog("Stale device %s: its SCSI id is now %s" % (path, current))
+    return False
+
+
 def rescan(ids, fullrescan=True):
     for id in ids:
         refresh_HostID(id, fullrescan)
