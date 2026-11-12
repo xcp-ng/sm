@@ -416,26 +416,22 @@ def destroy(session, args):
 def abort_gc(_session, args):
     try:
         sr_uuid = args['srUuid']
-        lock_gc_active = cleanup.LockActive(sr_uuid)
-        if lock_gc_active.acquireNoblock():  # GC not active
-            return str(True)
         abort_flag = ipc.IPCFlag(sr_uuid)
-        if not abort_flag.set(cleanup.FLAG_TYPE_ABORT, soft=False):
-            return str(False)
-        try:
+        # The FLAG_TYPE_ABORT is set, whether the return value is True or False.
+        aborting = abort_flag.set(cleanup.FLAG_TYPE_ABORT, soft=True)
+        try:  # Waiting for GC to end
             for _ in range(cleanup.SR.LOCK_RETRY_ATTEMPTS):
-                if lock_gc_active.acquireNoblock():  # GC aborted
+                if not cleanup.get_state(sr_uuid):  # GC finished
                     break
                 time.sleep(cleanup.SR.LOCK_RETRY_INTERVAL)
             else:  # Timeout
                 raise Exception("Timed out waiting for GC to finish")
         finally:
-            abort_flag.clear(cleanup.FLAG_TYPE_ABORT)
+            if aborting:  # Clear FLAG_TYPE_ABORT if we set it up before
+                abort_flag.clear(cleanup.FLAG_TYPE_ABORT)
     except Exception as e:
         util.SMlog('linstor-manager:abort_gc error: {}'.format(e))
         return str(False)
-    finally:
-        lock_gc_active.release()
     return str(True)
 
 
