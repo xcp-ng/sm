@@ -294,6 +294,7 @@ class LinstorVolumeManager(object):
     __slots__ = (
         '_linstor', '_uri', '_logger', '_redundancy',
         '_base_group_name', '_group_name', '_ha_group_name',
+        '_storage_pool_names',
         '_volumes', '_storage_pools', '_storage_pools_time',
         '_kv_cache', '_resource_cache', '_volume_info_cache',
         '_kv_cache_dirty', '_resource_cache_dirty', '_volume_info_cache_dirty',
@@ -425,6 +426,7 @@ class LinstorVolumeManager(object):
         self._redundancy = groups[0].select_filter.place_count
         self._group_name = group_name
         self._ha_group_name = self._build_ha_group_name(self._base_group_name)
+        self._storage_pool_names = self._find_storage_pool_names(groups[0], group_name)
         self._volumes = set()
         self._storage_pools_time = 0
 
@@ -526,17 +528,21 @@ class LinstorVolumeManager(object):
         # Paths: /res_name/vol_number/size
         sizes = {}
 
+        resource_names = self._fetch_resource_names()
         for resource in self._get_resource_cache().resources:
+            # We ignore the resources of other groups and the diskless ones.
+            if (
+                resource.name not in resource_names or
+                linstor.consts.FLAG_DISKLESS in resource.flags
+            ):
+                continue
+
             if resource.name not in sizes:
                 current = sizes[resource.name] = {}
             else:
                 current = sizes[resource.name]
 
             for volume in resource.volumes:
-                # We ignore diskless pools of the form "DfltDisklessStorPool".
-                if volume.storage_pool_name != self._group_name:
-                    continue
-
                 allocated_size = max(volume.allocated_size, 0)
                 current_allocated_size = current.get(volume.number) or -1
                 if allocated_size > current_allocated_size:
@@ -552,25 +558,24 @@ class LinstorVolumeManager(object):
     def get_min_physical_size(self):
         """
         Give the minimum physical size of the SR.
-        I.e. the size of the smallest disk + the number of pools.
-        :return: The physical min size.
+        I.e. the capacity of the smallest node + the number of nodes.
+        A node may have many storage pools: its capacity is their sum.
+        :return: The number of nodes with a pool and the physical min size.
         :rtype: tuple(int, int)
         """
-        size = None
-        pool_count = 0
+        node_sizes = {}
         for pool in self._get_storage_pools(force=True):
             space = pool.free_space
             if space:
-                pool_count += 1
                 current_size = space.total_capacity
                 if current_size < 0:
                     raise LinstorVolumeManagerError(
                         'Failed to get pool total_capacity attr of `{}`'
                         .format(pool.node_name)
                     )
-                if size is None or current_size < size:
-                    size = current_size
-        return (pool_count, (size or 0) * 1024)
+                node_sizes[pool.node_name] = node_sizes.get(pool.node_name, 0) + current_size
+        size = min(node_sizes.values()) if node_sizes else 0
+        return (len(node_sizes), size * 1024)
 
     @property
     def metadata(self):
@@ -1446,14 +1451,19 @@ class LinstorVolumeManager(object):
             # It needs to be done locally by each host so we go through the linstor-manager plugin.
             # If we don't do this sometimes, the destroy will fail when trying to destroy the resource groups with:
             # "linstor-manager:destroy error: Failed to destroy SP `xcp-sr-linstor_group_thin_device` on node `r620-s2`: The specified storage pool 'xcp-sr-linstor_group_thin_device' on node 'r620-s2' can not be deleted as volumes / snapshot-volumes are still using it."
+            volume_group_names = self._get_lvm_group_names()
             session = util.timeout(5, util.ApiSession, "SM-linstor-destroy").session
             for host_ref in session.xenapi.host.get_all():
-                try:
-                    response = session.xenapi.host.call_plugin(
-                        host_ref, 'linstor-manager', 'destroyDrbdVolumes', {'volume_group': self._group_name}
-                    )
-                except Exception as e:
-                    util.SMlog('Calling destroyDrbdVolumes on host {} failed with error {}'.format(host_ref, e))
+                for volume_group_name in volume_group_names:
+                    try:
+                        session.xenapi.host.call_plugin(
+                            host_ref, 'linstor-manager', 'destroyDrbdVolumes', {'volume_group': volume_group_name}
+                        )
+                    except Exception as e:
+                        util.SMlog(
+                            'Calling destroyDrbdVolumes ({}) on host {} failed with error {}'
+                            .format(volume_group_name, host_ref, e)
+                        )
 
             # 4.6. Destroy group and storage pools.
             self._destroy_resource_group(self._linstor, self._group_name)
@@ -1730,7 +1740,12 @@ class LinstorVolumeManager(object):
         resources = {}
         resource_list = self._get_resource_cache()
         volume_names = self.get_volumes_with_name()
+        resource_names = self._fetch_resource_names()
         for resource in resource_list.resources:
+            # We ignore the resources of other groups.
+            if resource.name not in resource_names:
+                continue
+
             if resource.name not in resources:
                 resources[resource.name] = { 'nodes': {}, 'uuid': '' }
             resource_nodes = resources[resource.name]['nodes']
@@ -1742,11 +1757,11 @@ class LinstorVolumeManager(object):
             }
             resource_volumes = resource_nodes[resource.node_name]['volumes']
 
-            for volume in resource.volumes:
-                # We ignore diskless pools of the form "DfltDisklessStorPool".
-                if volume.storage_pool_name != self._group_name:
-                    continue
+            # We ignore diskless pools of the form "DfltDisklessStorPool".
+            if linstor.consts.FLAG_DISKLESS in resource.flags:
+                continue
 
+            for volume in resource.volumes:
                 usable_size = volume.usable_size
                 if usable_size < 0:
                     usable_size = -1
@@ -1769,6 +1784,8 @@ class LinstorVolumeManager(object):
                 })
 
         for resource_state in resource_list.resource_states:
+            if resource_state.rsc_name not in resources:
+                continue
             resource = resources[resource_state.rsc_name]['nodes'][resource_state.node_name]
             resource['in-use'] = resource_state.in_use
 
@@ -1886,10 +1903,15 @@ class LinstorVolumeManager(object):
         return ''
 
     @classmethod
-    def create_sr(cls, group_name, ips, redundancy, thin_provisioning, logger=default_logger.__func__):
+    def create_sr(
+        cls, group_name, storage_pool_names, ips, redundancy, thin_provisioning, logger=default_logger.__func__
+    ):
         """
         Create a new SR on the given nodes.
         :param str group_name: The SR group_name to use.
+        :param list(str) storage_pool_names: Pools (`VG` or `VG/LV`) used to
+        store the volumes. The LINSTOR database is created on the first one.
+        If empty or None, `group_name` is the only pool.
         :param set(str) ips: Node ips.
         :param int redundancy: How many copy of volumes should we store?
         :param bool thin_provisioning: Use thin or thick provisioning.
@@ -1900,7 +1922,14 @@ class LinstorVolumeManager(object):
 
         try:
             cls._start_controller(start=True)
-            sr = cls._create_sr(group_name, ips, redundancy, thin_provisioning, logger)
+            sr = cls._create_sr(
+                group_name,
+                storage_pool_names,
+                ips,
+                redundancy,
+                thin_provisioning,
+                logger
+            )
         finally:
             # Controller must be stopped and volume unmounted because
             # it is the role of the drbd-reactor daemon to do the right
@@ -1914,7 +1943,23 @@ class LinstorVolumeManager(object):
         return sr
 
     @classmethod
-    def _create_sr(cls, group_name, ips, redundancy, thin_provisioning, logger=default_logger.__func__):
+    def _create_sr(
+        cls,
+        group_name,
+        storage_pool_names,
+        ips,
+        redundancy,
+        thin_provisioning,
+        logger=default_logger.__func__
+    ):
+        # 0. Resolve the pools. The database is created on the first one.
+        driver_pool_names = list(storage_pool_names or [group_name])
+        if len(set(driver_pool_names)) != len(driver_pool_names):
+            raise LinstorVolumeManagerError(
+                'Unable to create SR `{}`: duplicate storage pool in ({})'
+                .format(group_name, ', '.join(driver_pool_names))
+            )
+
         # 1. Check if SR already exists.
         uri = 'linstor://localhost'
 
@@ -1951,11 +1996,15 @@ class LinstorVolumeManager(object):
                         )
                     )
 
-        driver_pool_name = group_name
         base_group_name = group_name
         group_name = cls.build_group_name(group_name)
-        storage_pool_name = group_name
-        pools = lin.storage_pool_list_raise(filter_by_stor_pools=[storage_pool_name]).storage_pools
+        pool_pairs = [
+            (name, cls.build_group_name(name))
+            for name in driver_pool_names
+        ]
+        storage_pool_name = pool_pairs[0][1]
+        sp_names = [sp_name for _, sp_name in pool_pairs]
+        pools = lin.storage_pool_list_raise(filter_by_stor_pools=sp_names).storage_pools
         if pools:
             existing_node_names = [pool.node_name for pool in pools]
             raise LinstorVolumeManagerError(
@@ -1980,74 +2029,76 @@ class LinstorVolumeManager(object):
                 )
 
         if thin_provisioning:
-            driver_pool_parts = driver_pool_name.split('/')
-            if not len(driver_pool_parts) == 2:
-                raise LinstorVolumeManagerError(
-                    'Invalid group name using thin provisioning. '
-                    'Expected format: \'VG/LV`\''
-                )
+            for driver_pool_name in driver_pool_names:
+                driver_pool_parts = driver_pool_name.split('/')
+                if not len(driver_pool_parts) == 2:
+                    raise LinstorVolumeManagerError(
+                        'Invalid group name using thin provisioning. '
+                        'Expected format: \'VG/LV`\' (got `{}`)'
+                        .format(driver_pool_name)
+                    )
 
         # 2. Create storage pool on each node + resource group.
         reg_volume_group_not_found = re.compile(
             ".*Volume group '.*' not found$"
         )
 
-        i = 0
+        # Every (storage pool, node) creation attempted, used to rollback.
+        attempted_pools = []
+        ha_group_name = cls._build_ha_group_name(base_group_name)
         try:
             # 2.a. Create storage pools.
-            storage_pool_count = 0
-            while i < len(node_names):
-                node_name = node_names[i]
-
-                result = lin.storage_pool_create(
-                    node_name=node_name,
-                    storage_pool_name=storage_pool_name,
-                    storage_driver='LVM_THIN' if thin_provisioning else 'LVM',
-                    driver_pool_name=driver_pool_name
-                )
-
-                errors = linstor.Linstor.filter_api_call_response_errors(
-                    result
-                )
-                if errors:
-                    if errors[0].is_error(
-                        linstor.consts.FAIL_STOR_POOL_CONFIGURATION_ERROR
-                    ) and reg_volume_group_not_found.match(errors[0].message):
-                        logger(
-                            'Volume group `{}` not found on `{}`. Ignoring...'
-                            .format(group_name, node_name)
-                        )
-                        cls._destroy_storage_pool(lin, storage_pool_name, node_name)
-                    else:
-                        error_str = cls._get_error_str(result)
-                        raise LinstorVolumeManagerError(
-                            'Could not create SP `{}` on node `{}`: {}'
-                            .format(group_name, node_name, error_str)
-                        )
-                else:
-                    storage_pool_count += 1
-                i += 1
-
-            if not storage_pool_count:
-                raise LinstorVolumeManagerError(
-                    'Unable to create SR `{}`: No VG group found'.format(
-                        group_name,
+            storage_pool_counts = dict.fromkeys(sp_names, 0)
+            for node_name in node_names:
+                for driver_pool_name, sp_name in pool_pairs:
+                    attempted_pools.append((sp_name, node_name))
+                    result = lin.storage_pool_create(
+                        node_name=node_name,
+                        storage_pool_name=sp_name,
+                        storage_driver='LVM_THIN' if thin_provisioning else 'LVM',
+                        driver_pool_name=driver_pool_name
                     )
-                )
+
+                    errors = linstor.Linstor.filter_api_call_response_errors(result)
+                    if errors:
+                        if errors[0].is_error(
+                            linstor.consts.FAIL_STOR_POOL_CONFIGURATION_ERROR
+                        ) and reg_volume_group_not_found.match(errors[0].message):
+                            logger(
+                                'Volume group `{}` not found on `{}`. Ignoring...'
+                                .format(driver_pool_name, node_name)
+                            )
+                            cls._destroy_storage_pool(lin, sp_name, node_name)
+                        else:
+                            error_str = cls._get_error_str(result)
+                            raise LinstorVolumeManagerError(
+                                'Could not create SP `{}` on node `{}`: {}'
+                                .format(sp_name, node_name, error_str)
+                            )
+                    else:
+                        storage_pool_counts[sp_name] += 1
+
+            # Each pool must exist at least once, the first one hosts the database.
+            for driver_pool_name, sp_name in pool_pairs:
+                if not storage_pool_counts[sp_name]:
+                    raise LinstorVolumeManagerError(
+                        'Unable to create SR `{}`: No VG group found for `{}`'.format(
+                            group_name, driver_pool_name
+                        )
+                    )
 
             # 2.b. Create resource groups.
-            ha_group_name = cls._build_ha_group_name(base_group_name)
             cls._create_resource_group(
               lin,
               group_name,
-              storage_pool_name,
+              sp_names,
               redundancy,
               True
             )
             cls._create_resource_group(
               lin,
               ha_group_name,
-              storage_pool_name,
+              sp_names,
               3,
               True
             )
@@ -2100,15 +2151,12 @@ class LinstorVolumeManager(object):
             except Exception as e2:
                 logger('Failed to destroy resource group: {}'.format(e2))
                 pass
-            j = 0
-            i = min(i, len(node_names) - 1)
-            while j <= i:
+            for sp_name, node_name in attempted_pools:
                 try:
-                    cls._destroy_storage_pool(lin, storage_pool_name, node_names[j])
+                    cls._destroy_storage_pool(lin, sp_name, node_name)
                 except Exception as e2:
-                    logger('Failed to destroy resource group: {}'.format(e2))
+                    logger('Failed to destroy storage pool: {}'.format(e2))
                     pass
-                j += 1
             raise e
 
         # 5. Return new instance.
@@ -2118,6 +2166,7 @@ class LinstorVolumeManager(object):
         instance._redundancy = redundancy
         instance._base_group_name = base_group_name
         instance._group_name = group_name
+        instance._storage_pool_names = set(sp_names)
         instance._volumes = set()
         instance._storage_pools_time = 0
         instance._kv_cache = instance._create_kv_cache()
@@ -2248,13 +2297,12 @@ class LinstorVolumeManager(object):
             else:
                 current = all_volume_info[resource.name]
 
-            if linstor.consts.FLAG_DISKLESS not in resource.flags:
-                current.diskful.append(resource.node_name)
+            # We ignore diskless resources.
+            if linstor.consts.FLAG_DISKLESS in resource.flags:
+                return
+            current.diskful.append(resource.node_name)
 
             for volume in resource.volumes:
-                # We ignore diskless pools of the form "DfltDisklessStorPool".
-                if volume.storage_pool_name != self._group_name:
-                    continue
                 # Only fetch first volume.
                 if volume.number != 0:
                     continue
@@ -2298,11 +2346,11 @@ class LinstorVolumeManager(object):
         for resource in self._linstor.resource_list_raise(
             filter_by_resources=[volume_name]
         ).resources:
-            for volume in resource.volumes:
-                # We ignore diskless pools of the form "DfltDisklessStorPool".
-                if volume.storage_pool_name != self._group_name:
-                    continue
+            # We ignore diskless resources.
+            if linstor.consts.FLAG_DISKLESS in resource.flags:
+                continue
 
+            for volume in resource.volumes:
                 node_names.add(resource.node_name)
 
                 usable_size = volume.usable_size
@@ -2333,6 +2381,21 @@ class LinstorVolumeManager(object):
                 capacity += size
         return capacity * 1024
 
+    def _get_lvm_group_names(self):
+        """
+        Get the LVM volume group names behind the storage pools of the SR.
+        A pool is `VG/LV` with thin provisioning, `VG` otherwise.
+        :rtype: list(str)
+        """
+
+        names = set()
+        for pool in self._get_storage_pools(force=True):
+            driver_pool = (pool.properties or {}).get('StorDriver/StorPoolName')
+            if driver_pool:
+                names.add(driver_pool.split('/')[0])
+        # Without property, the base group name is the first pool.
+        return sorted(names or {self._base_group_name.split('/')[0]})
+
     def _get_node_names(self):
         node_names = set()
         for pool in self._get_storage_pools():
@@ -2345,7 +2408,7 @@ class LinstorVolumeManager(object):
 
         if force or elsaped_time >= self.STORAGE_POOLS_FETCH_INTERVAL:
             self._storage_pools = self._linstor.storage_pool_list_raise(
-                filter_by_stor_pools=[self._group_name]
+                filter_by_stor_pools=list(self._storage_pool_names)
             ).storage_pools
             self._storage_pools_time = time.time()
 
@@ -2390,7 +2453,7 @@ class LinstorVolumeManager(object):
                     self._create_resource_group(
                         self._linstor,
                         group_name,
-                        self._group_name,
+                        list(self._storage_pool_names),
                         3,
                         True
                     )
@@ -3121,7 +3184,7 @@ class LinstorVolumeManager(object):
         cls,
         lin,
         group_name,
-        storage_pool_name,
+        storage_pool_names,
         redundancy,
         destroy_old_group
     ):
@@ -3130,7 +3193,7 @@ class LinstorVolumeManager(object):
             result = lin.resource_group_create(
                 name=group_name,
                 place_count=redundancy,
-                storage_pool=storage_pool_name,
+                storage_pool=storage_pool_names,
                 diskless_on_remaining=False
             )
             error_str = cls._get_error_str(result)
@@ -3182,6 +3245,26 @@ class LinstorVolumeManager(object):
                 )
 
         return util.retry(destroy, maxretry=10)
+
+    def _find_storage_pool_names(self, group, group_name):
+        """
+        Get the names of all the storage pools of the SR.
+        """
+
+        names = self._get_group_storage_pool_names(group, group_name)
+        for pool in self._linstor.storage_pool_list_raise().storage_pools:
+            if pool.name.startswith(self.PREFIX_SR):
+                names.add(pool.name)
+        return names
+
+    @staticmethod
+    def _get_group_storage_pool_names(group, default_name):
+        """
+        Get the storage pool names used by a LINSTOR resource group.
+        Fallback on `default_name`: it was the only pool before multi-SP.
+        """
+
+        return set(group.select_filter.storage_pool_list) or {default_name}
 
     @classmethod
     def build_group_name(cls, base_name):

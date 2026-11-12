@@ -156,22 +156,17 @@ def update_drbd_reactor_service(start):
     util.enable_and_start_service('drbd-reactor', start)
 
 
-def exec_create_sr(session, name, description, disks, volume_group, redundancy, provisioning, force):
+def create_volume_group_on_hosts(session, hosts, volume_group_name, disks, thin, force):
     disk_hostnames = disks.keys()
-    thin = provisioning == 'thin'
 
-    # Create volumes.
-    hosts = session.xenapi.host.get_all_records()
-    hostnames = []
     for host_ref, host_record in hosts.items():
         hostname = host_record['hostname']
-        hostnames.append(hostname)
 
         if force:
             try:
                 session.xenapi.host.call_plugin(
                     host_ref, LVM_PLUGIN, 'destroy_volume_group', {
-                        'vg_name': volume_group,
+                        'vg_name': volume_group_name,
                         'force': 'True'
                     }
                 )
@@ -179,7 +174,7 @@ def exec_create_sr(session, name, description, disks, volume_group, redundancy, 
                 try:
                     response = session.xenapi.host.call_plugin(
                         host_ref, LVM_PLUGIN, 'list_volume_groups', {
-                            'vg_name': volume_group
+                            'vg_name': volume_group_name
                         }
                     )
                     if response != '{}':
@@ -190,7 +185,7 @@ def exec_create_sr(session, name, description, disks, volume_group, redundancy, 
         if hostname not in disk_hostnames or not disks[hostname]:
             if force or session.xenapi.host.call_plugin(
                 host_ref, LVM_PLUGIN, 'list_volume_groups', {
-                    'vg_name': volume_group
+                    'vg_name': volume_group_name
                 }
             ) == '{}':
                 continue
@@ -211,7 +206,7 @@ def exec_create_sr(session, name, description, disks, volume_group, redundancy, 
 
         session.xenapi.host.call_plugin(
             host_ref, LVM_PLUGIN, 'create_volume_group', {
-                'vg_name': volume_group,
+                'vg_name': volume_group_name,
                 'devices': host_disks
             }
         )
@@ -219,28 +214,74 @@ def exec_create_sr(session, name, description, disks, volume_group, redundancy, 
         if thin:
             session.xenapi.host.call_plugin(
                 host_ref, LVM_PLUGIN, 'create_thin_pool', {
-                    'vg_name': volume_group,
+                    'vg_name': volume_group_name,
                     'lv_name': THIN_POOL
                 }
             )
 
+
+def exec_create_sr(
+    session,
+    name,
+    description,
+    resource_group_name,
+    storage_pool_disks,
+    redundancy,
+    provisioning,
+    force
+):
+    """
+    Create the volume groups then the SR.
+    `storage_pool_disks` is a dict {LVM group name: {hostname: [devices]}} whose
+    order is kept: the SR uses all these pools to store its volumes and the
+    LINSTOR database is created on the first one. A storage pool is named
+    after its volume group (no thin pool suffix): the thin pool is created in it
+    with thin provisioning.
+    `resource_group_name` is the `group-name` of the SR, it does not have to be
+    one of the pools. Exception: if it is the only pool, `group-name` is the
+    pool itself (`VG/LV` with thin provisioning) and there is no `storage-pools`
+    (same device-config as before multi-pool support).
+    """
+
+    thin = provisioning == 'thin'
+    if not storage_pool_disks:
+        raise Exception('`storage_pool_disks` is empty')
+
+    # Create volumes.
+    hosts = session.xenapi.host.get_all_records()
+    hostnames = [host_record['hostname'] for host_record in hosts.values()]
+
+    volume_group_names = list(storage_pool_disks)
+    for vg_name in volume_group_names:
+        create_volume_group_on_hosts(
+            session, hosts, vg_name, storage_pool_disks[vg_name], thin, force
+        )
+
     # Create SR.
-    master_ref = session.xenapi.pool.get_all_records().values()[0]['master']
+    master_ref = util.get_master_ref(session)
+
+    def build_pool_name(vg_name):
+        return '{}/{}'.format(vg_name, THIN_POOL) if thin else vg_name
 
     device_config = {
         'redundancy': str(redundancy),
         'provisioning': 'thin' if thin else 'thick',
-        'group-name': '{}/{}'.format(volume_group, THIN_POOL) if thin else volume_group,
         'hosts': ','.join(hostnames),
         'monitor-db-quorum': str(len(hostnames) > 2)
     }
+    if volume_group_names == [resource_group_name]:
+        # Only one pool named after the SR: `group-name` is this pool.
+        device_config['group-name'] = build_pool_name(resource_group_name)
+    else:
+        device_config['group-name'] = resource_group_name
+        device_config['storage-pools'] = ','.join(map(build_pool_name, volume_group_names))
     sr_ref = session.xenapi.SR.create(
         master_ref, device_config, '0', name, description, 'linstor', '', True, {}
     )
     return session.xenapi.SR.get_uuid(sr_ref)
 
 
-def get_drbd_volumes(volume_group=None):
+def get_drbd_volumes(volume_group_name=None):
     drbd_volumes = {}
     (ret, stdout, stderr) = util.doexec(['drbdsetup', 'show', '--json'])
     if ret:
@@ -257,15 +298,15 @@ def get_drbd_volumes(volume_group=None):
             if not match:
                 continue
 
-            cur_volume_group = match.groups()[0]
-            if volume_group and cur_volume_group != volume_group:
+            cur_volume_group_name = match.groups()[0]
+            if volume_group_name and cur_volume_group_name != volume_group_name:
                 continue
 
             minor = int(volume['device_minor'])
-            if cur_volume_group in drbd_volumes:
-                drbd_volumes[cur_volume_group].append(minor)
+            if cur_volume_group_name in drbd_volumes:
+                drbd_volumes[cur_volume_group_name].append(minor)
             else:
-                drbd_volumes[cur_volume_group] = [minor]
+                drbd_volumes[cur_volume_group_name] = [minor]
     return drbd_volumes
 
 
@@ -311,7 +352,7 @@ def get_cow_util_from_args(args):
 
 def prepare_sr(session, args):
     try:
-        LinstorSR.activate_lvm_group(args['groupName'])
+        LinstorSR.activate_lvm_groups(args['groupName'], args.get('storagePoolNames'))
 
         update_all_ports(open_ports=True)
         # We don't want to enable and start drbd-reactor daemon during
@@ -756,17 +797,23 @@ def add_host(session, args):
             device_config = pbd['device_config']
             # Should be the same on all hosts.
             provisioning = device_config['provisioning']
+            storage_pool_names = device_config.get('storage-pools')
 
         # 7. Create new PBD.
         if create_new_pbd:
+            new_device_config = {
+                'group-name': group_name,
+                'redundancy': linstor.redundancy,
+                'provisioning': provisioning
+            }
+            # Without it, the VGs of the extra pools would not be activated
+            # on the new host.
+            if storage_pool_names:
+                new_device_config['storage-pools'] = storage_pool_names
             new_pbd_ref = session.xenapi.PBD.create({
                 'host': this_host,
                 'SR': sr_ref,
-                'device_config': {
-                    'group-name': group_name,
-                    'redundancy': linstor.redundancy,
-                    'provisioning': provisioning
-                }
+                'device_config': new_device_config
             })
             try:
                 session.xenapi.PBD.plug(new_pbd_ref)
@@ -870,19 +917,29 @@ def create_sr(session, args):
 
         description = args.get('description') or ''
 
-        disks = args.get('disks')
-        if not disks:
-            raise Exception('`disks` is empty')
-        try:
-            disks = json.loads(disks)
-        except Exception as e:
-            raise Exception('failed to decode `disks`: {}'.format(e))
-        if type(disks) is not dict:
-            raise Exception('`disks` must be a JSON object')
+        resource_group_name = args.get('resource_group_name')
+        if not resource_group_name:
+            raise Exception('`resource_group_name` is empty')
 
-        volume_group = args.get('volume_group')
-        if not volume_group:
-            raise Exception('`volume_group` is empty')
+        # JSON object {LVM group name: {hostname: [devices]}}: the SR uses all
+        # these pools to store its volumes, the LINSTOR database is created on
+        # the first one.
+        # `resource_group_name` only gives its name to the SR.
+        storage_pool_disks = args.get('storage_pool_disks')
+        if not storage_pool_disks:
+            raise Exception('`storage_pool_disks` is empty')
+
+        try:
+            storage_pool_disks = json.loads(storage_pool_disks)
+        except Exception as e:
+            raise Exception('Failed to decode `storage_pool_disks`: {}'.format(e))
+
+        if type(storage_pool_disks) is not dict:
+            raise Exception('`storage_pool_disks` must be a JSON object')
+
+        for volume_group_name, vg_disks in storage_pool_disks.items():
+            if type(vg_disks) is not dict:
+                raise Exception('disks of `{}` must be a JSON object'.format(volume_group_name))
 
         redundancy = args.get('redundancy')
         if not redundancy:
@@ -902,7 +959,14 @@ def create_sr(session, args):
         force = util.strtobool(args.get('force'))
 
         return exec_create_sr(
-            session, name, description, disks, volume_group, redundancy, provisioning, force
+            session,
+            name,
+            description,
+            resource_group_name,
+            storage_pool_disks,
+            redundancy,
+            provisioning,
+            force
         )
     except Exception as e:
         util.SMlog('linstor-manager:create_sr error: {}'.format(e))
