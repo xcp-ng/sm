@@ -89,7 +89,7 @@ REDO_LOG_VOLUME_NAME = PERSISTENT_PREFIX + 'redo-log'
 
 # ==============================================================================
 
-# TODO: Supports 'VDI_INTRODUCE', 'VDI_RESET_ON_BOOT/2', 'SR_TRIM',
+# TODO: Supports 'VDI_INTRODUCE', 'SR_TRIM',
 # 'VDI_CONFIG_CBT', 'SR_PROBE'
 
 CAPABILITIES = [
@@ -104,6 +104,7 @@ CAPABILITIES = [
     'VDI_DEACTIVATE',
     'VDI_CLONE',
     'VDI_MIRROR',
+    'VDI_RESET_ON_BOOT/2',
     'VDI_RESIZE',
     'VDI_SNAPSHOT',
     'VDI_GENERATE_CONFIG'
