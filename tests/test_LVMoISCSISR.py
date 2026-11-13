@@ -314,3 +314,65 @@ class TestLVMoISCSISR(ISCSITestCase):
         self.assertEqual(12, attach_count)
         self.assertEqual(12, self.mock_iscsilib.discovery.call_count)
         self.assertEqual(12, self.mock_iscsilib.login.call_count)
+
+    @mock.patch('LVMoISCSISR.scsiutil', autospec=True)
+    def test_sr_attach_multi_session_rescans_only_missing(self, mock_scsiutil):
+        # Arrange
+        self.mock_util.find_my_pbd.return_value = 'my_pbd'
+        iqn = 'iqn.2009-11.com.infinidat:storage:infinibox-sn-3393'
+        additional_dconf = {
+            'multiSession': '10.207.3.60,3260,%s|10.207.6.60,3260,%s|' % (iqn, iqn)
+        }
+        tpg_data = [('10.207.3.60:3260', 1, iqn), ('10.207.6.60:3260', 2, iqn)]
+        self.discovery_data = {
+            '10.207.3.60': tpg_data,
+            '10.207.6.60': tpg_data
+        }
+        self.create_test_sr(self.create_sr_command(
+            additional_dconf=additional_dconf,
+            cmd='sr_attach',
+            target_iqn='*'))
+        self.subject.iscsi.adapter = {
+            '10.207.3.60:3260': '13', '10.207.6.60:3260': '14'}
+        self.subject.vgname = 'VG_XenStorage-' + TEST_SR_UUID
+        # The LUN is already visible on host 13 only
+        mock_scsiutil.lun_present_on_host.side_effect = \
+            lambda scsi_id, host: host == '13'
+
+        # Act
+        with mock.patch.object(self.subject, '_pathrefresh'), \
+                mock.patch('LVMoISCSISR.lvutil', autospec=True):
+            self.subject.attach(TEST_SR_UUID)
+
+        # Assert
+        mock_scsiutil.rescan.assert_called_once_with(['14'])
+
+    @mock.patch('LVMoISCSISR.scsiutil', autospec=True)
+    def test_sr_attach_multi_session_no_rescan_when_present(self, mock_scsiutil):
+        # Arrange
+        self.mock_util.find_my_pbd.return_value = 'my_pbd'
+        iqn = 'iqn.2009-11.com.infinidat:storage:infinibox-sn-3393'
+        additional_dconf = {
+            'multiSession': '10.207.3.60,3260,%s|10.207.6.60,3260,%s|' % (iqn, iqn)
+        }
+        tpg_data = [('10.207.3.60:3260', 1, iqn), ('10.207.6.60:3260', 2, iqn)]
+        self.discovery_data = {
+            '10.207.3.60': tpg_data,
+            '10.207.6.60': tpg_data
+        }
+        self.create_test_sr(self.create_sr_command(
+            additional_dconf=additional_dconf,
+            cmd='sr_attach',
+            target_iqn='*'))
+        self.subject.iscsi.adapter = {
+            '10.207.3.60:3260': '13', '10.207.6.60:3260': '14'}
+        self.subject.vgname = 'VG_XenStorage-' + TEST_SR_UUID
+        mock_scsiutil.lun_present_on_host.return_value = True
+
+        # Act
+        with mock.patch.object(self.subject, '_pathrefresh'), \
+                mock.patch('LVMoISCSISR.lvutil', autospec=True):
+            self.subject.attach(TEST_SR_UUID)
+
+        # Assert
+        mock_scsiutil.rescan.assert_not_called()
