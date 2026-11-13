@@ -30,7 +30,7 @@ def with_lvm_subsystem(func):
 class TestCreate(unittest.TestCase):
     @override
     def setUp(self) -> None:
-        lock_patcher = mock.patch('lvutil.Fairlock', autospec=True)
+        lock_patcher = mock.patch('lvutil.FairlockWrite', autospec=True)
         self.addCleanup(lock_patcher.stop)
         self.mock_lock = lock_patcher.start()
 
@@ -104,9 +104,12 @@ class TestCreate(unittest.TestCase):
 class TestRemove(unittest.TestCase):
     @override
     def setUp(self) -> None:
-        lock_patcher = mock.patch('lvutil.Fairlock', autospec=True)
+        lock_patcher = mock.patch('lvutil.FairlockWrite', autospec=True)
+        lock_read_patcher = mock.patch('lvutil.FairlockRead', autospec=True)
         self.addCleanup(lock_patcher.stop)
+        self.addCleanup(lock_read_patcher.stop)
         self.mock_lock = lock_patcher.start()
+        self.mock_lock_read = lock_read_patcher.start()
 
     @with_lvm_subsystem
     def test_remove_removes_volume(self, lvsystem):
@@ -130,12 +133,14 @@ class TestRemove(unittest.TestCase):
 class TestDeactivate(unittest.TestCase):
     @override
     def setUp(self) -> None:
-        lock_patcher = mock.patch('lvutil.Fairlock', autospec=True)
+        lock_patcher = mock.patch('lvutil.FairlockWrite', autospec=True)
+        lock_read_patcher = mock.patch('lvutil.FairlockRead', autospec=True)
         pathexists_patcher = mock.patch('lvutil.util.pathexists', autospec=True)
         lexists_patcher = mock.patch('lvutil.os.path.lexists', autospec=True)
         unlink_patcher = mock.patch('lvutil.os.unlink', autospec=True)
         self.addCleanup(mock.patch.stopall)
         self.mock_lock = lock_patcher.start()
+        self.mock_lock_read = lock_read_patcher.start()
         self.mock_exists = pathexists_patcher.start()
         self.mock_lexists = lexists_patcher.start()
         self.mock_unlink = unlink_patcher.start()
@@ -217,8 +222,10 @@ class TestActivate(unittest.TestCase):
     def setUp(self) -> None:
         self.addCleanup(mock.patch.stopall)
 
-        lock_patcher = mock.patch('lvutil.Fairlock', autospec=True)
+        lock_patcher = mock.patch('lvutil.FairlockWrite', autospec=True)
         self.mock_lock = lock_patcher.start()
+        lock_read_patcher = mock.patch('lvutil.FairlockRead', autospec=True)
+        self.mock_lock_read = lock_read_patcher.start()
         pathexists_patcher = mock.patch('lvutil.util.pathexists', autospec=True)
         self.mock_exists = pathexists_patcher.start()
 
@@ -318,7 +325,7 @@ class TestActivate(unittest.TestCase):
 
 
 @mock.patch('util.pread', autospec=True) # m_pread
-@mock.patch('lvutil.Fairlock', autospec=True) # _1
+@mock.patch('lvutil.FairlockRead', autospec=True) # _1
 class Test_cmd_lvm(unittest.TestCase):
 
     def test_refuse_to_run_empty_list(self, _1, m_pread):

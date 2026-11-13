@@ -1,5 +1,5 @@
 CC=gcc
-CFLAGS=-I.
+CFLAGS=-I. -std=gnu99
 OBJ = fairlock.o
 LIBEXECDIR := /usr/libexec
 UNITDIR := /usr/lib/systemd/system
