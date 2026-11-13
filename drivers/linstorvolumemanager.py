@@ -265,7 +265,8 @@ class LinstorVolumeManagerError(Exception):
     ERR_VOLUME_NOT_EXISTS = 2,
     ERR_VOLUME_DESTROY = 3,
     ERR_GROUP_NOT_EXISTS = 4,
-    ERR_VOLUME_IN_USE = 5
+    ERR_VOLUME_IN_USE = 5,
+    ERR_REPAIR_REQUIRED = 6,
 
     def __init__(self, message, code=ERR_GENERIC):
         super(LinstorVolumeManagerError, self).__init__(message)
@@ -430,13 +431,34 @@ class LinstorVolumeManager(object):
 
         # To increase performance and limit request count to LINSTOR services,
         # we use caches.
-        self._kv_cache = self._create_kv_cache()
         self._resource_cache = None
         self._resource_cache_dirty = True
         self._volume_info_cache = None
         self._volume_info_cache_dirty = True
         self._resources_info_cache = None
-        self._build_volumes(repair=repair)
+
+        # While building the volume list, an error might be thrown if repairing
+        # the SR is required (e.g. a volume is in in the middle of having its
+        # UUID being updated).
+        # This may only be a transient state, so we can retry multiple times to
+        # see if we reach a healthy state.
+        retry_count = 0
+        while True:
+            try:
+                self._kv_cache = self._create_kv_cache()
+                self._build_volumes(repair=repair)
+
+                break
+            except LinstorVolumeManagerError as e:
+                if e.code != LinstorVolumeManagerError.ERR_REPAIR_REQUIRED or retry_count >= 10:
+                    raise
+
+                retry_count += 1
+                self._logger(
+                    f'Cannot build volume list ({e}). Retry number: {retry_count}'
+                )
+
+            time.sleep(0.1)
 
     @property
     def uri(self) -> str:
@@ -2601,7 +2623,8 @@ class LinstorVolumeManager(object):
         if updating_uuid_volumes and not repair:
             raise LinstorVolumeManagerError(
                 'Cannot build LINSTOR volume list: '
-                'It exists invalid "updating uuid volumes", repair is required'
+                'It exists invalid "updating uuid volumes", repair is required',
+                LinstorVolumeManagerError.ERR_REPAIR_REQUIRED
             )
 
         existing_volumes = self._get_volumes_by_property(
