@@ -35,7 +35,7 @@ import cifutils
 CAPABILITIES = ["SR_PROBE", "SR_UPDATE", "SR_CACHING",
                 "VDI_CREATE", "VDI_DELETE", "VDI_ATTACH", "VDI_DETACH",
                 "VDI_UPDATE", "VDI_CLONE", "VDI_SNAPSHOT", "VDI_RESIZE", "VDI_MIRROR",
-                "VDI_GENERATE_CONFIG",
+                "VDI_GENERATE_CONFIG", "VDI_REVERT",
                 "VDI_RESET_ON_BOOT/2", "ATOMIC_PAUSE", "VDI_CONFIG_CBT",
                 "VDI_ACTIVATE", "VDI_DEACTIVATE", "THIN_PROVISIONING", "VDI_READ_CACHING"]
 
@@ -99,6 +99,7 @@ class SMBSR(FileSR.SharedFileSR):
         self.remotepath = ''
         self.path = os.path.join(SR.MOUNT_BASE, sr_uuid)
         self._check_o_direct()
+        self._undo_all_journals()
 
     def checkmount(self):
         return util.ioretry(lambda: ((util.pathexists(self.mountpoint) and \

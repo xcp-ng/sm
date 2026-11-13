@@ -43,7 +43,7 @@ import xs_errors
 CAPABILITIES = ["SR_PROBE", "SR_UPDATE",
                 "VDI_CREATE", "VDI_DELETE", "VDI_ATTACH", "VDI_DETACH",
                 "VDI_UPDATE", "VDI_CLONE", "VDI_SNAPSHOT", "VDI_RESIZE", "VDI_MIRROR",
-                "VDI_GENERATE_CONFIG",
+                "VDI_GENERATE_CONFIG", "VDI_REVERT",
                 "VDI_RESET_ON_BOOT/2", "ATOMIC_PAUSE"]
 
 CONFIGURATION = [
@@ -124,6 +124,7 @@ class MooseFSSR(FileSR.FileSR):
         self.mountpoint = self.path
         self.linkpath = self.path
         self._check_o_direct()
+        self._undo_all_journals()
 
     def checkmount(self):
         return util.ioretry(lambda: ((util.pathexists(self.mountpoint) and

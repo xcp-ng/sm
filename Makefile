@@ -56,6 +56,7 @@ SM_LIBS += mpathcount
 SM_LIBS += refcounter
 SM_LIBS += journaler
 SM_LIBS += fjournaler
+SM_LIBS += jutils
 SM_LIBS += lock
 SM_LIBS += flock
 SM_LIBS += lock_queue
