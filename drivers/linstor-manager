@@ -50,9 +50,15 @@ BACKING_DISK_RE = re.compile('^/dev/([^/]+)/(?:[^/]+)$')
 LVM_PLUGIN = 'lvm.py'
 THIN_POOL = 'thin_pool'
 
+# Chain of the rules of the XAPI firewall port script.
+IPTABLES_FIREWALL_CHAIN = 'xapi-INPUT'
+
 FIREWALL_PORT_SCRIPT = '/etc/xapi.d/plugins/firewall-port'
+
 LINSTOR_PORTS = (LINSTOR_SATELLITE_PORT, 3370, 3376, 3377, 8076, 8077)
 DRBD_PORTS = '7000:8000'
+
+IPTABLES_LEGACY_DRBD_RULE = ['INPUT', '-p', 'tcp', '--dport', DRBD_PORTS, '-j', 'ACCEPT']
 
 DRBD_REACTOR_CONF = '/etc/drbd-reactor.d/sm-linstor.toml'
 
@@ -89,18 +95,30 @@ def update_drbd_ports(open_ports):
     # We want to use a static rule regarding DRBD volumes,
     # so we can't use the XAPI firewall port script, we have to manually
     # check for existing rules before updating iptables service.
-    rule = ['INPUT', '-p', 'tcp', '--dport', DRBD_PORTS, '-j', 'ACCEPT']
-    if open_ports == has_iptables_rule(rule):
+    # The rule goes in the chain of XAPI, like the other ports (created by
+    # the XAPI firewall port script).
+    rule = [IPTABLES_FIREWALL_CHAIN, '-p', 'tcp', '--dport', DRBD_PORTS, '-j', 'ACCEPT']
+    updated = False
+    if open_ports != has_iptables_rule(rule):
+        if open_ports:
+            (ret, stdout, stderr) = util.doexec(['iptables', '-I'] + rule)
+            if ret:
+                raise Exception('Failed to add DRBD rule: {}'.format(stderr))
+        else:
+            (ret, stdout, stderr) = util.doexec(['iptables', '-D'] + rule)
+            if ret:
+                raise Exception('Failed to remove DRBD rule: {}'.format(stderr))
+        updated = True
+
+    # Rule of the previous versions, in the `INPUT` chain: always removed.
+    while has_iptables_rule(IPTABLES_LEGACY_DRBD_RULE):
+        (ret, stdout, stderr) = util.doexec(['iptables', '-D'] + IPTABLES_LEGACY_DRBD_RULE)
+        if ret:
+            raise Exception('Failed to remove legacy DRBD rule: {}'.format(stderr))
+        updated = True
+
+    if not updated:
         return
-    if open_ports:
-        rule.insert(1, '1')
-        (ret, stdout, stderr) = util.doexec(['iptables', '-I'] + rule)
-        if ret:
-            raise Exception('Failed to add DRBD rule: {}'.format(stderr))
-    else:
-        (ret, stdout, stderr) = util.doexec(['iptables', '-D'] + rule)
-        if ret:
-            raise Exception('Failed to remove DRBD rule: {}'.format(stderr))
     (ret, stdout, stderr) = util.doexec(['service', 'iptables', 'save'])
     if ret:
         raise Exception('Failed to save DRBD rule: {}'.format(stderr))
