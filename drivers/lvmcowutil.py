@@ -297,8 +297,7 @@ class LvmCowUtil(object):
             pattern = "%s*" % LV_PREFIX[vdi_type]
             scan_result.update(getCowUtil(vdi_type).getAllInfoFromVG(pattern, cls.extractUuid, lvmCache.vgName))
 
-        uuids = vdis.keys()
-        for uuid in uuids:
+        for uuid in list(vdis):
             vdi = vdis[uuid]
             if VdiType.isCowImage(vdi.vdiType):
                 if not scan_result.get(uuid):
