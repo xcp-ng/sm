@@ -338,6 +338,26 @@ class TestFileVDI(unittest.TestCase):
                mock.call('sr_path/%s.vhd' % new_vdi_uuid,
                          'sr_path/%s.vhd' % vdi_uuid)])
 
+    def test_reset_leaf_no_parent(self):
+        # Arrange
+        sr_uuid = str(uuid.uuid4())
+        vdi_uuid = str(uuid.uuid4())
+        sr = mock.MagicMock()
+        sr.path = "sr_path"
+        vdi = createFakeFileVDI(sr, vdi_uuid, VdiType.VHD)
+        vdi.cowutil = mock.MagicMock()
+        vdi.cowutil.hasParent.return_value = False
+
+        # Act
+        with self.assertRaises(util.SMException) as context:
+            vdi.reset_leaf(sr_uuid, vdi_uuid)
+
+        # Assert
+        self.assertEqual(
+            str(context.exception),
+            f"ERROR: VDI {vdi_uuid} has no parent, will not reset contents")
+        vdi.cowutil.killData.assert_not_called()
+
     def test_create_vdi_vhd(self):
         # Arrange
         sr_uuid = str(uuid.uuid4())
