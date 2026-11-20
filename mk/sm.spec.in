@@ -16,6 +16,7 @@ BuildRequires: python3-devel
 BuildRequires: python3-pylint
 BuildRequires: python3-coverage
 BuildRequires: python3-bitarray
+BuildRequires: systemd-devel
 
 Requires(post): systemd
 Requires(preun): systemd
@@ -240,6 +241,7 @@ Manager and some other packages
 %{python3_sitelib}/__pycache__/fairlock*pyc
 %{python3_sitelib}/fairlock.py
 %{_unitdir}/fairlock@.service
+%{_unitdir}/fairlock@.socket
 %{_libexecdir}/fairlock
 
 %post fairlock
@@ -252,6 +254,9 @@ then
     do
         /usr/bin/systemctl stop "$service"
     done
+    ## Load the new (socket activated) units only once the old ones are
+    ## stopped: they remove their socket file when stopping.
+    /usr/bin/systemctl daemon-reload
 fi
 
 %changelog

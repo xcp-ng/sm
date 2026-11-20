@@ -13,6 +13,8 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <systemd/sd-daemon.h>
+
 #define MAX_CLIENTS 128
 #define MODE_TIMEOUT 5000 // In milliseconds.
 
@@ -39,6 +41,7 @@ struct ServerState {
     int server_sock;
     struct Client clients[MAX_CLIENTS];
     int client_count;
+    bool dirty; // Status must be updated.
 
     int reader_count;
     bool has_writer;
@@ -77,6 +80,7 @@ static inline void server_add_client (struct ServerState *state, int sock) {
     client->mode = 0;
     client->lock_acquired = false;
     client->accepted_at = get_current_time();
+    state->dirty = true;
 }
 
 static inline void server_remove_client (struct ServerState *state, int index) {
@@ -97,6 +101,7 @@ static inline void server_remove_client (struct ServerState *state, int index) {
     assert(state->client_count);
     --state->client_count;
     memmove(client, client + 1, (state->client_count - index) * sizeof *client);
+    state->dirty = true;
 }
 
 // -----------------------------------------------------------------------------
@@ -109,6 +114,72 @@ static inline void server_handle_client_event (struct ServerState *state, int in
 
     if (!keep_client)
         server_remove_client(state, index);
+}
+
+// -----------------------------------------------------------------------------
+
+static bool server_restore (struct ServerState *state, int fd_count) {
+    for (int fd = SD_LISTEN_FDS_START; fd < SD_LISTEN_FDS_START + fd_count; ++fd) {
+        if (sd_is_socket_unix(fd, SOCK_STREAM, 1, NULL, 0) <= 0) {
+            close(fd);
+            continue;
+        }
+        if (state->server_sock < 0)
+            state->server_sock = fd;
+        else
+            close(fd);
+    }
+    return state->server_sock >= 0;
+}
+
+static int server_bind (struct ServerState *state) {
+    const size_t lock_path_length = strlen(state->lock_path);
+    if (!lock_path_length) {
+        fprintf(stderr, "socket path is empty\n");
+        errno = EINVAL;
+        return EINVAL;
+    }
+
+    struct sockaddr_un addr = { .sun_family = AF_UNIX };
+    if (lock_path_length >= sizeof addr.sun_path) {
+        fprintf(stderr, "socket path too long (max %zu): `%s`\n", sizeof addr.sun_path - 1, state->lock_path);
+        errno = ENAMETOOLONG;
+        return ENAMETOOLONG;
+    }
+    memcpy(addr.sun_path, state->lock_path, lock_path_length);
+
+    // Unlink the server socket just in case.
+    unlink(state->lock_path);
+
+    state->server_sock = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (state->server_sock < 0) {
+        fprintf(stderr, "socket() failed for `%s`: `%s`\n", state->lock_path, strerror(errno));
+        return errno;
+    }
+    if (bind(state->server_sock, (const struct sockaddr *)&addr, sizeof addr) < 0) {
+        fprintf(stderr, "bind() failed on socket `%s`: `%s`\n", state->lock_path, strerror(errno));
+        return errno;
+    }
+    if (listen(state->server_sock, 64) < 0) {
+        fprintf(stderr, "listen(64) failed on socket `%s`: `%s`\n", state->lock_path, strerror(errno));
+        return errno;
+    }
+
+    return 0;
+}
+
+static void server_sync (struct ServerState *state) {
+    if (!state->dirty)
+        return;
+    state->dirty = false;
+    int queued_count = 0;
+    for (int i = 0; i < state->client_count; ++i)
+        queued_count += !state->clients[i].lock_acquired;
+
+    sd_notifyf(
+        0, "STATUS=%d reader(s), %d writer, %d waiting",
+        state->reader_count, state->has_writer, queued_count
+    );
 }
 
 // -----------------------------------------------------------------------------
@@ -174,6 +245,7 @@ static void server_process_clients (struct ServerState *state) {
         }
 
         client->lock_acquired = true;
+        state->dirty = true;
         syslog(LOG_INFO, "%s acquired (%c)\n", state->lock_path, client->mode);
 
         // Notify client. We don't care about the return code.
@@ -194,42 +266,24 @@ int main (int argc, char *argv[]) {
         exit(1);
     }
 
-    struct ServerState state = { .lock_path = argv[1] };
-
-    const size_t lock_path_length = strlen(state.lock_path);
-    if (!lock_path_length) {
-        fprintf(stderr, "socket path is empty\n");
-        exit(1);
-    }
-
-    struct sockaddr_un addr = { .sun_family = AF_UNIX };
-    if (lock_path_length >= sizeof addr.sun_path) {
-        fprintf(stderr, "socket path too long (max %zu): %s\n", sizeof addr.sun_path - 1, state.lock_path);
-        exit(1);
-    }
-    memcpy(addr.sun_path, state.lock_path, lock_path_length);
-
-    // Unlink the server socket just in case.
-    unlink(state.lock_path);
-
-    state.server_sock = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (state.server_sock < 0) {
-        fprintf(stderr, "socket() failed for %s: %s\n", state.lock_path, strerror(errno));
-        exit(1);
-    }
-    if (bind(state.server_sock, (const struct sockaddr *)&addr, sizeof addr) < 0) {
-        fprintf(stderr, "bind() failed on socket %s: %s\n", state.lock_path, strerror(errno));
-        exit(1);
-    }
-    if (listen(state.server_sock, 64) < 0) {
-        fprintf(stderr, "listen(64) failed on socket %s: %s\n", state.lock_path, strerror(errno));
-        exit(1);
-    }
+    struct ServerState state = {
+        .lock_path = argv[1],
+        .server_sock = -1,
+        .dirty = true // Report the initial (empty) status.
+    };
 
     // We may write to a connection whose client already went away. So ignore SIGPIPE.
     signal(SIGPIPE, SIG_IGN);
 
     openlog("fairlock", LOG_CONS | LOG_PID | LOG_NDELAY, LOG_LOCAL2);
+
+    const int fd_count = sd_listen_fds(1);
+    if (!server_restore(&state, fd_count > 0 ? fd_count : 0)) {
+        if (server_bind(&state))
+            exit(1);
+    }
+    sd_notify(0, "READY=1");
+    server_sync(&state);
 
     for (;;) {
         struct pollfd pfds[MAX_CLIENTS + 1];
@@ -281,6 +335,9 @@ int main (int argc, char *argv[]) {
 
         // 5. And process locks of course.
         server_process_clients(&state);
+
+        // 6. Report the new state.
+        server_sync(&state);
     }
 
     closelog();

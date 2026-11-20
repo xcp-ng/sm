@@ -3,11 +3,11 @@ from sm_typing import Any, Callable, Dict, Optional, override
 import contextlib
 import os
 import socket
+import subprocess
 import inspect
 import time
 
 SOCKDIR = "/run/fairlock"
-START_SERVICE_TIMEOUT_SECS = 2
 
 class SingletonWithArgs(type):
     _instances: Dict[Any, Any] = {}
@@ -32,7 +32,7 @@ class SingletonWithArgs(type):
 class FairlockDeadlock(Exception):
     pass
 
-class FairlockServiceTimeout(Exception):
+class FairlockError(Exception):
     pass
 
 class _FairlockImpl(metaclass=SingletonWithArgs):
@@ -47,14 +47,9 @@ class _FairlockImpl(metaclass=SingletonWithArgs):
         self.sock = None
 
     def _ensure_service(self):
-        service=f"fairlock@{self.name}.service"
-        os.system(f"/usr/bin/systemctl start {service}")
-        timeout = time.time() + START_SERVICE_TIMEOUT_SECS
-        time.sleep(0.1)
-        while os.system(f"/usr/bin/systemctl --quiet is-active {service}") != 0:
-            time.sleep(0.1)
-            if time.time() > timeout:
-                raise FairlockServiceTimeout(f"Timed out starting service {service}")
+        socket_unit = f"fairlock@{self.name}.socket"
+        if subprocess.call(["/usr/bin/systemctl", "start", socket_unit]) != 0:
+            raise FairlockError(f"Failed to start socket {socket_unit}")
 
     def _close_socket(self):
         if self.sock is None:

@@ -1,0 +1,17 @@
+[Unit]
+Description=Co-operative lock manager socket for resource %i
+DefaultDependencies=no
+Before=sockets.target
+
+[Socket]
+# Must match the path built by fairlock.py: the instance name is used verbatim (%i, not %I).
+ListenStream=/run/fairlock/%i
+SocketMode=0600
+DirectoryMode=0755
+Backlog=64
+RemoveOnStop=yes
+ExecStartPre=/usr/bin/rm -f /run/fairlock/%i
+
+[Install]
+WantedBy=sockets.target
+DefaultInstance=devicemapper
