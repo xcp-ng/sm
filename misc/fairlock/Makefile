@@ -1,7 +1,7 @@
 CC=gcc
 CFLAGS=-I. -std=gnu99
 LDLIBS=-lsystemd
-OBJ = fairlock.o
+OBJ = fairlock.o client.o journal.o
 LIBEXECDIR := /usr/libexec
 UNITDIR := /usr/lib/systemd/system
 PYTHONLIBDIR = $(shell python3 -c "import sys; print(sys.path.pop())")
@@ -11,6 +11,8 @@ all: fairlock
 
 %.o: %.c
 	$(CC) -c -o $@ $< $(CFLAGS)
+
+$(OBJ): fairlock.h
 
 fairlock: $(OBJ)
 	$(CC) -o $@ $^ $(CFLAGS) $(LDLIBS)

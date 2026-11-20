@@ -1,26 +1,6 @@
-#include <assert.h>
-#include <errno.h>
-#include <poll.h>
-#include <signal.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/socket.h>
-#include <sys/un.h>
-#include <syslog.h>
-#include <time.h>
-#include <unistd.h>
+#include "fairlock.h"
 
-#include <systemd/sd-daemon.h>
-
-#define MAX_CLIENTS 128
-#define MODE_TIMEOUT 5000 // In milliseconds.
-
-// -----------------------------------------------------------------------------
-
-static inline int64_t get_current_time (void) {
+int64_t get_current_time (void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
@@ -28,70 +8,25 @@ static inline int64_t get_current_time (void) {
 
 // -----------------------------------------------------------------------------
 
-struct Client {
-    int sock;
-    char mode; // 0, 'R' or 'W'.
-    bool lock_acquired;
-    int64_t accepted_at; // Used to expire clients that never send their mode. In milliseconds.
-};
-
-struct ServerState {
-    const char *lock_path;
-
-    int server_sock;
-    struct Client clients[MAX_CLIENTS];
-    int client_count;
-    bool dirty; // Status must be updated.
-
-    int reader_count;
-    bool has_writer;
-
-    int64_t watchdog_interval; // In milliseconds, 0 if disabled.
-    int64_t watchdog_next_ping;
-};
-
-// -----------------------------------------------------------------------------
-
-static inline bool client_read_mode (struct Client *client) {
-    char mode;
-
-    if (read(client->sock, &mode, 1) != 1 || (mode != 'R' && mode != 'W'))
-        return false;
-
-    client->mode = mode;
-    return true;
-}
-
-static inline bool client_read_data (const struct Client *client, const char *const lock_path) {
-    char buffer[128];
-    const ssize_t n = read(client->sock, buffer, sizeof(buffer) - 1);
-    if (n <= 0)
-        return false;
-    buffer[n] = '\0';
-
-    syslog(LOG_INFO, "%s sent '%s'\n", lock_path, buffer);
-    return true;
-}
-
-// -----------------------------------------------------------------------------
-
 static inline void server_add_client (struct ServerState *state, int sock) {
     assert(state->client_count < MAX_CLIENTS);
 
-    struct Client *client = &state->clients[state->client_count++];
-    client->sock = sock;
-    client->mode = 0;
-    client->lock_acquired = false;
-    client->accepted_at = get_current_time();
+    struct Client *client = &state->clients[state->client_count];
+    if (client_new(client, sock, state->next_ticket)) return;
+
+    ++state->client_count;
+    ++state->next_ticket;
     state->dirty = true;
+
+    sd_pid_notify_with_fds(0, 0, "FDSTORE=1", &sock, 1);
 }
 
 static inline void server_remove_client (struct ServerState *state, int index) {
     struct Client *client = &state->clients[index];
     syslog(LOG_INFO, "%s released (%c)\n", state->lock_path, client->mode ? client->mode : '?');
-    close(client->sock);
+    client_close(client->sock);
 
-    if (client->lock_acquired) {
+    if (client_has_lock(client)) {
         if (client->mode == 'W') {
             assert(state->has_writer);
             state->has_writer = false;
@@ -111,31 +46,129 @@ static inline void server_remove_client (struct ServerState *state, int index) {
 
 static inline void server_handle_client_event (struct ServerState *state, int index) {
     struct Client *client = &state->clients[index];
+    const enum ClientState previous_state = client->state;
     const bool keep_client = client->mode
-        ? client_read_data(client, state->lock_path)
+        ? client_read_data(state, client)
         : client_read_mode(client);
 
     if (!keep_client)
         server_remove_client(state, index);
+    else if (client->state != previous_state)
+        state->dirty = true;
 }
 
 // -----------------------------------------------------------------------------
 
+static inline void server_journal_error (struct ServerState *state, const char *path, const int error) {
+    if (state->journal_failed)
+        return;
+
+    state->journal_failed = true;
+    syslog(LOG_ERR, "%s cannot write journal %s: %s\n", state->lock_path, path, strerror(error));
+}
+
+// The locks must not be sent then if false, a restarted server would not know their owners.
+static inline bool server_write_journal (struct ServerState *state) {
+    if (!state->journal_path)
+        return true;
+
+    char tmp_path[PATH_MAX];
+    if (snprintf(tmp_path, sizeof tmp_path, "%s.tmp", state->journal_path) >= (int)sizeof tmp_path) {
+        server_journal_error(state, state->journal_path, ENAMETOOLONG);
+        return false;
+    }
+
+    if (!journal_write(state, tmp_path)) {
+        server_journal_error(state, tmp_path, errno);
+        unlink(tmp_path);
+        return false;
+    }
+
+    if (rename(tmp_path, state->journal_path) != 0) {
+        server_journal_error(state, state->journal_path, errno);
+        unlink(tmp_path);
+        return false;
+    }
+
+    state->journal_failed = false;
+    return true;
+}
+
+// -----------------------------------------------------------------------------
+
+// Rebuild the queue from the fds given back by systemd and the journal.
+// Returns false if no listening socket was passed.
 static bool server_restore (struct ServerState *state, int fd_count) {
+    FILE *journal = state->journal_path ? fopen(state->journal_path, "re") : NULL;
+    const int64_t current_time = get_current_time();
+
     for (int fd = SD_LISTEN_FDS_START; fd < SD_LISTEN_FDS_START + fd_count; ++fd) {
-        if (sd_is_socket_unix(fd, SOCK_STREAM, 1, NULL, 0) <= 0) {
+        if (sd_is_socket_unix(fd, SOCK_STREAM, 1, NULL, 0) > 0) {
+            if (state->server_sock < 0)
+                state->server_sock = fd;
+            else
+                close(fd);
+            continue;
+        }
+
+        if (sd_is_socket_unix(fd, SOCK_STREAM, 0, NULL, 0) <= 0) {
             close(fd);
             continue;
         }
-        if (state->server_sock < 0)
-            state->server_sock = fd;
-        else
-            close(fd);
+
+        struct Client client = {
+            .sock = fd,
+            .accepted_at = current_time
+        };
+        struct stat st;
+
+        const bool known = state->client_count < MAX_CLIENTS
+        && journal && fstat(fd, &st) == 0
+        && journal_find(journal, st.st_ino, &client);
+
+        if (!known) {
+            syslog(LOG_WARNING, "%s dropping stored connection without journal entry\n", state->lock_path);
+            client_close(fd);
+            continue;
+        }
+
+        client.inode = st.st_ino;
+        client.pid = client_get_pid(fd);
+        state->clients[state->client_count++] = client;
     }
+
+    if (journal)
+        fclose(journal);
+
+    qsort(state->clients, state->client_count, sizeof *state->clients, client_compare_tickets);
+
+    for (int i = 0; i < state->client_count; ++i) {
+        const struct Client *client = &state->clients[i];
+        if (client->ticket >= state->next_ticket)
+            state->next_ticket = client->ticket + 1;
+
+        if (client_has_lock(client)) {
+            if (client->mode == 'W')
+                state->has_writer = true;
+            else
+                ++state->reader_count;
+        }
+    }
+
+    if (state->client_count) {
+        syslog(
+            LOG_INFO, "%s restored %d client(s): %d reader(s), %d writer\n",
+            state->lock_path, state->client_count, state->reader_count, state->has_writer
+        );
+    }
+
+    state->dirty = true;
     return state->server_sock >= 0;
 }
 
-static int server_bind (struct ServerState *state) {
+// -----------------------------------------------------------------------------
+
+static inline int server_bind (struct ServerState *state) {
     const size_t lock_path_length = strlen(state->lock_path);
     if (!lock_path_length) {
         fprintf(stderr, "socket path is empty\n");
@@ -171,24 +204,35 @@ static int server_bind (struct ServerState *state) {
     return 0;
 }
 
-static void server_sync (struct ServerState *state) {
+// Returns false if the journal could not be written
+static bool server_sync (struct ServerState *state) {
     if (!state->dirty)
-        return;
+        return true;
+
+    if (!server_write_journal(state))
+        return false;
     state->dirty = false;
     int queued_count = 0;
     for (int i = 0; i < state->client_count; ++i)
-        queued_count += !state->clients[i].lock_acquired;
+        queued_count += !client_has_lock(&state->clients[i]);
 
     sd_notifyf(
         0, "STATUS=%d reader(s), %d writer, %d waiting",
         state->reader_count, state->has_writer, queued_count
     );
+    return true;
 }
 
 // -----------------------------------------------------------------------------
 
 static int server_get_next_poll_timeout (const struct ServerState *state) {
     int64_t deadline = state->watchdog_interval ? state->watchdog_next_ping : -1;
+    // Still dirty after a sync: the journal could not be written, retry soon.
+    if (state->dirty) {
+        const int64_t retry_deadline = get_current_time() + JOURNAL_RETRY_DELAY;
+        if (deadline < 0 || retry_deadline < deadline)
+            deadline = retry_deadline;
+    }
     for (int i = 0; i < state->client_count; ++i) {
         const struct Client *client = &state->clients[i];
         if (client->mode)
@@ -241,7 +285,7 @@ static void server_process_clients (struct ServerState *state) {
         assert(!state->has_writer);
 
         struct Client *client = &state->clients[i];
-        if (client->lock_acquired) {
+        if (client_has_lock(client)) {
             assert(client->mode == 'R');
             continue;
         }
@@ -259,17 +303,28 @@ static void server_process_clients (struct ServerState *state) {
             ++state->reader_count;
         }
 
-        client->lock_acquired = true;
+        client->state = CLIENT_GRANTED;
+        client->lock_sent = false;
+        client->granted_at = get_current_time();
         state->dirty = true;
         syslog(LOG_INFO, "%s acquired (%c)\n", state->lock_path, client->mode);
+
+        if (exclusive_write)
+            break; // Can't give lock to another client.
+    }
+}
+
+static void server_send_locks (struct ServerState *state) {
+    for (int i = 0; i < state->client_count; ++i) {
+        struct Client *client = &state->clients[i];
+        if (client->state != CLIENT_GRANTED || client->lock_sent)
+            continue;
 
         // Notify client. We don't care about the return code.
         // SIGPIPE is also ignored in case of connection closed.
         static const char lock_message[] = "LOCK";
         write(client->sock, lock_message, sizeof lock_message);
-
-        if (exclusive_write)
-            break; // Can't give lock to another client.
+        client->lock_sent = true;
     }
 }
 
@@ -277,12 +332,13 @@ static void server_process_clients (struct ServerState *state) {
 
 int main (int argc, char *argv[]) {
     if (argc < 2) {
-        fprintf(stderr, "Syntax: %s <socket filename>\n", argv[0]);
+        fprintf(stderr, "Syntax: %s <socket filename> [<journal filename>]\n", argv[0]);
         exit(1);
     }
 
     struct ServerState state = {
         .lock_path = argv[1],
+        .journal_path = argc > 2 ? argv[2] : NULL,
         .server_sock = -1,
         .dirty = true // Report the initial (empty) status.
     };
@@ -306,7 +362,11 @@ int main (int argc, char *argv[]) {
     }
 
     sd_notify(0, "READY=1");
-    server_sync(&state);
+
+    // Clients restored as granted must get their "LOCK" again: it may have been lost by the previous instance.
+    server_process_clients(&state);
+    if (server_sync(&state))
+        server_send_locks(&state);
 
     for (;;) {
         struct pollfd pfds[MAX_CLIENTS + 1];
@@ -361,8 +421,9 @@ int main (int argc, char *argv[]) {
         // 5. And process locks of course.
         server_process_clients(&state);
 
-        // 6. Report the new state.
-        server_sync(&state);
+        // 6. Journal the new state before telling the clients they own the lock.
+        if (server_sync(&state))
+            server_send_locks(&state);
     }
 
     closelog();
