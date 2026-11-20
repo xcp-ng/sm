@@ -110,7 +110,8 @@ CAPABILITIES = [
 ]
 
 CONFIGURATION = [
-    ['group-name', 'LVM group name'],
+    ['group-name', 'LINSTOR resource group base name (and for legacy usages: LVM or VG/LV with thin provisioning)'],
+    ['storage-pools', 'comma-separated LVM pools (VG or VG/LV with thin provisioning) used to store the volumes of the group (optional, defaults to group-name)'],
     ['redundancy', 'replication count'],
     ['provisioning', '"thin" or "thick" are accepted (optional, defaults to thin)'],
     ['monitor-db-quorum', 'disable controller when only one host is online (optional, defaults to true)']
@@ -276,12 +277,44 @@ def activate_lvm_group(group_name):
     except Exception as e:
         util.SMlog('Cannot active VG `{}`: {}'.format(path[0], e))
 
+
+def parse_storage_pools(group_name, storage_pool_names=None):
+    """
+    Get the LVM pools (`VG` or `VG/LV`) of a SR from the `storage-pools`
+    device-config value. Without value, `group-name` is the only pool.
+    Empty values and duplicates are ignored. The LINSTOR database is created
+    on the first pool.
+    """
+
+    if not storage_pool_names:
+        return [group_name]
+
+    # Empty values and duplicates are ignored, the order is kept.
+    pool_names = list(dict.fromkeys(
+        pool.strip() for pool in storage_pool_names.split(',') if pool.strip()
+    ))
+    if not pool_names:
+        raise ValueError('`storage-pools` is empty')
+    return pool_names
+
+
+def activate_lvm_groups(group_name, storage_pool_names=None):
+    for pool_name in parse_storage_pools(group_name, storage_pool_names):
+        activate_lvm_group(pool_name)
+
 # ==============================================================================
 
 # Usage example:
 # xe sr-create type=linstor name-label=linstor-sr
 # host-uuid=d2deba7a-c5ad-4de1-9a20-5c8df3343e93
 # device-config:group-name=vg_loop device-config:redundancy=2
+#
+# Many pools can store the volumes of the SR with `storage-pools`. It is a
+# comma-separated list of LVM pools (`VG/LV` with thin provisioning, `VG`
+# otherwise). `group-name` stays the identity of the SR and is only a pool when
+# `storage-pools` is not set (backward compatibility).
+# Example:
+# device-config:group-name=my-sr device-config:storage-pools=vg1/thin,vg2/thin
 
 
 class LinstorSR(SR.SR):
@@ -384,6 +417,10 @@ class LinstorSR(SR.SR):
         self._linstor_proxy = LinstorProxy(self)
 
         self._group_name = self.dconf['group-name']
+        try:
+            self._storage_pool_names = parse_storage_pools(self._group_name, self.dconf.get('storage-pools'))
+        except ValueError as e:
+            raise xs_errors.XenError('InvalidArg', opterr=str(e))
 
         self._vdi_shared_time = 0
 
@@ -405,7 +442,7 @@ class LinstorSR(SR.SR):
         def load(self, *args, **kwargs):
             # Activate all LVMs to make drbd-reactor happy.
             if self.srcmd.cmd in ('sr_attach', 'vdi_attach_from_config'):
-                activate_lvm_group(self._group_name)
+                activate_lvm_groups(self._group_name, self.dconf.get('storage-pools'))
 
             if not self._has_session:
                 if self.srcmd.cmd in (
@@ -622,6 +659,7 @@ class LinstorSR(SR.SR):
         try:
             self._linstor = LinstorVolumeManager.create_sr(
                 self._group_name,
+                self._storage_pool_names,
                 ips,
                 self._redundancy,
                 thin_provisioning=self._provisioning == 'thin',
@@ -913,7 +951,10 @@ class LinstorSR(SR.SR):
         self._exec_manager_command(
             host,
             'prepareSr' if enabled else 'releaseSr',
-            {'groupName': group_name},
+            {
+                'groupName': group_name,
+                'storagePoolNames': ','.join(self._storage_pool_names)
+            },
             'SRUnavailable'
         )
 
