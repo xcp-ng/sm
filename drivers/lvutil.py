@@ -22,6 +22,8 @@ import os
 import errno
 import time
 
+from sm_typing import List
+
 import scsiutil
 from fairlock import Fairlock
 import util
@@ -30,6 +32,7 @@ import xml.dom.minidom
 from constants import EXT_PREFIX, VG_LOCATION, VG_PREFIX
 import lvmcache
 import srmetadata
+from lvmbackup import LVMMetadataBackup
 
 MDVOLUME_NAME = 'MGT'
 VDI_UUID_TAG_PREFIX = 'vdi_'
@@ -72,7 +75,15 @@ DM_COMMANDS = frozenset({CMD_DMSETUP})
 
 LVM_COMMANDS = VG_COMMANDS.union(PV_COMMANDS, LV_COMMANDS, DM_COMMANDS)
 
+BACKUP_LVM_COMMANDS = frozenset({CMD_VGREMOVE, CMD_VGCHANGE, CMD_VGEXTEND,
+                                 CMD_LVCREATE, CMD_LVREMOVE, CMD_LVCHANGE,
+                                 CMD_LVRENAME, CMD_LVRESIZE, CMD_LVEXTEND})
+BACKUP_VCHANGE_IGNORED_OPTIONS = frozenset({"-ay", "-an", "--refresh",
+                                            "--config"})
+
 LVM_LOCK = 'lvm'
+
+LVM_METADATA_BACKUP = LVMMetadataBackup()
 
 
 def extract_vgname(str_in):
@@ -142,6 +153,36 @@ def lvmretry(func):
     return decorated
 
 
+def _try_backup_vg(lvm_cmd: str, lvm_args: List[str]) -> None:
+    """
+    Check whether the LVM command and arguments makes modifications to the
+    metadata of the target volume group. If so, the metadata of this volume
+    group is backed up.
+
+    :param lvm_cmd: The LVM command.
+    :param lvm_args: The arguments for the LVM command.
+    """
+    if lvm_cmd not in BACKUP_LVM_COMMANDS:
+        return
+
+    options = [arg for arg in lvm_args if arg.startswith("-")]
+    if lvm_cmd in [CMD_LVCHANGE, CMD_VGCHANGE] and \
+        all(opt in BACKUP_VCHANGE_IGNORED_OPTIONS for opt in options):
+        return
+
+    vgname = None
+
+    for arg in lvm_args:
+        vgname = extract_vgname(arg)
+        if vgname:
+            break
+
+    if not vgname:
+        return
+
+    LVM_METADATA_BACKUP.try_backup(vgname)
+
+
 def cmd_lvm(cmd, pread_func=util.pread2, *args):
     """ Construct and run the appropriate lvm command.
 
@@ -183,6 +224,8 @@ def cmd_lvm(cmd, pread_func=util.pread2, *args):
         if not util.is_string(arg):
             util.SMlog("CMD_LVM: Not all lvm arguments are of type 'str'")
             return None
+
+    _try_backup_vg(lvm_cmd, lvm_args)
 
     with Fairlock("devicemapper"):
         start_time = time.time()
