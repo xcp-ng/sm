@@ -4,7 +4,7 @@ import unittest
 import unittest.mock as mock
 
 import socket
-from fairlock import FairlockRead, FairlockWrite, FairlockServiceTimeout, FairlockDeadlock
+from fairlock import FairlockRead, FairlockWrite, FairlockError, FairlockDeadlock
 
 class TestFairlock(unittest.TestCase):
     @override
@@ -13,6 +13,8 @@ class TestFairlock(unittest.TestCase):
         self.mock_socket = sock_patcher.start()
         os_patcher = mock.patch('fairlock.os', autospec=True)
         self.mock_os = os_patcher.start()
+        subprocess_patcher = mock.patch('fairlock.subprocess', autospec=True)
+        self.mock_subprocess = subprocess_patcher.start()
         time_patcher = mock.patch('fairlock.time', autospec=True)
         self.mock_time = time_patcher.start()
 
@@ -27,29 +29,23 @@ class TestFairlock(unittest.TestCase):
         self.mock_socket.socket.return_value = mock_sock
         mock_sock.connect.side_effect = [FileNotFoundError(), 0]
         mock_sock.recv.side_effect = [b'Foop']
-        self.mock_os.system.side_effect = [0, 1, 0]
-        self.mock_time.time.side_effect = [0, 0, 0]
+        self.mock_subprocess.call.return_value = 0
 
         with FairlockWrite("test"):
             print("Hello World")
 
-        self.mock_os.system.assert_called()
+        self.mock_subprocess.call.assert_called_once_with(["/usr/bin/systemctl", "start", "fairlock@test.socket"])
 
-    def test_first_lock_timeout(self):
+    def test_first_lock_socket_failure(self):
         """
-        Single lock, starts the service but times out and raises exception
+        Single lock, the socket unit cannot be started and raises exception
         """
-        mock_sock = mock.MagicMock()
-        self.mock_socket.socket.return_value = mock_sock
-        mock_sock.connect.side_effect = [FileNotFoundError(), 0]
-        mock_sock.recv.side_effect = [b'Foop']
-        self.mock_os.system.side_effect = [0, 1, 1, 1, 0]
-        self.mock_time.time.side_effect = [0, 1, 3]
+        self.mock_subprocess.call.return_value = 1
 
-        with self.assertRaises(FairlockServiceTimeout) as err:
+        with self.assertRaises(FairlockError) as err:
             FairlockWrite("test")._ensure_service()
 
-        self.mock_os.system.assert_called()
+        self.mock_subprocess.call.assert_called_once_with(["/usr/bin/systemctl", "start", "fairlock@test.socket"])
 
     def test_second_lock(self):
         """
@@ -63,7 +59,7 @@ class TestFairlock(unittest.TestCase):
         with FairlockWrite("test"):
             print("Hello World")
 
-        self.mock_os.system.assert_not_called()
+        self.mock_subprocess.call.assert_not_called()
 
     def test_two_locks(self):
         """
@@ -78,8 +74,7 @@ class TestFairlock(unittest.TestCase):
         mock_sock2a.connect.side_effect = FileNotFoundError()
         mock_sock1b.recv.side_effect = [b'Foop']
         mock_sock2b.recv.side_effect = [b'Foop']
-        self.mock_os.system.side_effect = [0, 1, 0, 0, 1, 0]
-        self.mock_time.time.side_effect = [0, 0, 0, 0, 0, 0]
+        self.mock_subprocess.call.return_value = 0
 
         with FairlockWrite("test1"):
             print("Hello World")
@@ -94,8 +89,7 @@ class TestFairlock(unittest.TestCase):
         self.mock_socket.socket.return_value = mock_sock
         mock_sock.connect.side_effect = [FileNotFoundError(), 0]
         mock_sock.recv.side_effect = [b'Foop', b'Foop']
-        self.mock_os.system.side_effect = [0, 1, 0, 0, 1, 0]
-        self.mock_time.time.side_effect = [0, 0, 0, 0, 0, 0]
+        self.mock_subprocess.call.return_value = 0
 
         with self.assertRaises(FairlockDeadlock) as err:
             with FairlockWrite("test") as l:
