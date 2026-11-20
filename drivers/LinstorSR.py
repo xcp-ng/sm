@@ -27,6 +27,7 @@ try:
     from linstorvolumemanager import LinstorVolumeManagerError
     from linstorvolumemanager import DATABASE_VOLUME_NAME
     from linstorvolumemanager import PERSISTENT_PREFIX
+    from linstorvolumemanager import update_all_ports
 
     LINSTOR_AVAILABLE = True
 except ImportError:
@@ -405,6 +406,7 @@ class LinstorSR(SR.SR):
         def load(self, *args, **kwargs):
             # Activate all LVMs to make drbd-reactor happy.
             if self.srcmd.cmd in ('sr_attach', 'vdi_attach_from_config'):
+                update_all_ports(open_ports=True)
                 activate_lvm_group(self._group_name)
 
             if not self._has_session:

@@ -38,6 +38,17 @@ from pathlib import Path
 import contextlib
 import zipfile
 
+# Chain of the rules of the XAPI firewall port script.
+IPTABLES_FIREWALL_CHAIN = 'xapi-INPUT'
+
+FIREWALL_PORT_SCRIPT = '/etc/xapi.d/plugins/firewall-port'
+
+LINSTOR_SATELLITE_PORT = 3366
+LINSTOR_PORTS = (LINSTOR_SATELLITE_PORT, 3370, 3376, 3377, 8076, 8077)
+DRBD_PORTS = '7000:8000'
+
+IPTABLES_LEGACY_DRBD_RULE = ['INPUT', '-p', 'tcp', '--dport', DRBD_PORTS, '-j', 'ACCEPT']
+
 # Persistent prefix to add to RAW persistent volumes.
 PERSISTENT_PREFIX = 'xcp-persistent-'
 
@@ -51,7 +62,6 @@ DATABASE_BACKUP_DIR_SPARE = Path("/var/lib/linstor.d/db-backups")
 DATABASE_BACKUP_NAME_FORMAT = "linstor_database_backup-{}-{}"
 DATABASE_BACKUP_RETENTION = 10
 DATABASE_BACKUP_DATE_FORMAT = "%Y%m%d_%H%M%S"
-LINSTOR_SATELLITE_PORT = 3366
 
 REG_DRBDADM_PRIMARY = re.compile("([^\\s]+)\\s+role:Primary")
 REG_DRBDSETUP_IP = re.compile('[^\\s]+\\s+(.*):.*$')
@@ -63,6 +73,63 @@ PLUGIN = 'linstor-manager'
 
 LinstorLocalVolumeOpeners = Dict[str, Dict[str, Any]]
 LinstorVolumeOpeners = Dict[str, LinstorLocalVolumeOpeners]
+
+# ==============================================================================
+
+def update_linstor_port(port, open_ports):
+    fn = 'open' if open_ports else 'close'
+    args = (
+        FIREWALL_PORT_SCRIPT, fn, str(port), 'tcp'
+    )
+
+    (ret, out, err) = util.doexec(args)
+    if ret == 0:
+        return
+    raise Exception('Failed to {} port: {} {}'.format(fn, out, err))
+
+
+def has_iptables_rule(rule):
+    (ret, stdout, stderr) = util.doexec(['iptables', '-C'] + rule)
+    return not ret
+
+
+def update_drbd_ports(open_ports):
+    # We want to use a static rule regarding DRBD volumes,
+    # so we can't use the XAPI firewall port script, we have to manually
+    # check for existing rules before updating iptables service.
+    # The rule goes in the chain of XAPI, like the other ports (created by
+    # the XAPI firewall port script).
+    rule = [IPTABLES_FIREWALL_CHAIN, '-p', 'tcp', '--dport', DRBD_PORTS, '-j', 'ACCEPT']
+    updated = False
+    if open_ports != has_iptables_rule(rule):
+        if open_ports:
+            (ret, stdout, stderr) = util.doexec(['iptables', '-I'] + rule)
+            if ret:
+                raise Exception('Failed to add DRBD rule: {}'.format(stderr))
+        else:
+            (ret, stdout, stderr) = util.doexec(['iptables', '-D'] + rule)
+            if ret:
+                raise Exception('Failed to remove DRBD rule: {}'.format(stderr))
+        updated = True
+
+    # Rule of the previous versions, in the `INPUT` chain: always removed.
+    while has_iptables_rule(IPTABLES_LEGACY_DRBD_RULE):
+        (ret, stdout, stderr) = util.doexec(['iptables', '-D'] + IPTABLES_LEGACY_DRBD_RULE)
+        if ret:
+            raise Exception('Failed to remove legacy DRBD rule: {}'.format(stderr))
+        updated = True
+
+    if not updated:
+        return
+    (ret, stdout, stderr) = util.doexec(['service', 'iptables', 'save'])
+    if ret:
+        raise Exception('Failed to save DRBD rule: {}'.format(stderr))
+
+
+def update_all_ports(open_ports):
+    for port in LINSTOR_PORTS:
+        update_linstor_port(port, open_ports)
+    update_drbd_ports(open_ports)
 
 # ==============================================================================
 

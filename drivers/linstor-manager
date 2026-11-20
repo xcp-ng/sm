@@ -38,7 +38,7 @@ from linstorvolumemanager import (
     get_controller_uri,
     get_local_volume_openers,
     LinstorVolumeManager,
-    LINSTOR_SATELLITE_PORT,
+    update_all_ports,
 )
 import json
 import LinstorSR
@@ -49,10 +49,6 @@ import util
 BACKING_DISK_RE = re.compile('^/dev/([^/]+)/(?:[^/]+)$')
 LVM_PLUGIN = 'lvm.py'
 THIN_POOL = 'thin_pool'
-
-FIREWALL_PORT_SCRIPT = '/etc/xapi.d/plugins/firewall-port'
-LINSTOR_PORTS = (LINSTOR_SATELLITE_PORT, 3370, 3376, 3377, 8076, 8077)
-DRBD_PORTS = '7000:8000'
 
 DRBD_REACTOR_CONF = '/etc/drbd-reactor.d/sm-linstor.toml'
 
@@ -66,50 +62,6 @@ DRBD_REACTOR_DEPS = [
     '/run/systemd/system/linstor-controller.service.d/reactor.conf',
     '/run/systemd/system/var-lib-linstor.service.d/reactor.conf'
 ]
-
-
-def update_linstor_port(port, open_ports):
-    fn = 'open' if open_ports else 'close'
-    args = (
-        FIREWALL_PORT_SCRIPT, fn, str(port), 'tcp'
-    )
-
-    (ret, out, err) = util.doexec(args)
-    if ret == 0:
-        return
-    raise Exception('Failed to {} port: {} {}'.format(fn, out, err))
-
-
-def has_iptables_rule(rule):
-    (ret, stdout, stderr) = util.doexec(['iptables', '-C'] + rule)
-    return not ret
-
-
-def update_drbd_ports(open_ports):
-    # We want to use a static rule regarding DRBD volumes,
-    # so we can't use the XAPI firewall port script, we have to manually
-    # check for existing rules before updating iptables service.
-    rule = ['INPUT', '-p', 'tcp', '--dport', DRBD_PORTS, '-j', 'ACCEPT']
-    if open_ports == has_iptables_rule(rule):
-        return
-    if open_ports:
-        rule.insert(1, '1')
-        (ret, stdout, stderr) = util.doexec(['iptables', '-I'] + rule)
-        if ret:
-            raise Exception('Failed to add DRBD rule: {}'.format(stderr))
-    else:
-        (ret, stdout, stderr) = util.doexec(['iptables', '-D'] + rule)
-        if ret:
-            raise Exception('Failed to remove DRBD rule: {}'.format(stderr))
-    (ret, stdout, stderr) = util.doexec(['service', 'iptables', 'save'])
-    if ret:
-        raise Exception('Failed to save DRBD rule: {}'.format(stderr))
-
-
-def update_all_ports(open_ports):
-    for port in LINSTOR_PORTS:
-        update_linstor_port(port, open_ports)
-    update_drbd_ports(open_ports)
 
 
 def update_linstor_satellite_service(start):
