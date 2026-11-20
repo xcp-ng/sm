@@ -33,8 +33,10 @@ class TestMpathDmp(unittest.TestCase):
         mpath_cli_patcher = mock.patch('mpath_dmp.mpath_cli', autospec=True)
         self.mock_mpath_cli = mpath_cli_patcher.start()
 
-        lock_patcher = mock.patch('mpath_dmp.Fairlock', autospec=True)
+        lock_patcher = mock.patch('mpath_dmp.FairlockWrite', autospec=True)
         self.mock_lock = lock_patcher.start()
+        lock_read_patcher = mock.patch('mpath_dmp.FairlockRead', autospec=True)
+        self.mock_lock_read = lock_read_patcher.start()
 
         self.addCleanup(mock.patch.stopall)
 
