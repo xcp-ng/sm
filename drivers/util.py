@@ -16,9 +16,6 @@
 # Miscellaneous utility functions
 #
 
-from sm_typing import Any, List, Optional, override
-
-import contextlib
 import atexit
 import os
 import re
@@ -35,23 +32,23 @@ import functools
 import socket
 import threading
 import xml.dom.minidom
-import scsiutil
 import stat
-import xs_errors
-import XenAPI # pylint: disable=import-error
 import xmlrpc.client
 import http.client
-import base64
 import syslog
 import resource
 import traceback
 import glob
 import copy
 import contextlib
-from sm_typing import override
-
+import logging.handlers
+import json
 from functools import reduce
-from sm_typing import List, Optional
+import scsiutil
+import xs_errors
+import XenAPI  # pylint: disable=import-error
+from loguru import logger
+from sm_typing import Any, List, Optional, override
 
 NO_LOGGING_STAMPFILE = '/etc/xensource/no_sm_log'
 
@@ -220,11 +217,81 @@ def _logToSyslog(ident, facility, priority, message):
     _writeToSyslog(ident, facility, priority, f"[{pid}][{thread_name}] {message}")
 
 
-def SMlog(message, ident="SM", priority=LOG_INFO):
+def SMlogOld(message, ident="SM", priority=LOG_INFO):
     if LOGGING:
         for message_line in str(message).split('\n'):
             _logToSyslog(ident, _SM_SYSLOG_FACILITY, priority, message_line)
 
+# Correspondance between syslog LOG_LEVELS and standard loguru levels
+# This is for backward compatibility with a codebase relying on syslog
+# A new codebase should use logger.info/error/warning/...() methods
+# It gives a better readability, and is as easy to change.
+# Also it kind of makes the loglevel mandatory, hence pushing for reflexion.
+LOGURU_PRIORITIES = {
+    LOG_EMERG: "CRITICAL",  # EMERGENCY and ALERT could be added to loguru.
+    LOG_ALERT: "CRITICAL",  # Without helper logger.alert() method though.
+    LOG_CRIT: "CRITICAL",
+    LOG_ERR: "ERROR",
+    LOG_WARNING: "WARNING",
+    LOG_NOTICE: "SUCCESS",  # different meaning, but same order...
+    LOG_INFO: "INFO",
+    LOG_DEBUG: "DEBUG",
+    # Nothing: "TRACE",
+}
+
+def SMloguru(message, ident="SM", priority=LOG_INFO):
+    if not LOGGING:
+        return
+    for message_line in str(message).split('\n'):
+        # Old way
+        _logToSyslog(ident, _SM_SYSLOG_FACILITY, priority, message_line)
+        # Loguru way, includes the old way through loguru:
+        # *all* lines should therefore be duplicated.
+        logger.log(LOGURU_PRIORITIES.get(priority, "INFO"), f"{ident}: {message_line}")
+
+def SMloguru_config():
+    if hasattr(SMloguru, 'configured'):
+        return
+    # Removes default stderr handler
+    logger.remove(0)
+    # Current logging method
+    handler = logging.handlers.SysLogHandler(facility=logging.handlers.SysLogHandler.LOG_LOCAL2)
+    logger.add(handler)
+    # Simple logfile with color.
+    logger.add(
+        "/root/file.log",
+        colorize=True,
+        format="<green>{time:YYYY-MM-DD at HH:mm:ss}</green>"
+        " | <level>{level}</level>"
+        " | {message}",
+    )
+    # Simple complex structured logger in json, with too much informations
+    logger.add("/root/file.json", serialize=True)
+    # Another JSON serializer, with more control
+    def serialize(record):
+        record["extra"]["stack"] = [
+            "{}:{}:{}".format(f.filename, f.name, f.lineno)
+            for f in traceback.extract_stack()
+            if "/loguru/" not in f.filename
+        ]
+        record["json"] = json.dumps({
+            "timestamp": record["time"].timestamp(),
+            "message": record["message"],
+            "level": record["level"].name,
+            "file": record["file"].name,
+            "context": record["extra"],
+        })
+        return "{json}\n"
+    # That sink will only activate on ERROR or worse levels
+    # Hence it is possible to add a whole lot more informations on real problems
+    # Like traceback, etc.
+    # Here we use the same logfile as the previous sink,
+    # it could therefore be used for adding more context informations without replacing
+    # the informations already sent.
+    logger.add("/root/file.json", level="ERROR", format=serialize)
+
+SMloguru_config()
+SMlog = SMloguru
 
 class LoggerCounter:
     def __init__(self, max_repeats):
