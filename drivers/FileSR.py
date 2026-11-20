@@ -746,8 +746,7 @@ class FileVDI(VDI.VDI):
 
         # safety check
         if not self.cowutil.hasParent(self.path):
-            raise util.SMException("ERROR: VDI %s has no parent, " + \
-                    "will not reset contents" % self.uuid)
+            raise util.SMException(f"ERROR: VDI {self.uuid} has no parent, will not reset contents")
 
         self.cowutil.killData(self.path)
 
