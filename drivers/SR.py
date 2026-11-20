@@ -137,6 +137,10 @@ class SR(object):
                     dev_path = '/dev/disk/by-scsid/' + self.srcmd.params['device_config']['SCSIid']
                     os.environ['LVM_DEVICE'] = dev_path
                     util.SMlog('Setting LVM_DEVICE to %s' % dev_path)
+                elif os.environ.pop('LVM_DEVICE', None):
+                    # set by another SR loaded earlier in this process (e.g. the local cache SR of blktap2):
+                    # this SR's LVM commands must not be restricted to that SR's device
+                    util.SMlog('Unsetting LVM_DEVICE')
 
         except TypeError:
             raise Exception(traceback.format_exc())
