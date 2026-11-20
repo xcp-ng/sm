@@ -47,30 +47,21 @@ class IPCFlag:
         """Set the flag
 
         name: the file to set
-        soft: If set to False and the file gets created while this function is
-        trying to set create, the file MAY be overwritten.
-
-        returns: True if the file is written, False otherwise."""
-        if not soft and self.test(name):  # XXX this is broken!
-            return
-        flagFile = os.path.join(self.nsDir, name)
+        soft: return False if the file exists, instead of raising an Exception.
+        returns: True if the file is written,
+                 False if soft and the flag exists,
+                 else raises an IPCFlagException."""
+        flag_file = os.path.join(self.nsDir, name)
         try:
-            if soft:
-                f = util.open_atomic(flagFile, "w")
-            else:
-                f = open(flagFile, "w")
-            f.write("%s\n" % os.getpid())
+            f = util.open_atomic(flag_file, "w")
+            f.write(f"{os.getpid()}\n")
             f.close()
-            util.SMlog("IPCFlag: set %s:%s" % (self.ns, name))
+            util.SMlog(f"IPCFlag: set {self.ns}:{name}")
             return True
         except OSError as e:
             if e.errno == errno.EEXIST and soft:
                 return False
-            else:
-                raise IPCFlagException("failed to create %s: %s" \
-                        % (flagFile, e))
-        except IOError as e:
-            raise IPCFlagException("failed to create %s: %s" % (flagFile, e))
+            raise IPCFlagException(f"failed to create {flag_file}: {e}") from e
 
     def test(self, name):
         """Test the flag"""
