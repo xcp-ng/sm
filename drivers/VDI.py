@@ -555,6 +555,20 @@ class VDI(object):
         # Override in implementation as required.
         pass
 
+    def _list_vdi_snapshots(self):
+        """List vdi  of all direct snapshots of a VDI"""
+        snapshots = []
+        vdi_record = self.session.xenapi.VDI.get_record(self.sr.srcmd.params['vdi_ref'])
+        try:
+            for opaque_ref in vdi_record.get("snapshots", []):
+                snapshot_record = self.session.xenapi.VDI.get_record(opaque_ref)
+                snapshot_uuid = self.session.xenapi.VDI.get_uuid(opaque_ref)
+                snapshots.append(self.from_uuid(self.session , snapshot_uuid))
+            return snapshots
+        except Exception as error:
+            util.SMlog(f"Error listing snapshots for VDI {snapshot_uuid}: {error}")
+            return []
+
     def configure_blocktracking(self, sr_uuid, vdi_uuid, enable):
         """Function for configuring blocktracking"""
         import blktap2
@@ -598,30 +612,43 @@ class VDI(object):
                     self._delete_cbt_log()
                     raise xs_errors.XenError('CBTActivateFailed',
                                              opterr=str(error))
+
             else:
-                from lock import Lock
-                lock = Lock("cbtlog", str(vdi_uuid))
-                lock.acquire()
-                try:
-                    # Find parent of leaf metadata file, if any,
-                    # and nullify its successor
-                    logpath = self._get_cbt_logpath(self.uuid)
-                    parent = self._cbt_op(self.uuid,
-                                          cbtutil.get_cbt_parent, logpath)
-                    self._delete_cbt_log()
-                    parent_path = self._get_cbt_logpath(parent)
-                    if self._cbt_log_exists(parent_path):
-                        self._cbt_op(parent, cbtutil.set_cbt_child,
-                                     parent_path, uuid.UUID(int=0))
-                    if disk_state:
-                        self.update_slaves_on_cbt_disable(logpath)
-                except Exception as error:
-                    raise xs_errors.XenError('CBTDeactivateFailed', str(error))
-                finally:
-                    lock.release()
-                    lock.cleanup("cbtlog", str(vdi_uuid))
+                self._disable_cbt(disk_state)
+                # Disable cbt for each child snapshots
+                for snapshot_vdi in self._list_vdi_snapshots():
+                    snapshot_vdi._disable_cbt()
+
         finally:
             blktap2.VDI.tap_unpause(self.session, sr_uuid, vdi_uuid)
+
+    def _disable_cbt(self, disk_state=None):
+        """Disables CBT for the specified VDI and updates associated metadata."""
+        from lock import Lock
+        lock = Lock("cbtlog", str(self.uuid))
+        lock.acquire()
+        try:
+            vdi_ref = self.session.xenapi.VDI.get_by_uuid(self.uuid)
+            vdi_record = self.session.xenapi.VDI.get_record(vdi_ref)
+            logpath = self._get_cbt_logpath(self.uuid)
+            if self._cbt_log_exists(logpath):
+                parent = self._cbt_op(self.uuid, cbtutil.get_cbt_parent, logpath)
+                self._delete_cbt_log()
+                # Find parent of leaf metadata file, if any,
+                # and nullify its successor
+                parent_path = self._get_cbt_logpath(parent)
+                if self._cbt_log_exists(parent_path):
+                    self._cbt_op(parent, cbtutil.set_cbt_child, parent_path, uuid.UUID(int=0))
+                if disk_state:
+                        self.update_slaves_on_cbt_disable(logpath)
+                self.session.xenapi.VDI.set_cbt_enabled(vdi_ref, False)
+        except Exception as error:
+            util.SMlog(f"Error disabling CBT for VDI {self.uuid}: {error}")
+            raise xs_errors.XenError('CBTDeactivateFailed', str(error))
+        finally:
+            lock.release()
+            lock.cleanup("cbtlog", str(self.uuid))
+
 
     def data_destroy(self, sr_uuid, vdi_uuid):
         """Delete the data associated with a CBT enabled snapshot
