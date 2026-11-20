@@ -692,6 +692,7 @@ class TestCBT(unittest.TestCase):
         self._set_initial_state(self.vdi, True)
         target_uuid = "targetUUID"
         self.xenapi.VDI.get_uuid.return_value = target_uuid
+        mock_cbt.get_cbt_child.side_effect = ["snapUUID", target_uuid]
         vdi_size1 = 10485760  # 10MB
         vdi_size2 = 5242880  # 5MB
         mock_cbt.get_cbt_size.side_effect = [vdi_size1, vdi_size2]
