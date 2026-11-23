@@ -1711,7 +1711,7 @@ class LVMVDI(VDI):
         # are measured as extended ones, twice the size of the standard ones:
         # with the L2 tables not in use, it's the room left for the clusters
         # in use but not counted as data (leaked ones).
-        sizeCoalesced = self.lvmcowutil.calcVolumeSize(self.sizeVirt, sizeData)
+        sizeCoalesced = self.lvmcowutil.calcVolumeSize(self.sizeVirt, sizeData, blockSize)
         Util.log("Coalesced size = %s" % Util.num2str(sizeCoalesced))
         return sizeCoalesced - self.parent.sizeLV
 
