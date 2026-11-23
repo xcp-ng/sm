@@ -13,6 +13,7 @@ import cleanup
 import cowutil
 import fjournaler
 import lock
+import lvmcowutil
 
 import util
 
@@ -1936,6 +1937,88 @@ class TestSR(unittest.TestCase):
         sr._doCoalesceLeaf(mock_vdi, False)
 
         self.assertNotIn('vhd-parent', mock_parent.delConfig.call_args)
+
+
+class TestLVMVDICoalesceSpace(unittest.TestCase):
+
+    SIZE_VIRT = 64 * 1024 * MEGA
+    CLUSTER_SIZE = 64 * 1024
+    # Bug report: 1.340G of data, the parent LV was already this big
+    SIZE_DATA = 21920 * CLUSTER_SIZE
+    SIZE_LV = 1438646272
+    # qemu-img measure, 64KiB clusters, extended L2, 64GiB
+    OVERHEAD = 19136512
+
+    @override
+    def setUp(self) -> None:
+        self.addCleanup(mock.patch.stopall)
+        mock.patch('cleanup.Util.log').start()
+
+        self.parent = self.make_vdi("parent")
+        self.parent.sizeLV = self.SIZE_LV
+        self.child = self.make_vdi("child")
+        self.child.parent = self.parent
+        self.child._getCoalescedSizeData = mock.MagicMock(return_value=self.SIZE_DATA)
+
+    def make_vdi(self, uuid, vdi_type=VdiType.QCOW2):
+        vdi = cleanup.LVMVDI.__new__(cleanup.LVMVDI)
+        vdi.uuid = uuid
+        vdi.vdi_type = vdi_type
+        vdi.path = "/dev/VG_XenStorage-sr/QCOW2-" + uuid
+        vdi.sizeVirt = self.SIZE_VIRT
+        vdi._activate = mock.MagicMock()
+        vdi.cowutil = mock.MagicMock()
+        vdi.cowutil.getBlockSize.return_value = self.CLUSTER_SIZE
+        vdi.cowutil.getDefaultPreallocationSizeVirt.return_value = 64 * 1024
+        vdi.cowutil.calcOverheadEmpty.return_value = self.OVERHEAD
+        vdi.cowutil.calcOverheadBitmap.return_value = 0
+        vdi.lvmcowutil = lvmcowutil.LvmCowUtil(vdi.cowutil)
+        return vdi
+
+    def test_qcow2(self):
+        """
+        Regression: the metadata was measured for the size of the data, the
+        estimate was the size of the parent LV and the parent wasn't inflated.
+        """
+        self.assertEqual(20 * MEGA, self.child._calcExtraSpaceForCoalescing())
+
+        self.child.cowutil.calcOverheadEmpty.assert_called_once_with(
+            self.SIZE_VIRT, self.CLUSTER_SIZE)
+
+    def test_qcow2_parent_smaller_than_child(self):
+        """The parent is inflated before it's resized to the child's size"""
+        self.parent.sizeVirt = self.SIZE_VIRT // 2
+
+        self.child._calcExtraSpaceForCoalescing()
+
+        self.child.cowutil.calcOverheadEmpty.assert_called_once_with(
+            self.SIZE_VIRT, self.CLUSTER_SIZE)
+
+    def test_qcow2_block_sizes_differ(self):
+        """The data of a 16KiB mirror image is counted in parent's blocks"""
+        self.child.cowutil.getBlockSize.return_value = 16 * 1024
+
+        self.assertEqual(20 * MEGA, self.child._calcExtraSpaceForCoalescing())
+
+        self.child._getCoalescedSizeData.assert_called_once_with(self.CLUSTER_SIZE)
+
+    def test_vhd(self):
+        """VHD block bitmaps are only counted for the allocated blocks"""
+        for vdi in (self.parent, self.child):
+            vdi.vdi_type = VdiType.VHD
+            vdi.cowutil.getBlockSize.return_value = 2 * MEGA
+            vdi.cowutil.getDefaultPreallocationSizeVirt.return_value = 2 * 1024 * 1024 * MEGA
+            vdi.cowutil.calcOverheadEmpty.return_value = 4 * MEGA
+            vdi.cowutil.calcOverheadBitmap.side_effect = lambda size: size // 512
+
+        self.assertEqual(
+            lvmcowutil.calcSizeLV(self.SIZE_DATA + 4 * MEGA + self.SIZE_DATA // 512) -
+            self.SIZE_LV,
+            self.child._calcExtraSpaceForCoalescing())
+
+        self.child.cowutil.calcOverheadEmpty.assert_called_once_with(
+            2 * 1024 * 1024 * MEGA, 2 * MEGA)
+        self.child.cowutil.calcOverheadBitmap.assert_called_once_with(self.SIZE_DATA)
 
 
 class TestCoalescedSizeData(unittest.TestCase):
