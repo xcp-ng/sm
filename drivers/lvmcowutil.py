@@ -77,14 +77,21 @@ class LvmCowUtil(object):
     def __init__(self, cowutil: CowUtil):
         self.cowutil = cowutil
 
-    def calcVolumeSize(self, sizeVirt: int) -> int:
+    def calcVolumeSize(self, sizeVirt: int, sizeData: Optional[int] = None) -> int:
+        """
+        Size of the LV holding an image of 'sizeVirt' bytes with 'sizeData'
+        bytes of data (fully allocated by default).
+        """
+        if sizeData is None:
+            sizeData = sizeVirt
         # all LVM COW VDIs have the metadata area preallocated for the maximum
         # possible virtual size in the VHD case (for fast online VDI.resize)
         metaOverhead = self.cowutil.calcOverheadEmpty(
             max(sizeVirt, self.cowutil.getDefaultPreallocationSizeVirt())
         )
-        bitmapOverhead = self.cowutil.calcOverheadBitmap(sizeVirt)
-        return calcSizeLV(sizeVirt + metaOverhead + bitmapOverhead)
+        # VHD blocks have their own bitmap: only the allocated ones count.
+        bitmapOverhead = self.cowutil.calcOverheadBitmap(sizeData)
+        return calcSizeLV(sizeData + metaOverhead + bitmapOverhead)
 
     def createResizeJournal(self, lvmCache: LVMCache, jName: str) -> str:
         """

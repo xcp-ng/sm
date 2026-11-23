@@ -1671,7 +1671,13 @@ class LVMVDI(VDI):
     def _calcExtraSpaceForCoalescing(self) -> int:
         if not VdiType.isCowImage(self.parent.vdi_type):
             return 0  # raw parents are never deflated in the first place
-        sizeCoalesced = self.lvmcowutil.calcVolumeSize(self._getCoalescedSizeData())
+        sizeData = self._getCoalescedSizeData()
+        # The parent gets the metadata of the whole virtual size of the child
+        # (it isn't resized yet), whatever the data covers. QCOW2 L2 tables
+        # are measured as extended ones, twice the size of the standard ones:
+        # with the L2 tables not in use, it's the room left for the clusters
+        # in use but not counted as data (leaked ones).
+        sizeCoalesced = self.lvmcowutil.calcVolumeSize(self.sizeVirt, sizeData)
         Util.log("Coalesced size = %s" % Util.num2str(sizeCoalesced))
         return sizeCoalesced - self.parent.sizeLV
 
