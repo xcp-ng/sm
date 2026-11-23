@@ -1938,6 +1938,77 @@ class TestSR(unittest.TestCase):
         self.assertNotIn('vhd-parent', mock_parent.delConfig.call_args)
 
 
+class TestCoalescedSizeData(unittest.TestCase):
+
+    KIB = 1024
+
+    @override
+    def setUp(self) -> None:
+        self.addCleanup(mock.patch.stopall)
+        mock.patch('cleanup.Util.log').start()
+
+    def size_data(self, child_block_size, child_blocks, parent_block_size, parent_blocks):
+        child = cleanup.VDI.__new__(cleanup.VDI)
+        child.uuid = "child"
+        child.path = "/dev/VG_XenStorage-sr/QCOW2-child"
+        child.sizeVirt = MEGA
+        child.delConfig = mock.MagicMock()
+        child.getVDIBlocks = mock.MagicMock(return_value=bytes(child_blocks))
+        child.cowutil = mock.MagicMock()
+        child.cowutil.getBlockSize.return_value = child_block_size
+        child.parent = mock.MagicMock()
+        child.parent.getVDIBlocks.return_value = bytes(parent_blocks)
+        return child._getCoalescedSizeData(parent_block_size)
+
+    def test_same_block_size(self):
+        # Blocks 0, 4 and 1, 4: 3 blocks
+        self.assertEqual(3 * 64 * self.KIB,
+                         self.size_data(64 * self.KIB, [0x11, 0], 64 * self.KIB, [0x12, 0]))
+
+    def test_child_blocks_bigger(self):
+        """
+        Regression: a 64KiB child onto a 16KiB parent (after a migration).
+        The parent has the 16KiB blocks 0, 4, 8, 12, the child the 64KiB
+        blocks 0, 4, 8, 12, i.e. the 16KiB blocks 0-3, 16-19, 32-35, 48-51:
+        19 blocks of the parent. Merging the bitmaps as they are gave 4 blocks
+        of 64KiB.
+        """
+        self.assertEqual(19 * 16 * self.KIB,
+                         self.size_data(64 * self.KIB, [0x11, 0x11],
+                                        16 * self.KIB, [0x11, 0x11, 0, 0, 0, 0, 0, 0]))
+
+    def test_child_blocks_smaller(self):
+        """
+        A 16KiB mirror image onto its 64KiB parent: the 16KiB blocks 1, 2
+        and 63 are in the 64KiB blocks 0 and 15, the parent has the block 1.
+        """
+        self.assertEqual(3 * 64 * self.KIB,
+                         self.size_data(16 * self.KIB, [0x06, 0, 0, 0, 0, 0, 0, 0x80],
+                                        64 * self.KIB, [0x02, 0]))
+
+
+class TestRescaleBitmap(unittest.TestCase):
+
+    def test_same_block_size(self):
+        self.assertEqual(b"\x5a", cleanup.Util.rescaleBitmap(b"\x5a", 4096, 4096))
+
+    def test_bigger_to_smaller(self):
+        # Blocks 0 and 3 of 4x: blocks 0-3 and 12-15 of the 32 blocks
+        self.assertEqual(b"\x0f\xf0\x00\x00", cleanup.Util.rescaleBitmap(b"\x09", 4, 1))
+
+    def test_smaller_to_bigger(self):
+        # Blocks 1 and 9 of 1/4x: blocks 0 and 2 of the 4 blocks
+        self.assertEqual(b"\x05", cleanup.Util.rescaleBitmap(b"\x02\x02", 1, 4))
+
+    def test_not_a_multiple(self):
+        # Blocks of 3 into blocks of 2: block 1 [3, 6) is in blocks 1 and 2
+        self.assertEqual(b"\x06\x00", cleanup.Util.rescaleBitmap(b"\x02", 3, 2))
+
+    def test_empty(self):
+        self.assertEqual(b"\x00", cleanup.Util.rescaleBitmap(b"\x00\x00", 1, 4))
+        self.assertEqual(b"", cleanup.Util.rescaleBitmap(b"", 4, 1))
+
+
 class TestLockGCActive(unittest.TestCase):
     @override
     def setUp(self) -> None:

@@ -247,6 +247,27 @@ class Util:
         return count
 
     @staticmethod
+    def rescaleBitmap(bitmap: bytes, fromBlockSize: int, toBlockSize: int) -> bytes:
+        """
+        Convert a block bitmap (bit i of byte n is block 8n+i) from blocks of
+        'fromBlockSize' to blocks of 'toBlockSize': a block is set if any
+        part of it is.
+        """
+        if fromBlockSize == toBlockSize:
+            return bitmap
+        nbBlocks = -(-len(bitmap) * 8 * fromBlockSize // toBlockSize)
+        rescaled = bytearray(-(-nbBlocks // 8))
+        for byte, val in enumerate(bitmap):
+            while val:
+                block = byte * 8 + (val & -val).bit_length() - 1
+                val &= val - 1
+                first = block * fromBlockSize // toBlockSize
+                last = ((block + 1) * fromBlockSize - 1) // toBlockSize
+                for i in range(first, last + 1):
+                    rescaled[i // 8] |= 1 << (i % 8)
+        return bytes(rescaled)
+
+    @staticmethod
     def countBits(bitmap1, bitmap2):
         """return bit count in the bitmap produced by ORing the two bitmaps"""
         len1 = len(bitmap1)
@@ -1227,20 +1248,30 @@ class VDI(object):
     def _queryCowBlocks(self) -> bytes:
         return self.cowutil.getBlockBitmap(self.path)
 
-    def _getCoalescedSizeData(self):
+    def _getCoalescedSizeData(self, blockSize: Optional[int] = None) -> int:
         """Get the data size of the resulting image if we coalesce self onto
         parent. We calculate the actual size by using the image block allocation
         information (as opposed to just adding up the two image sizes to get an
-        upper bound)"""
+        upper bound). 'blockSize' is the block size of the parent, the one of
+        self by default."""
         # make sure we don't use stale BAT info from vdi_rec since the child
         # was writable all this time
         self.delConfig(VDI.DB_VDI_BLOCKS)
         blocksChild = self.getVDIBlocks()
         blocksParent = self.parent.getVDIBlocks()
+        childBlockSize = self.cowutil.getBlockSize(self.path)
+        if blockSize is None:
+            blockSize = childBlockSize
+        if blockSize != childBlockSize:
+            # Once coalesced, the data is in blocks of the parent (QCOW2
+            # mirror images have 16KiB clusters): count those.
+            Util.log("Block size %d of %s converted to %d" %
+                     (childBlockSize, self.uuid, blockSize))
+            blocksChild = Util.rescaleBitmap(blocksChild, childBlockSize, blockSize)
         numBlocks = Util.countBits(blocksChild, blocksParent)
         Util.log("Num combined blocks = %d" % numBlocks)
-        sizeData = numBlocks * self.cowutil.getBlockSize(self.path)
-        assert(sizeData <= self.sizeVirt)
+        sizeData = numBlocks * blockSize
+        assert(sizeData <= util.roundup(blockSize, self.sizeVirt))
         return sizeData
 
     def _calcExtraSpaceForCoalescing(self) -> int:
@@ -1671,7 +1702,10 @@ class LVMVDI(VDI):
     def _calcExtraSpaceForCoalescing(self) -> int:
         if not VdiType.isCowImage(self.parent.vdi_type):
             return 0  # raw parents are never deflated in the first place
-        sizeData = self._getCoalescedSizeData()
+        self._activate()
+        self.parent._activate()
+        blockSize = self.parent.cowutil.getBlockSize(self.parent.path)
+        sizeData = self._getCoalescedSizeData(blockSize)
         # The parent gets the metadata of the whole virtual size of the child
         # (it isn't resized yet), whatever the data covers. QCOW2 L2 tables
         # are measured as extended ones, twice the size of the standard ones:
