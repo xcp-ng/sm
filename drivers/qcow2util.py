@@ -51,6 +51,9 @@ QCOW2_HELPER = "/opt/xensource/libexec/qcow2_helper"
 QCOW2_TYPE: Final = "qcow2"
 RAW_TYPE: Final = "raw"
 
+# Extended L2 needs 32 subclusters of at least 512 bytes.
+QCOW2_MIN_EXTENDED_L2_CLUSTER_SIZE: Final = 16 * 1024
+
 # ------------------------------------------------------------------------------
 
 class QCowUtil(CowUtil):
@@ -319,7 +322,13 @@ class QCowUtil(CowUtil):
             cluster_size = block_size
         else:
             cluster_size = QCOW2_DEFAULT_CLUSTER_SIZE
-        cmd = [QEMU_IMG, "measure", "-O", "qcow2", "--output", "json", "-o", f"cluster_size={cluster_size},extended_l2=on", "--size", f"{virtual_size}"]
+        # Measure with extended L2 whenever the cluster size allows it: its
+        # L2 entries are twice as big, so the result is an upper bound for
+        # both L2 layouts.
+        options = f"cluster_size={cluster_size}"
+        if cluster_size >= QCOW2_MIN_EXTENDED_L2_CLUSTER_SIZE:
+            options += ",extended_l2=on"
+        cmd = [QEMU_IMG, "measure", "-O", "qcow2", "--output", "json", "-o", options, "--size", f"{virtual_size}"]
         output = json.loads(self._ioretry(cmd))
         return int(output["required"])
 
