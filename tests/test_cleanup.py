@@ -13,6 +13,7 @@ import cleanup
 import cowutil
 import fjournaler
 import lock
+import lvmcowutil
 
 import util
 
@@ -1936,6 +1937,159 @@ class TestSR(unittest.TestCase):
         sr._doCoalesceLeaf(mock_vdi, False)
 
         self.assertNotIn('vhd-parent', mock_parent.delConfig.call_args)
+
+
+class TestLVMVDICoalesceSpace(unittest.TestCase):
+
+    SIZE_VIRT = 64 * 1024 * MEGA
+    CLUSTER_SIZE = 64 * 1024
+    # Bug report: 1.340G of data, the parent LV was already this big
+    SIZE_DATA = 21920 * CLUSTER_SIZE
+    SIZE_LV = 1438646272
+    # qemu-img measure, 64KiB clusters, extended L2, 64GiB
+    OVERHEAD = 19136512
+
+    @override
+    def setUp(self) -> None:
+        self.addCleanup(mock.patch.stopall)
+        mock.patch('cleanup.Util.log').start()
+
+        self.parent = self.make_vdi("parent")
+        self.parent.sizeLV = self.SIZE_LV
+        self.child = self.make_vdi("child")
+        self.child.parent = self.parent
+        self.child._getCoalescedSizeData = mock.MagicMock(return_value=self.SIZE_DATA)
+
+    def make_vdi(self, uuid, vdi_type=VdiType.QCOW2):
+        vdi = cleanup.LVMVDI.__new__(cleanup.LVMVDI)
+        vdi.uuid = uuid
+        vdi.vdi_type = vdi_type
+        vdi.path = "/dev/VG_XenStorage-sr/QCOW2-" + uuid
+        vdi.sizeVirt = self.SIZE_VIRT
+        vdi._activate = mock.MagicMock()
+        vdi.cowutil = mock.MagicMock()
+        vdi.cowutil.getBlockSize.return_value = self.CLUSTER_SIZE
+        vdi.cowutil.getDefaultPreallocationSizeVirt.return_value = 64 * 1024
+        vdi.cowutil.calcOverheadEmpty.return_value = self.OVERHEAD
+        vdi.cowutil.calcOverheadBitmap.return_value = 0
+        vdi.lvmcowutil = lvmcowutil.LvmCowUtil(vdi.cowutil)
+        return vdi
+
+    def test_qcow2(self):
+        """
+        Regression: the metadata was measured for the size of the data, the
+        estimate was the size of the parent LV and the parent wasn't inflated.
+        """
+        self.assertEqual(20 * MEGA, self.child._calcExtraSpaceForCoalescing())
+
+        self.child.cowutil.calcOverheadEmpty.assert_called_once_with(
+            self.SIZE_VIRT, self.CLUSTER_SIZE)
+
+    def test_qcow2_parent_smaller_than_child(self):
+        """The parent is inflated before it's resized to the child's size"""
+        self.parent.sizeVirt = self.SIZE_VIRT // 2
+
+        self.child._calcExtraSpaceForCoalescing()
+
+        self.child.cowutil.calcOverheadEmpty.assert_called_once_with(
+            self.SIZE_VIRT, self.CLUSTER_SIZE)
+
+    def test_qcow2_block_sizes_differ(self):
+        """The data of a 16KiB mirror image is counted in parent's blocks"""
+        self.child.cowutil.getBlockSize.return_value = 16 * 1024
+
+        self.assertEqual(20 * MEGA, self.child._calcExtraSpaceForCoalescing())
+
+        self.child._getCoalescedSizeData.assert_called_once_with(self.CLUSTER_SIZE)
+
+    def test_vhd(self):
+        """VHD block bitmaps are only counted for the allocated blocks"""
+        for vdi in (self.parent, self.child):
+            vdi.vdi_type = VdiType.VHD
+            vdi.cowutil.getBlockSize.return_value = 2 * MEGA
+            vdi.cowutil.getDefaultPreallocationSizeVirt.return_value = 2 * 1024 * 1024 * MEGA
+            vdi.cowutil.calcOverheadEmpty.return_value = 4 * MEGA
+            vdi.cowutil.calcOverheadBitmap.side_effect = lambda size: size // 512
+
+        self.assertEqual(
+            lvmcowutil.calcSizeLV(self.SIZE_DATA + 4 * MEGA + self.SIZE_DATA // 512) -
+            self.SIZE_LV,
+            self.child._calcExtraSpaceForCoalescing())
+
+        self.child.cowutil.calcOverheadEmpty.assert_called_once_with(
+            2 * 1024 * 1024 * MEGA, 2 * MEGA)
+        self.child.cowutil.calcOverheadBitmap.assert_called_once_with(self.SIZE_DATA)
+
+
+class TestCoalescedSizeData(unittest.TestCase):
+
+    KIB = 1024
+
+    @override
+    def setUp(self) -> None:
+        self.addCleanup(mock.patch.stopall)
+        mock.patch('cleanup.Util.log').start()
+
+    def size_data(self, child_block_size, child_blocks, parent_block_size, parent_blocks):
+        child = cleanup.VDI.__new__(cleanup.VDI)
+        child.uuid = "child"
+        child.path = "/dev/VG_XenStorage-sr/QCOW2-child"
+        child.sizeVirt = MEGA
+        child.delConfig = mock.MagicMock()
+        child.getVDIBlocks = mock.MagicMock(return_value=bytes(child_blocks))
+        child.cowutil = mock.MagicMock()
+        child.cowutil.getBlockSize.return_value = child_block_size
+        child.parent = mock.MagicMock()
+        child.parent.getVDIBlocks.return_value = bytes(parent_blocks)
+        return child._getCoalescedSizeData(parent_block_size)
+
+    def test_same_block_size(self):
+        # Blocks 0, 4 and 1, 4: 3 blocks
+        self.assertEqual(3 * 64 * self.KIB,
+                         self.size_data(64 * self.KIB, [0x11, 0], 64 * self.KIB, [0x12, 0]))
+
+    def test_child_blocks_bigger(self):
+        """
+        Regression: a 64KiB child onto a 16KiB parent (after a migration).
+        The parent has the 16KiB blocks 0, 4, 8, 12, the child the 64KiB
+        blocks 0, 4, 8, 12, i.e. the 16KiB blocks 0-3, 16-19, 32-35, 48-51:
+        19 blocks of the parent. Merging the bitmaps as they are gave 4 blocks
+        of 64KiB.
+        """
+        self.assertEqual(19 * 16 * self.KIB,
+                         self.size_data(64 * self.KIB, [0x11, 0x11],
+                                        16 * self.KIB, [0x11, 0x11, 0, 0, 0, 0, 0, 0]))
+
+    def test_child_blocks_smaller(self):
+        """
+        A 16KiB mirror image onto its 64KiB parent: the 16KiB blocks 1, 2
+        and 63 are in the 64KiB blocks 0 and 15, the parent has the block 1.
+        """
+        self.assertEqual(3 * 64 * self.KIB,
+                         self.size_data(16 * self.KIB, [0x06, 0, 0, 0, 0, 0, 0, 0x80],
+                                        64 * self.KIB, [0x02, 0]))
+
+
+class TestRescaleBitmap(unittest.TestCase):
+
+    def test_same_block_size(self):
+        self.assertEqual(b"\x5a", cleanup.Util.rescaleBitmap(b"\x5a", 4096, 4096))
+
+    def test_bigger_to_smaller(self):
+        # Blocks 0 and 3 of 4x: blocks 0-3 and 12-15 of the 32 blocks
+        self.assertEqual(b"\x0f\xf0\x00\x00", cleanup.Util.rescaleBitmap(b"\x09", 4, 1))
+
+    def test_smaller_to_bigger(self):
+        # Blocks 1 and 9 of 1/4x: blocks 0 and 2 of the 4 blocks
+        self.assertEqual(b"\x05", cleanup.Util.rescaleBitmap(b"\x02\x02", 1, 4))
+
+    def test_not_a_multiple(self):
+        # Blocks of 3 into blocks of 2: block 1 [3, 6) is in blocks 1 and 2
+        self.assertEqual(b"\x06\x00", cleanup.Util.rescaleBitmap(b"\x02", 3, 2))
+
+    def test_empty(self):
+        self.assertEqual(b"\x00", cleanup.Util.rescaleBitmap(b"\x00\x00", 1, 4))
+        self.assertEqual(b"", cleanup.Util.rescaleBitmap(b"", 4, 1))
 
 
 class TestLockGCActive(unittest.TestCase):
