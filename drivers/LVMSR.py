@@ -25,7 +25,7 @@ import re
 import shutil
 import sys
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from xmlrpc.client import DateTime
 
 import blktap2
@@ -2592,10 +2592,11 @@ class LVMVDI(VDI.VDI):
         Determine whether this is a RAW or a COW VDI.
         """
 
-        try:
-            vdi_ref = self.session.xenapi.VDI.get_by_uuid(self.uuid)
-        except XenAPI.Failure:
-            vdi_ref = None
+        vdi_ref = None
+
+        if self.session: # Search for an existing ref if the xapi session is initialized
+            with suppress(XenAPI.Failure):
+                vdi_ref = self.session.xenapi.VDI.get_by_uuid(self.uuid)
 
         if vdi_ref:
             sm_config = self.session.xenapi.VDI.get_sm_config(vdi_ref)
