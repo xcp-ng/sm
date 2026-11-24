@@ -1601,28 +1601,54 @@ class VDI(object):
         """
         return self._session.xenapi.host.call_plugin(*args)
 
+    @util.xapi_safe_call
+    def _cleanup_stale_activation(self, vdi_ref):
+        """
+        Check for stale activating keys (e.g., from a previous reboot)
+        Try to clean them up if any.
+        """
+        sm_config = self._session.xenapi.VDI.get_sm_config(vdi_ref)
+        host_keys = [k for k in sm_config.keys() if k.startswith('host_')]
+        # Host keys should only exist with 'activating'
+        # Otherwise, this indicates a stale activation
+        if host_keys and ('activating' not in sm_config):
+            for host_key in host_keys:
+                try:
+                    self._session.xenapi.VDI.remove_from_sm_config(vdi_ref, host_key)
+                    util.SMlog(f"Removed stale host key: {host_key}")
+                except XenAPI.Failure as e:
+                    util.SMlog(f"Failed to remove stale host key {host_key}: {e}")
+
     def _add_tag(self, vdi_uuid, writable):
         util.SMlog("Adding tag to: %s" % vdi_uuid)
-        attach_mode = "RO"
-        if writable:
-            attach_mode = "RW"
+        attach_mode = "RW" if writable else "RO"
         vdi_ref = self._session.xenapi.VDI.get_by_uuid(vdi_uuid)
         host_ref = self._session.xenapi.host.get_by_uuid(util.get_this_host())
         sm_config = self._session.xenapi.VDI.get_sm_config(vdi_ref)
         attached_as = util.attached_as(sm_config)
-        if NO_MULTIPLE_ATTACH and (attached_as == "RW" or \
-                (attached_as == "RO" and attach_mode == "RW")):
-            util.SMlog("need to reset VDI %s" % vdi_uuid)
-            if not resetvdis.reset_vdi(self._session, vdi_uuid, force=False,
-                    term_output=False, writable=writable):
-                raise util.SMException("VDI %s not detached cleanly" % vdi_uuid)
+
+        if NO_MULTIPLE_ATTACH and (
+            attached_as == "RW" or
+            (attached_as == "RO" and attach_mode == "RW")
+        ):
+            util.SMlog(f"need to reset VDI {vdi_uuid}")
+            if not resetvdis.reset_vdi(
+                    self._session,
+                    vdi_uuid,
+                    force=False,
+                    term_output=False,
+                    writable=writable,
+            ):
+                raise util.SMException(f"VDI {vdi_uuid} not detached cleanly")
             sm_config = self._session.xenapi.VDI.get_sm_config(vdi_ref)
         if 'relinking' in sm_config:
-            util.SMlog("Relinking key found, back-off and retry" % sm_config)
+            util.SMlog(f"Relinking key found, back-off and retry [{sm_config}]" % )
             return False
         if 'paused' in sm_config:
-            util.SMlog("Paused or host_ref key found [%s]" % sm_config)
+            util.SMlog(f"Paused or host_ref key found [{sm_config}]")
             return False
+
+        self._cleanup_stale_activation(vdi_uuid)
         try:
             self._session.xenapi.VDI.add_to_sm_config(
                 vdi_ref, 'activating', 'True')
@@ -1631,10 +1657,10 @@ class VDI(object):
                 # Someone else is activating - a retry might succeed
                 return False
             raise
-        host_key = "host_%s" % host_ref
+
+        host_key = f"host_{host_ref}"
         assert host_key not in sm_config
-        self._session.xenapi.VDI.add_to_sm_config(vdi_ref, host_key,
-                                                  attach_mode)
+        self._session.xenapi.VDI.add_to_sm_config(vdi_ref, host_key, attach_mode)
         sm_config = self._session.xenapi.VDI.get_sm_config(vdi_ref)
         if 'paused' in sm_config or 'relinking' in sm_config:
             util.SMlog("Found %s key, aborting" % (
