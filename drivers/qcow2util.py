@@ -583,8 +583,6 @@ class QCowUtil(CowUtil):
         util.SMlog(f"killData: recreating {path} on top of {parent!r} "
                 f"(cluster_size={cluster_size}, extended_l2={extended_l2})")
 
-        os.remove(path)
-
         cmd = [QEMU_IMG, "create", "-q", "-u", "-f", QCOW2_TYPE]
 
         if not parentRaw:
