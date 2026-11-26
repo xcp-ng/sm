@@ -211,6 +211,7 @@ install: build
 	cd $(SM_STAGING)$(SM_DEST) && rm -f LVMoISCSISR && ln -sf LVMoISCSISR.py LVMoISCSISR
 	cd $(SM_STAGING)$(SM_DEST) && rm -f LVMoHBASR && ln -sf LVMoHBASR.py LVMoHBASR
 	cd $(SM_STAGING)$(SM_DEST) && rm -f LVMoFCoESR && ln -sf LVMoFCoESR.py LVMoFCoESR
+	# Kept absolute: /sbin is a symlink to usr/sbin on the host, a relative link would break.
 	ln -sf $(SM_DEST)mpathutil.py $(SM_STAGING)/sbin/mpathutil
 	install -m 755 drivers/02-vhdcleanup $(SM_STAGING)$(MASTER_SCRIPT_DEST)
 	install -m 755 drivers/linstor-manager $(SM_STAGING)$(PLUGIN_SCRIPT_DEST)
@@ -240,8 +241,8 @@ install: build
 	$(MAKE) -C qcow2 install DESTDIR=$(SM_STAGING)
 	$(MAKE) -C linstor install DESTDIR=$(SM_STAGING)
 	$(MAKE) -C sm_typing install DESTDIR=$(SM_STAGING)
-	ln -sf $(SM_DEST)blktap2.py $(SM_STAGING)$(BIN_DEST)/blktap2
-	ln -sf $(SM_DEST)lcache.py $(SM_STAGING)$(BIN_DEST)tapdisk-cache-stats
+	ln -sf --relative $(SM_STAGING)$(SM_DEST)blktap2.py $(SM_STAGING)$(BIN_DEST)/blktap2
+	ln -sf --relative $(SM_STAGING)$(SM_DEST)lcache.py $(SM_STAGING)$(BIN_DEST)tapdisk-cache-stats
 	ln -sf /dev/null $(SM_STAGING)$(UDEV_RULES_DIR)/69-dm-lvm-metad.rules
 	install -m 755 scripts/xs-mpath-scsidev.sh $(SM_STAGING)$(UDEV_SCRIPTS_DIR)
 	install -m 755 scripts/make-dummy-sr $(SM_STAGING)$(LIBEXEC)
