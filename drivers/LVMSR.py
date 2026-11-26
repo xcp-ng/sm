@@ -1319,6 +1319,7 @@ class LVMSR(SR.SR):
         # undoing interrupted inflates must be done first, since undoing COW images
         # ops might require inflations
         self.lock.acquire()
+        self.lvmCache.refresh() # Journals might have been removed due to a concurrent GC pass
         try:
             self._undoAllInflateJournals()
             self._undoAllCowJournals()
